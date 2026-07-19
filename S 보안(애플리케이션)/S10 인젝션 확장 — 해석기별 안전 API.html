@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S10 인젝션 확장 — 해석기별 안전 API</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote { margin: 16px 0; padding: 12px 16px; border-radius: 6px; border-left: 4px solid; }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+    padding: 14px; text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0; white-space: pre; overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>S10 인젝션 확장 — 해석기별 안전 API</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li><a href="S3 인젝션 방어.html">S3</a>는 <strong>바인딩이 있는 세계</strong>(SQL)를 다뤘다. 이 문서는 그 반대편 — <strong>바인딩이 없거나, 있어도 끝까지 지켜 주지 않는 해석기들</strong>을 다룬다: 문서 데이터베이스(NoSQL), 셸·프로세스, LDAP·XPath.</li>
+  <li>병은 여전히 하나다: <strong>데이터가 해석기에게 코드로 승격되는 것</strong>. 달라지는 건 해석기와 <strong>승격되는 대상</strong>이다 — SQL은 <em>문법</em>이 승격됐지만, 문서 DB에서는 <strong>구조(structure)</strong>가 승격된다.</li>
+  <li>문서 DB에는 이어붙일 문자열이 없다 — 쿼리가 애초에 객체다. 그래서 <strong>바인딩이라는 개념 자체가 성립하지 않는다</strong>. 사용자 JSON이 그대로 쿼리 자리에 들어가면 값이 아니라 <strong>연산자</strong>로 해석된다. 방어는 <strong>타입을 못 박는 것</strong>이다.</li>
+  <li>셸은 <a href="S1 프론트엔드 보안 기초.html">S1</a>·<a href="S3 인젝션 방어.html">S3</a>가 이미 답을 줬다(명령/인자 배열 분리). 그런데 <strong>분리 이후에도 경계가 하나 더 남는다</strong> — 인자 벡터 안에서 프로그램이 다시 <em>옵션(코드)</em>과 <em>피연산자(데이터)</em>를 가른다. 이것이 옵션 주입(option injection)이다.</li>
+  <li>LDAP·XPath의 교훈은 다르다: <strong>안전 API가 없는 게 아니라, 눈에 안 띌 뿐</strong>이다(예: 필터 자리표시자, XPath 변수 바인딩). 인젝션 방어 실무의 절반은 <strong>"이 해석기의 채널 분리 수단이 무엇인가"를 찾아내는 일</strong>이다.</li>
+  <li>S3의 한 문장("나눌 수 있으면 바인딩, 없으면 허용 목록")을 <strong>3단 사다리</strong>로 확장한다: ① 채널 분리 API → ② 맥락별 공식 이스케이프 API → ③ 허용 목록·타입 통제.</li>
+</ul>
+
+<h2>1. S3가 멈춘 자리에서 시작한다</h2>
+<p>
+<a href="S3 인젝션 방어.html">S3</a>의 결론은 명료했다. 쿼리의 <em>골격(코드)</em>을 먼저 확정하고 <em>값(데이터)</em>을 별도 채널로 넘기면, 값이 아무리 SQL처럼 생겨도 문법으로 해석될 통로가 없다. 그리고 나눌 채널이 없는 자리(정렬 컬럼 이름, 리다이렉트 목적지)에서는 허용 목록(allowlist)으로 값을 좁혔다.
+</p>
+<p>
+문제는 현장의 해석기가 SQL만이 아니라는 것이다. 그리고 다른 해석기로 넘어가면 <strong>S3의 전제 세 가지가 하나씩 무너진다</strong>.
+</p>
+<table>
+  <tr><th>S3(SQL)의 전제</th><th>다른 해석기에서 무너지는 방식</th><th>이 문서에서 다루는 곳</th></tr>
+  <tr><td>위험은 <strong>문자열 조립</strong>에서 온다</td><td>문서 DB엔 조립할 문자열이 없다 — 쿼리가 객체다. 위험은 <strong>구조가 통째로 주입</strong>되는 데서 온다</td><td>2절</td></tr>
+  <tr><td>채널을 나누면 <strong>끝난다</strong></td><td>셸은 나눠도 끝나지 않는다 — 인자 벡터 <strong>안쪽에 경계가 하나 더</strong> 있다</td><td>3절</td></tr>
+  <tr><td>바인딩 API는 <strong>당연히 있다</strong></td><td>LDAP·XPath는 없어 보인다. 실은 <strong>있는데 안 알려져 있다</strong></td><td>4절</td></tr>
+</table>
+<p>
+그래서 이 문서의 질문은 "또 어떤 인젝션이 있나"가 아니다. <strong>새 해석기를 만났을 때, 그 해석기의 안전 API를 어떻게 찾아내고 무엇이 남는 책임인지 어떻게 판단하는가</strong>다. 세 사례를 지나면 5절에서 하나의 판단 사다리로 수렴한다.
+</p>
+
+<h2>2. 문서 DB — 문자열이 아니라 구조가 주입된다</h2>
+<p>
+문서 데이터베이스(document database)의 쿼리는 문자열이 아니라 <strong>구조체(문서·객체)</strong>다. 이름을 찾는 조회는 대략 <code>{ username: "alice" }</code> 같은 모양이다. 이어붙일 문자열이 없으니 SQL 인젝션은 원리적으로 성립하지 않는다 — 여기까지가 흔히 듣는 "NoSQL은 인젝션이 없다"는 말의 근거다.
+</p>
+<p>
+그런데 이 쿼리의 <strong>값 자리</strong>에 사용자가 보낸 것을 그대로 꽂으면 이야기가 달라진다. 웹 프레임워크는 요청 본문의 JSON을 <strong>자동으로 객체로 되살려서</strong> 넘겨 준다. 사용자가 문자열 대신 <em>객체</em>를 보내면, 값 자리에 객체가 앉고 — 문서 DB는 그 객체를 <strong>연산자(operator)로 해석</strong>한다.
+</p>
+<div class="flow">개발자 의도:  { username: "alice", password: "1234" }        ← 값은 "데이터"
+공격자 입력:  {"username":"admin","password":{"$gt":""}}
+DB가 본 것:   { username: "admin", password: { $gt: "" } }   ← 구조가 "코드"로 승격
+             → "빈 문자열보다 큰 모든 비밀번호" = 항상 참 → 인증 우회</div>
+<p>
+승격된 것이 <em>문법</em>이 아니라 <strong>구조</strong>라는 점이 핵심이다. 공격자는 따옴표를 넣지 않았다. 그저 <strong>타입을 바꿔서</strong> 보냈을 뿐이다 — 문자열이 있어야 할 자리에 객체를. 그러니 따옴표 이스케이프도, 파라미터 바인딩도 여기선 방어가 아니다. <strong>지켜야 할 것은 문법 경계가 아니라 타입 경계</strong>다.
+</p>
+<table>
+  <tr><th>주입 형태</th><th>수법</th><th>결과</th></tr>
+  <tr><td>비교 연산자 주입</td><td>값 자리에 <code>{"$gt":""}</code>·<code>{"$ne":null}</code> 같은 조건 객체</td><td>조건이 항상 참 → 인증 우회·전체 조회</td></tr>
+  <tr><td>정규식 주입</td><td>값 자리에 정규식 연산자 객체</td><td>비밀번호 한 글자씩 추론(블라인드 유출)·백트래킹 폭주로 서비스 거부</td></tr>
+  <tr><td>서버 사이드 코드 실행</td><td>서버에서 JS 표현식을 평가하는 연산자 계열(<code>$where</code> 등)에 값 삽입</td><td>진짜 코드 실행 — <a href="S1 프론트엔드 보안 기초.html">S1</a>의 <code>eval</code> 문제가 DB 안에서 재현</td></tr>
+</table>
+<p>방어는 세 겹이다. 순서가 중요하다 — 앞의 것이 실패해도 뒤가 받도록.</p>
+<ul>
+  <li><strong>타입 못 박기(첫 겹).</strong> 쿼리에 넣기 전에 값이 <em>문자열인지</em> 확인하거나 문자열로 강제 변환한다. 객체가 값 자리에 앉지 못하면 연산자 주입은 그 자리에서 끝난다.</li>
+  <li><strong>스키마 검증(둘째 겹).</strong> 경계에서 요청 본문 전체를 스키마로 검증한다 — 필드마다 타입·형식을 선언해 두면 "객체가 온 것"을 개별 코드가 기억하지 않아도 걸러진다. 값이 아니라 <strong>구조 전체</strong>를 통제하는 층이다.</li>
+  <li><strong>연산자 표면 축소(셋째 겹).</strong> 사용자 유래 키가 <code>$</code>로 시작하지 못하게 거르고, 서버 사이드 JS 평가 연산자는 기능 자체를 쓰지 않는다(꼭 필요하면 사용자 값이 절대 닿지 않게).</li>
+</ul>
+<blockquote class="warn">
+<p><strong>"ODM/타입스크립트를 쓰니 타입은 보장된다" — 런타임엔 보장이 없다.</strong> 타입 선언은 컴파일 시점의 약속이고, 요청 본문은 <em>런타임</em>에 들어온다 — <code>string</code>으로 선언한 변수에 객체가 들어앉는 일은 얼마든지 일어난다. ODM의 자동 캐스팅도 스키마가 걸린 경로에서만 작동하며, 조건 객체를 그대로 받는 API에는 적용되지 않을 수 있다. <strong>런타임 검증(스키마)만이 런타임 입력을 막는다.</strong></p>
+</blockquote>
+<blockquote class="info">
+<p><strong>왜 이 사고는 앱 계층에서 이미 끝나 있나.</strong> SQL에선 값이 드라이버까지 문자열로 갔고, 드라이버가 채널을 나눠 줄 기회가 있었다. 문서 DB에선 <strong>역직렬화(JSON→객체)가 앱 계층에서, 사용자 입력에 대해, 드라이버가 보기도 전에</strong> 일어난다 — 코드 채널과 데이터 채널이 드라이버에 닿기 전에 이미 합쳐진 것이다. 그래서 방어 지점도 드라이버가 아니라 <strong>역직렬화 직후의 경계</strong>여야 한다. 신뢰할 수 없는 바이트를 구조로 되살리는 일이 왜 그 자체로 보안 경계인지는 <a href="C10 직렬화와 역직렬화.html">C10</a>과 이어진다.</p>
+</blockquote>
+
+<h2>3. 셸·프로세스 — 채널을 나눈 다음에도 남는 경계</h2>
+<p>
+<a href="S1 프론트엔드 보안 기초.html">S1</a>과 <a href="S3 인젝션 방어.html">S3</a>가 이미 답을 줬다: 명령 문자열을 조립해 셸에 넘기지 말고, <strong>명령과 인자를 배열로 분리</strong>해 셸 해석 자체를 생략한다. 그러면 입력 속 <code>;</code>·<code>|</code>·<code>&amp;&amp;</code>는 그냥 글자가 된다. 여기까지는 복습이다.
+</p>
+<p>
+이 문서의 질문은 그다음이다 — <strong>배열로 나눴는데도 왜 여전히 뚫리는가?</strong> 답은 경계가 <strong>한 겹 더 있기</strong> 때문이다. 셸의 해석에서 벗어난 인자 벡터는 이제 <strong>대상 프로그램 자신</strong>에게 넘어가고, 그 프로그램은 받은 인자들을 다시 <em>옵션(코드)</em>과 <em>피연산자(데이터)</em>로 가른다. 즉, <strong>같은 코드/데이터 경계가 한 단계 아래에서 반복된다</strong>.
+</p>
+<div class="flow">셸 경계 통과:  ["fetch-tool", "https://user.example"]   ← 배열 분리 → ; | && 무력화
+그러나:        ["fetch-tool", "-o", "/some/path"]        ← 값이 "-"로 시작하면?
+프로그램이 본 것: 옵션 하나 + 그 값                        ← 데이터가 "옵션"으로 승격</div>
+<p>
+사용자가 URL·파일명·검색어 자리에 <code>-</code>나 <code>--</code>로 시작하는 값을 넣으면, 대상 프로그램은 그것을 데이터가 아니라 <strong>자기 옵션</strong>으로 읽는다. 옵션 중에는 파일을 쓰는 것, 외부 명령을 실행하는 것, 설정을 갈아끼우는 것이 흔하다 — 셸을 거치지 않고도 임의 파일 쓰기나 명령 실행에 도달할 수 있다. 이것이 옵션 주입(option injection, 인자 주입)이다.
+</p>
+<p>방어는 이 경계의 성격에 맞춘다 — 여기엔 나눌 채널이 없으므로(옵션과 피연산자는 같은 배열에 산다), <strong>값의 형태를 통제</strong>한다.</p>
+<ul>
+  <li><strong>옵션 종료자 <code>--</code>.</strong> 대부분의 CLI 규약에서 <code>--</code> 이후의 인자는 옵션 해석을 하지 않고 전부 피연산자로 취급한다. 사용자 값 앞에 <code>--</code>를 두는 것이 1차 방어다(대상 프로그램이 이 규약을 지키는지 확인 필요).</li>
+  <li><strong>형태 검증.</strong> 값이 <code>-</code>로 시작하지 않는지, 기대 형식(URL·숫자·파일명 패턴)에 맞는지 확인한다. 파일 경로라면 <code>./</code>를 붙여 옵션처럼 보이지 않게 하는 것도 관용구다.</li>
+  <li><strong>허용 목록.</strong> 값의 후보가 유한하다면(<a href="S3 인젝션 방어.html">S3</a>의 정렬 컬럼과 같은 상황) 목록에 있는 것만 통과시킨다.</li>
+</ul>
+<blockquote class="warn">
+<p><strong>셸을 안 썼다고 안심할 수 없는 또 다른 이유들.</strong>
+① <strong>간접 셸 호출</strong> — 어떤 API는 문자열을 받으면 조용히 셸을 띄우고, 배열을 받으면 안 띄운다. "셸 옵션을 켰는가"가 아니라 <em>이 호출이 실제로 셸을 경유하는가</em>를 문서에서 확인해야 한다.
+② <strong>이름 해석</strong> — 명령을 절대 경로 없이 이름만으로 실행하면 무엇이 실행될지는 <code>PATH</code>가 정한다. 자식 프로세스의 환경변수를 사용자 입력으로 채우는 것도 같은 부류의 승격이다.
+③ <strong>순진한 토큰 분리</strong> — 문자열을 받아 공백으로 잘라 배열을 만드는 API는 셸 메타문자는 막아도 <em>옵션 주입은 그대로 통과</em>시킨다. 따옴표 처리도 기대와 다르다.</p>
+</blockquote>
+
+<h2>4. LDAP·XPath — 방어의 절반은 안전 API를 찾는 일</h2>
+<p>
+디렉터리 조회(LDAP)와 XML 조회(XPath)는 흔히 "바인딩이 없는 세계"로 소개된다. 필터·식(expression)을 문자열로 조립하는 예제가 압도적으로 많기 때문이다. 그리고 조립하면 <a href="S3 인젝션 방어.html">S3</a>가 보여 준 일이 똑같이 일어난다.
+</p>
+<div class="flow">개발자 의도:  (&(uid=[입력])(objectClass=person))
+공격자 입력:  *)(uid=*))(|(uid=*
+LDAP이 본 것: (&(uid=*)(uid=*))(|(uid=*)(objectClass=person))  ← 필터 구조가 재작성됨</div>
+<p>
+그런데 "바인딩이 없다"는 통념은 <strong>대체로 틀렸다</strong>. 두 해석기 모두 채널 분리 수단을 가지고 있다 — 단지 예제와 검색 결과에 잘 등장하지 않을 뿐이다.
+</p>
+<ul>
+  <li><strong>XPath에는 변수 바인딩이 있다.</strong> 식 안에 <code>$name</code> 같은 <strong>변수</strong>를 쓰고, 값은 변수 해석기(variable resolver)로 따로 공급한다. 값은 식 문법으로 파싱되지 않는다 — <a href="S3 인젝션 방어.html">S3</a>의 자리표시자와 정확히 같은 구조다.</li>
+  <li><strong>LDAP에는 필터 자리표시자를 제공하는 API가 있다.</strong> 필터 문자열에 <code>{0}</code> 같은 자리를 두고 값을 배열로 넘기면, 라이브러리가 값을 필터 문법에서 무해하게 만들어 끼워 넣는다(7.2에서 Java 사례로 확인).</li>
+  <li><strong>그래도 조립해야 한다면, 이스케이프는 반드시 라이브러리 것으로.</strong> 그리고 여기서 <a href="S1 프론트엔드 보안 기초.html">S1</a>의 교훈이 되돌아온다 — <strong>맥락마다 규칙이 다르다</strong>. LDAP은 같은 값이라도 <em>검색 필터</em>에 넣을 때와 <em>식별명(DN)</em>에 넣을 때 이스케이프해야 할 문자 집합이 서로 다르다. 필터용 이스케이프를 DN에 쓰면 방어가 성립하지 않는다.</li>
+</ul>
+<blockquote class="info">
+<p><strong>이 절의 진짜 교훈.</strong> "LDAP엔 바인딩이 없다"는 문장은 <em>해석기의 사실</em>이 아니라 <em>내가 아직 못 찾았다는 사실</em>이었다. 낯선 해석기(템플릿 엔진, 검색 엔진 질의, 그래프 질의…)를 만났을 때 첫 작업은 코드 작성이 아니라 <strong>문서에서 채널 분리 수단을 찾는 것</strong>이다 — 자리표시자·변수·인자 배열·타입 API 중 무엇으로 불리든. 찾지 못했다면 그때 비로소 이스케이프·허용 목록으로 내려간다.</p>
+</blockquote>
+
+<h2>5. 종합 — 해석기별 안전 API 3단 사다리</h2>
+<p>
+지금까지 본 것을 하나의 판단 절차로 접는다. <a href="S3 인젝션 방어.html">S3</a>의 <strong>"나눌 수 있으면 바인딩, 나눌 수 없으면 허용 목록"</strong>이 이 사다리의 1단과 3단이었고, 이 문서는 그 사이에 2단을 끼우고 각 단에 <strong>남는 책임</strong>을 붙인다.
+</p>
+<ol>
+  <li><strong>채널 분리 API가 있는가?</strong> → 있으면 그것을 쓴다(파라미터 바인딩, 인자 배열, XPath 변수, 필터 자리표시자). 없다고 단정하기 전에 문서를 찾는다(4절).</li>
+  <li><strong>없다면, 맥락별 공식 이스케이프 API가 있는가?</strong> → 라이브러리가 제공하는 것을 <em>맥락에 맞게</em> 쓴다. 직접 만들지 않는다 — 수제 이스케이프는 우회 사례가 축적된 실패 장르다(<a href="S3 인젝션 방어.html">S3</a>·<a href="S1 프론트엔드 보안 기초.html">S1</a>과 동일한 결론).</li>
+  <li><strong>그것도 없거나, 값 자체가 결정이라면?</strong> → 허용 목록·타입·형태로 값을 좁힌다(문서 DB의 타입 못 박기, 옵션 주입의 <code>--</code>·형태 검증, <a href="S3 인젝션 방어.html">S3</a>의 정렬 컬럼과 리다이렉트 목적지).</li>
+</ol>
+<p>그리고 <strong>1단을 통과했다고 끝이 아니다</strong> — 각 해석기에는 분리 이후에도 남는 책임이 있다. 이 표가 이 문서의 한 장 요약이다.</p>
+<table>
+  <tr><th>해석기</th><th>승격되는 것</th><th>채널 분리 수단</th><th>분리 후에도 남는 책임</th></tr>
+  <tr><td>SQL (<a href="S3 인젝션 방어.html">S3</a>)</td><td>쿼리 <strong>문법</strong></td><td>파라미터 바인딩</td><td>식별자(테이블·컬럼·정렬)는 허용 목록</td></tr>
+  <tr><td>문서 DB (2절)</td><td>쿼리 <strong>구조</strong>(연산자 객체)</td><td>없음 — 쿼리가 이미 객체</td><td>타입 못 박기·스키마 검증·<code>$</code> 키와 서버 JS 평가 연산자 차단</td></tr>
+  <tr><td>셸·프로세스 (3절)</td><td>명령 <strong>문법</strong> → 그다음 <strong>옵션</strong></td><td>명령/인자 배열 분리</td><td>옵션 주입 → <code>--</code>·값 형태 검증, 간접 셸 호출·<code>PATH</code>·환경변수</td></tr>
+  <tr><td>LDAP (4절)</td><td>필터 <strong>구조</strong></td><td>필터 자리표시자 API(있는 라이브러리)</td><td>필터 vs DN — <strong>맥락별로 다른 이스케이프</strong></td></tr>
+  <tr><td>XPath (4절)</td><td>식 <strong>문법</strong></td><td>변수 바인딩(변수 해석기)</td><td>노드 경로 자체를 사용자가 고르면 허용 목록</td></tr>
+  <tr><td>URL 목적지 (<a href="S3 인젝션 방어.html">S3</a>)</td><td>값이 곧 <strong>결정</strong></td><td>없음 — 해석기가 없음</td><td>스킴·호스트 허용 목록, 불투명 키→서버 번역</td></tr>
+</table>
+
+<h2>6. 흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"NoSQL은 SQL이 아니니 인젝션이 없다" — 표면이 바뀐 것뿐이다.</strong> 문법 대신 <strong>구조</strong>가 승격된다. 따옴표가 없다고 안전한 게 아니라, 애초에 따옴표가 필요 없는 공격이다.</li>
+  <li><strong>"셸을 안 쓰면 명령 인젝션은 끝" — 한 겹만 끝났다.</strong> 배열 분리는 셸 메타문자를 무력화하지만, 대상 프로그램의 <strong>옵션 파싱</strong>은 그대로 남는다. <code>;</code>가 안 통한다고 <code>-o</code>가 안 통하는 건 아니다.</li>
+  <li><strong>"이스케이프 함수를 쓰니 LDAP은 안전하다" — 맥락이 맞아야 안전하다.</strong> 필터용과 DN용은 규칙이 다르다. <a href="S1 프론트엔드 보안 기초.html">S1</a>의 "출력 맥락마다 승격 문자가 다르다"가 그대로 반복된다 — 맥락을 틀린 이스케이프는 이스케이프가 아니다.</li>
+  <li><strong>"입력 검증으로 다 막는다" — 여전히 역할이 다르다.</strong> <a href="S3 인젝션 방어.html">S3</a>와 같다. 다만 이 문서의 세계에서는 검증의 <em>비중이 커진다</em> — 1단(분리)이 불가능한 자리가 많기 때문이다. 비중이 커진 것이지 역할이 바뀐 것은 아니다.</li>
+  <li><strong>"라이브러리가 알아서 해 주겠지" — 어느 <em>경로</em>에서 해 주는지가 기준.</strong> ODM의 캐스팅은 스키마가 걸린 경로에서만, 드라이버의 이스케이프는 자리표시자 오버로드를 쓸 때만 작동한다. <a href="S3 인젝션 방어.html">S3</a>의 "ORM이 아니라 값이 바인딩 채널로 가는가가 기준"과 같은 판단이다.</li>
+</ul>
+
+<h2>★ 7. 언어별 대조</h2>
+<p>
+이 문서의 해석기들은 언어마다 손에 잡히는 모습이 다르다 — JS·TS는 구조 주입이 일상 표면이고, Java는 안전 API가 있는데 안 보이는 전형이며, Python·C++는 프로세스 실행 쪽에 무게가 실린다. 원리(3단 사다리)는 그대로 반복된다.
+</p>
+<table>
+  <tr><th>언어/환경</th><th>대표 승격 표면</th><th>표준 방어</th></tr>
+  <tr><td>Java</td><td>LDAP 필터·XPath 식을 문자열로 조립</td><td>필터 자리표시자 오버로드·XPath 변수 해석기(아래 심화)</td></tr>
+  <tr><td>JS·TS</td><td>요청 본문 객체가 그대로 쿼리 구조로 들어감</td><td>타입 못 박기·스키마 검증·연산자 키 차단(아래 심화)</td></tr>
+  <tr><td>Python</td><td>문자열로 프로세스 실행·필터 조립</td><td>인자 리스트 실행·XPath 변수 인자·라이브러리 이스케이프 함수</td></tr>
+  <tr><td>C++</td><td>인자 배열로 나눈 뒤 남는 옵션 주입</td><td><code>--</code> 종료자·값 형태 검증·허용 목록</td></tr>
+</table>
+
+<h3>7.1 JS·TS — 쿼리가 객체인 세계의 타입 규율</h3>
+<p>
+JS 생태계에서 이 사고가 잦은 이유는 구조적이다 — JSON과 객체의 경계가 거의 없어서, 요청 본문이 <strong>아무 마찰 없이</strong> 쿼리 구조 자리까지 흘러간다. 방어는 그 흐름에 <strong>타입 관문</strong>을 세우는 것이다.
+</p>
+<pre><code>// 취약: body.password가 문자열이라는 보장이 없다
+//        {"password":{"$gt":""}} 가 오면 값이 아니라 '조건'이 된다
+const user = await users.findOne({ username: body.username, password: body.password });
+
+// 안전 1 — 타입 못 박기: 객체가 값 자리에 앉지 못하게
+if (typeof body.username !== "string" || typeof body.password !== "string") {
+  return res.status(400).json({ error: "invalid input" });
+}
+
+// 안전 2 — 스키마 검증(경계에서 구조 전체를 통제): 개별 코드가 기억하지 않아도 걸러짐
+const { username, password } = schema.parse(body);   // 타입 불일치면 여기서 거부
+const user = await users.findOne({ username, password });
+</code></pre>
+<p>
+<code>JS·TS 관점의 통찰: TypeScript의 string 선언은 컴파일 시점의 약속일 뿐, 요청 본문은 런타임에 들어온다 — 타입 시스템은 이 공격을 막지 못한다(막는 것처럼 느껴지는 것이 더 위험하다). 그래서 이 세계의 "바인딩"에 해당하는 규율은 런타임 스키마 검증이다: 신뢰 경계를 넘어온 구조를 한 곳에서 검증해 안쪽으로는 타입이 참이 되게 만드는 것. S3에서 값이 드라이버 앞에서 채널을 갈랐다면, 여기서는 값이 앱에 들어오는 문턱에서 갈린다.</code>
+</p>
+
+<h3>7.2 Java — 안전 API를 찾아라</h3>
+<p>
+Java는 4절의 교훈이 가장 선명한 언어다. LDAP·XPath 모두 <strong>표준 라이브러리에 채널 분리 수단이 이미 있는데</strong>, 예제는 대개 문자열 조립으로 쓰여 있다.
+</p>
+<pre><code>// 취약: 값이 필터 구조로 승격
+String filter = "(&(uid=" + user + ")(objectClass=person))";
+ctx.search(base, filter, controls);
+
+// 안전: 자리표시자 오버로드 — 값은 별도 배열로, 라이브러리가 필터 문법에서 무해화
+ctx.search(base, "(&(uid={0})(objectClass=person))", new Object[]{ user }, controls);
+
+// XPath도 문자열 조립 대신 '변수'가 있다
+XPath xp = XPathFactory.newInstance().newXPath();
+xp.setXPathVariableResolver(v -> "name".equals(v.getLocalPart()) ? user : null);
+xp.evaluate("//user[name/text()=$name]", doc);   // 값은 식 문법으로 파싱되지 않음
+</code></pre>
+<p>
+<code>Java 관점의 통찰: 두 API의 공통점은 "값을 식 문자열 바깥으로 빼낸다"는 것 — PreparedStatement의 ?와 완전히 같은 발상이 이름만 바꿔 존재한다. 그런데 왜 잘 안 쓰이나? 검색해 나오는 예제가 조립본이고, 조립본도 평상시엔 잘 동작하기 때문이다. 그래서 실무 규율은 이렇게 세운다: 새 해석기를 붙일 때 "이 API의 자리표시자/변수는 무엇인가"를 먼저 문서에서 확인하고, 없을 때만 이스케이프로 내려간다. 값이 식 문자열 안에 있으면 일단 의심한다 — 이것이 코드 리뷰에서 인젝션을 잡는 가장 빠른 눈이다.</code>
+</p>
+
+<h3>7.3 Python / C++ — 한 줄 요약</h3>
+<p>
+Python은 프로세스 실행에서 "문자열이냐 리스트냐"가 곧 셸 경유 여부의 선택이다 — 인자를 <strong>리스트로 넘기고 셸을 쓰지 않는 것</strong>이 기본이며, 그다음 남는 것은 3절의 옵션 주입이다. XPath는 라이브러리에 따라 <strong>변수 인자</strong>를 지원하고, LDAP 라이브러리는 <strong>필터 이스케이프 함수</strong>를 제공한다 — 직접 만들지 않는다.
+C++는 인자 배열 분리(<a href="S1 프론트엔드 보안 기초.html">S1</a>·<a href="S3 인젝션 방어.html">S3</a>에서 다룸)로 셸 경계를 넘은 <em>다음</em>이 이 문서의 몫이다: 사용자 값이 <code>-</code>로 시작할 수 있는 모든 자리에 <code>--</code> 종료자와 형태 검증을 붙이고, 명령은 절대 경로로 지정해 <code>PATH</code> 의존을 없앤다.
+</p>
+
+<h2>8. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>서버 사이드 템플릿 인젝션(SSTI)</strong> — 사용자 값이 템플릿 <em>본문</em>에 들어가면 템플릿 엔진이 해석기가 된다. "값을 템플릿에 넣기"와 "값으로 템플릿을 만들기"의 차이가 생사를 가른다.</li>
+  <li><strong>헤더·로그 인젝션</strong> — 개행 문자가 승격되는 세계. 응답 헤더 분리, 로그 위조가 여기서 나온다. 승격 문자가 <code>'</code>도 <code>&lt;</code>도 아닌 <code>\n</code>일 뿐, 구조는 같다.</li>
+  <li><strong>XXE(XML 외부 개체)</strong> — XPath와 이웃한 XML 표면. 파서 설정 하나로 파일 읽기·요청 위조가 열린다. 방어는 파서의 외부 개체 처리 비활성화.</li>
+  <li><strong>안전한 역직렬화</strong> — 2절의 뿌리. 신뢰할 수 없는 바이트를 구조·객체로 되살리는 지점이 왜 경계인지는 <a href="C10 직렬화와 역직렬화.html">C10</a>에서 다룬다.</li>
+  <li><strong>최소 권한 원칙</strong> — DB 계정·프로세스 계정의 권한이 좁으면 1~3단이 모두 뚫려도 피해 반경이 줄어든다(심층 방어).</li>
+</ul>
+
+<h2>9. 한 장 요약</h2>
+<ul>
+  <li>병은 하나(<strong>데이터의 코드 승격</strong>), 해석기가 바뀌면 <strong>승격되는 대상</strong>이 바뀐다 — SQL은 문법, 문서 DB는 <strong>구조</strong>, 셸은 문법 그다음 <strong>옵션</strong>.</li>
+  <li>문서 DB: 이어붙일 문자열이 없어 바인딩 개념이 없다. 사용자 객체가 값 자리에 앉으면 <strong>연산자</strong>가 된다 → 타입 못 박기 · 스키마 검증 · 연산자 표면 축소.</li>
+  <li>셸: 인자 배열 분리는 <strong>첫 겹</strong>일 뿐 — 인자 벡터 안에서 옵션/피연산자 경계가 반복된다 → <code>--</code> 종료자 · 값 형태 검증 · 절대 경로.</li>
+  <li>LDAP·XPath: "바인딩이 없다"는 대개 <strong>못 찾은 것</strong>이다 → 자리표시자·변수 먼저, 없을 때만 <strong>맥락별</strong> 라이브러리 이스케이프(필터 ≠ DN).</li>
+  <li><strong>3단 사다리</strong>: ① 채널 분리 API → ② 맥락별 공식 이스케이프 API → ③ 허용 목록·타입·형태 통제. 그리고 <strong>1단을 써도 남는 책임</strong>이 해석기마다 있다(5절 표).</li>
+  <li>새 해석기를 만났을 때의 첫 작업은 코딩이 아니라 <strong>그 해석기의 안전 API를 문서에서 찾는 일</strong>이다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="S3 인젝션 방어.html">S3 인젝션 방어.html</a> — 선수 문서. 인젝션의 원리와 바인딩이 있는 세계(SQL), 이 문서가 확장하는 "나눌 수 있으면 바인딩, 없으면 허용 목록"의 출처</li>
+  <li><a href="S1 프론트엔드 보안 기초.html">S1 프론트엔드 보안 기초.html</a> — 같은 원리의 브라우저판: XSS와 출력 이스케이프, "맥락마다 규칙이 다르다"의 출처</li>
+</ul>
+
+</body>
+</html>

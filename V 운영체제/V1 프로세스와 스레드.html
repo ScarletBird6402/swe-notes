@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>V1 프로세스와 스레드</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote { margin: 16px 0; padding: 12px 16px; border-radius: 6px; border-left: 4px solid; }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+    padding: 14px; text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0; white-space: pre; overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>V1 프로세스와 스레드</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>프로세스는 <strong>격리의 단위</strong>, 스레드는 <strong>실행의 단위</strong>다. 프로세스는 자기만의 주소 공간(address space)을 갖고, 스레드는 한 프로세스 안에서 그 공간을 공유하는 실행 흐름이다.</li>
+  <li>격리와 공유는 맞바꿈이다: 프로세스끼리는 서로를 망가뜨릴 수 없지만 대화가 비싸고, 스레드끼리는 대화가 공짜지만 서로를 망가뜨릴 수 있다.</li>
+  <li>컨텍스트 스위치는 CPU가 실행 흐름을 갈아타는 비용이다 — 레지스터 저장·복원이라는 명시적 비용보다, <strong>캐시·TLB가 식는 간접 비용</strong>이 대개 더 크다.</li>
+  <li>프로세스 간 통신(inter-process communication, IPC)은 격리를 유지한 채 대화하는 통로들이다 — 파이프·소켓·공유 메모리, 각각 편의성과 성능을 다르게 판다.</li>
+  <li>"스레드를 늘리면 빨라진다"는 조건부로만 참이다: CPU 코어 수, 작업의 성격(계산 vs 대기), 공유 상태의 경합이 상한을 정한다.</li>
+  <li>웹 개발자의 매일에 이 개념이 숨어 있다: 요청당 스레드 서버, 커넥션 풀 크기, Node의 단일 스레드, Python 워커 프로세스 수 — 전부 이 문서의 응용이다.</li>
+</ul>
+
+<h2>1. 프로그램, 프로세스, 스레드 — 세 개의 층</h2>
+<p>
+디스크에 있는 실행 파일은 <strong>프로그램</strong>(정적인 코드와 데이터)이다. 운영체제가 그것을 메모리에 올리고 실행 자원을 붙이면 <strong>프로세스</strong>(살아있는 인스턴스)가 된다.
+같은 프로그램을 두 번 실행하면 프로세스 두 개 — 같은 악보로 연주되는 별개의 공연이다.
+</p>
+<p>
+프로세스 안에서 실제로 명령을 한 줄씩 실행해 나가는 흐름이 <strong>스레드</strong>다. 모든 프로세스는 최소 한 개의 스레드를 가지며(main), 여러 개를 만들면 한 프로세스 안에서 여러 흐름이 동시에 진행된다.
+</p>
+<div class="flow">프로그램(디스크의 파일)
+   └─ 실행 → 프로세스 (주소 공간 + 자원 + 스레드들)
+                ├─ 스레드 1 (자기 스택·레지스터)   ┐
+                ├─ 스레드 2 (자기 스택·레지스터)   ├─ 코드·힙·전역은 공유
+                └─ 스레드 3 (자기 스택·레지스터)   ┘</div>
+
+<h2>2. 주소 공간 — 격리의 실체</h2>
+<p>
+각 프로세스는 "0번지부터 시작하는 나만의 메모리 세계"를 본다. 이것이 주소 공간이다.
+프로세스 A의 1000번지와 B의 1000번지는 이름만 같을 뿐 물리적으로 다른 곳이며, 이 변환(가상→물리)은 운영체제와 하드웨어가 수행한다 — 그 기제(가상 메모리·페이징)는 V2에서 다룬다.
+</p>
+<p>
+여기서 중요한 것은 결과다: <strong>프로세스는 다른 프로세스의 메모리를 우연히라도 읽거나 쓸 수 없다.</strong>
+한 프로세스가 잘못된 포인터로 폭주해도 피해는 자기 세계 안에서 끝난다. 브라우저가 탭마다 프로세스를 쓰는 이유, 워커를 프로세스로 띄운 서버에서 워커 하나가 죽어도 나머지가 사는 이유가 이 격리다.
+</p>
+<blockquote class="info">
+<p>격리는 안전인 동시에 벽이다. 두 프로세스가 협력하려면 벽에 뚫린 공식 통로(IPC, §5)를 써야 하고, 그 통로는 같은 주소 공간 안의 대화보다 항상 비싸다. "격리를 살 것인가, 공유를 살 것인가"가 멀티프로세스 vs 멀티스레드 선택의 본질이다.</p>
+</blockquote>
+
+<h2>3. 스레드 — 같은 세계를 공유하는 흐름들</h2>
+<p>
+한 프로세스의 스레드들은 코드·힙·전역 변수를 <strong>공유</strong>하고, 스택과 레지스터만 각자 갖는다.
+공유 덕에 스레드 간 데이터 전달은 "그냥 같은 변수를 읽으면" 된다 — 복사도, 직렬화도, 커널 개입도 없다. 이것이 스레드의 강점이자 함정의 근원이다.
+</p>
+<p>
+두 스레드가 같은 변수에 동시에 쓰면 결과는 실행 타이밍에 따라 달라진다 — 경쟁 조건(race condition)이다.
+격리가 없으므로 보호는 전적으로 <strong>개발자의 규율</strong>(락·불변성·동기화)에 달리며, 이 주제는 동시성 카테고리(G1)에서 본격적으로 다룬다. 여기서 기억할 것은 구조적 사실 하나다:
+스레드의 위험은 버그가 아니라 <strong>설계의 대가</strong>다. 공유를 공짜로 얻는 대신 안전을 수동으로 구축해야 한다.
+</p>
+
+<h2>4. 컨텍스트 스위치 — 갈아타기의 비용</h2>
+<p>
+CPU 코어는 한 순간에 하나의 흐름만 실행한다. 코어 수보다 많은 스레드가 "동시에" 도는 것처럼 보이는 이유는, 운영체제가 짧은 간격으로 흐름을 갈아태우기 때문이다.
+이 갈아타기가 컨텍스트 스위치이며, 비용은 두 겹이다.
+</p>
+<ul>
+  <li><strong>직접 비용</strong>: 현재 흐름의 레지스터·상태를 저장하고 다음 흐름 것을 복원하는 커널 작업. 마이크로초 단위.</li>
+  <li><strong>간접 비용</strong>: 새 흐름이 시작되면 CPU 캐시와 TLB(가상→물리 주소 변환 결과를 담아 두는 캐시 — 한 줄로: "주소 번역 결과의 캐시")에 이전 흐름의 데이터만 남아 있다. 새 흐름은 한동안 캐시 미스를 연발하며 <em>식은 상태로</em> 달린다. 대개 직접 비용보다 크다.</li>
+</ul>
+<p>
+프로세스 간 스위치는 스레드 간 스위치보다 무겁다 — 주소 공간 자체가 바뀌므로 TLB가 통째로 무효화되기 때문이다.
+"스레드는 가볍다"는 관용구의 실제 의미가 이것이다: 생성도 가볍지만, <strong>갈아타기도 가볍다</strong>.
+</p>
+<blockquote class="warn">
+<p><strong>흔한 함정 — 스레드 수 ∝ 처리량이라는 착각.</strong> 코어가 8개인데 계산 중심 스레드를 800개 만들면, 일은 늘지 않고 컨텍스트 스위치와 캐시 오염만 는다. 스레드 증설이 유효한 것은 흐름 대부분이 <em>대기</em>(I/O·네트워크)하는 작업일 때다 — 기다리는 동안 코어를 다른 흐름에 넘길 수 있기 때문. "이 작업은 CPU를 쓰는가, 기다리는가"가 스레드 설계의 첫 질문이다.</p>
+</blockquote>
+
+<h2>5. IPC — 격리된 세계들의 대화법</h2>
+<table>
+  <tr><th>통로</th><th>모양</th><th>트레이드오프</th></tr>
+  <tr><td>파이프</td><td>한쪽이 쓰고 한쪽이 읽는 바이트 스트림(<code>ls | grep</code>의 <code>|</code>)</td><td>단순·단방향 중심. 부모-자식 등 가까운 사이용</td></tr>
+  <tr><td>소켓</td><td>네트워크 형식의 양방향 채널(같은 머신이면 유닉스 도메인 소켓)</td><td>범용 — 상대가 원격 머신이어도 코드가 같음. 대신 직렬화 필요</td></tr>
+  <tr><td>공유 메모리</td><td>두 프로세스가 합의한 메모리 구간을 함께 매핑</td><td>가장 빠름(복사 없음). 대신 격리를 스스로 뚫은 것이라 동기화 책임이 부활</td></tr>
+  <tr><td>메시지 큐·시그널</td><td>커널이 중개하는 메시지/신호</td><td>구조적이지만 커널 경유 비용</td></tr>
+</table>
+<p>
+공통 패턴을 보라: 편할수록 느리고(소켓 — 직렬화·복사·커널 경유), 빠를수록 스레드의 문제가 돌아온다(공유 메모리 — 경쟁 조건).
+IPC 선택은 결국 "격리를 얼마나 되팔 것인가"의 눈금 조절이다. 그리고 소켓 기반 IPC의 원리를 머신 경계 밖으로 확장하면 그대로 분산 시스템(H 카테고리)이 된다.
+</p>
+
+<h2>6. 흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>동시성(concurrency) vs 병렬성(parallelism).</strong> 동시성은 여러 흐름을 <em>다루는 구조</em>(한 코어에서 번갈아도 성립), 병렬성은 물리적으로 <em>같은 순간에 실행</em>(코어 여러 개 필요). 단일 코어에서도 동시성은 있고 병렬성은 없다.</li>
+  <li><strong>멀티프로세스 vs 멀티스레드는 우열이 아니라 배치다.</strong> 장애 격리·독립 배포가 중요하면 프로세스, 데이터 공유가 잦고 통신 비용이 아까우면 스레드. 실무 서버는 흔히 "프로세스 여러 개 × 각자 스레드 여러 개"로 둘을 섞는다.</li>
+  <li><strong>"메인 스레드가 죽으면?"의 답은 런타임마다 다르다.</strong> 많은 환경에서 프로세스 종료는 그 안의 모든 스레드를 함께 끝낸다 — 스레드는 프로세스라는 세계 안의 존재라서다. 백그라운드 작업을 스레드에 맡겼다면 프로세스 수명 관리가 곧 그 작업의 수명 관리다.</li>
+  <li><strong>조용한 실패 — 다른 스레드의 예외.</strong> 여러 런타임에서 작업 스레드의 처리되지 않은 예외는 메인 흐름에 전파되지 않고 그 스레드만 조용히 끝낸다. "돌고 있는 줄 알았던 스레드가 없다"는 장애의 고전이다.</li>
+</ul>
+
+<h2>★ 7. 언어별 대조</h2>
+<p>
+"스레드"라는 단어는 언어마다 가리키는 실체가 다르다 — OS 스레드에 직결된 언어부터, 스레드를 하나로 제한한 언어, 스레드는 있으되 병렬 계산을 막아 둔 언어까지. 이 차이가 각 생태계의 서버 아키텍처를 결정했다.
+</p>
+<table>
+  <tr><th>언어</th><th>"스레드"의 실체</th><th>병렬 계산</th><th>생태계의 귀결</th></tr>
+  <tr><td>Java</td><td>OS 스레드 1:1(전통) + 경량 가상 스레드(최근)</td><td>가능</td><td>요청당 스레드 서버·스레드 풀 문화</td></tr>
+  <tr><td>JS·TS</td><td>메인은 단일 스레드 + 이벤트 루프. 병렬은 Worker(메모리 비공유)</td><td>Worker로만</td><td>논블로킹 I/O 중심(Node)</td></tr>
+  <tr><td>Python</td><td>OS 스레드지만 GIL로 동시 실행 제한</td><td>스레드로는 불가 → 프로세스로</td><td>워커 프로세스 여러 개 관용구</td></tr>
+  <tr><td>C++</td><td><code>std::thread</code> = OS 스레드 직결</td><td>가능(보호 장치 없음)</td><td>최대 성능·최대 책임</td></tr>
+</table>
+
+<h3>7.1 Python — GIL: 스레드가 있는데 병렬이 안 되는 이유</h3>
+<p>
+전역 인터프리터 락(global interpreter lock, GIL)은 "파이썬 바이트코드를 실행하는 스레드는 한 순간에 하나"라는 인터프리터 수준의 락이다.
+그래서 Python 스레드는 <strong>대기가 많은 작업</strong>(I/O)에는 유효하지만 — 기다리는 동안 GIL을 내려놓으므로 — <strong>계산 작업</strong>은 스레드를 늘려도 한 코어만큼만 나온다.
+계산을 병렬화하려면 프로세스를 늘려야 하며, 이는 이 문서의 원리 그대로다: 프로세스마다 인터프리터와 GIL이 따로 있으므로 격리 비용(직렬화해서 주고받기)을 내고 병렬성을 산다.
+</p>
+<pre><code>from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
+
+def cpu_heavy(n): ...        # 계산 작업
+def fetch(url): ...          # 대기(I/O) 작업
+
+# I/O 대기 → 스레드로 충분 (기다리는 동안 GIL 반납)
+with ThreadPoolExecutor(max_workers=20) as ex:
+    pages = list(ex.map(fetch, urls))
+
+# CPU 계산 → 프로세스로 (격리 비용을 내고 진짜 병렬을 산다)
+with ProcessPoolExecutor(max_workers=8) as ex:
+    results = list(ex.map(cpu_heavy, jobs))
+</code></pre>
+<p>
+<code>Python 관점의 통찰: 두 풀의 API가 똑같다는 점이 교과서적이다 — 코드 모양은 같지만 아래에서는 "공유 메모리의 스레드"와 "직렬화로 대화하는 프로세스"라는 정반대의 배치가 돈다. 인자와 반환값이 pickle로 오간다는 것(= 프로세스 풀에는 직렬화 불가능한 객체를 못 넘긴다)까지 보이면 이 장의 격리 개념을 체득한 것이다.</code>
+</p>
+
+<h3>7.2 C++ — 공유 주소 공간을 맨손으로 만지기</h3>
+<p>
+<code>std::thread</code>는 OS 스레드에 직결되고, 언어는 어떤 보호도 끼워 넣지 않는다. 같은 변수를 두 스레드가 동기화 없이 쓰면 미정의 동작(undefined behavior — 표준이 결과를 정의하지 않아 무엇이 일어나도 이상하지 않은 상태)이다.
+</p>
+<pre><code>#include &lt;thread&gt;
+#include &lt;atomic&gt;
+
+int naive = 0;
+std::atomic&lt;int&gt; safe{0};
+
+void work() {
+    for (int i = 0; i &lt; 100000; ++i) {
+        ++naive;   // 두 스레드가 겹치면 증가 유실 — 경쟁 조건(UB)
+        ++safe;    // 원자적 증가 — 항상 정확
+    }
+}
+int main() {
+    std::thread a(work), b(work);
+    a.join(); b.join();
+    // naive: 200000보다 작을 수 있음 / safe: 정확히 200000
+}
+</code></pre>
+<p>
+<code>C++ 관점의 통찰: ++naive가 깨지는 이유는 그것이 기계 수준에서 "읽기→증가→쓰기" 세 단계이기 때문이다 — 고수준 문법 한 토큰이 원자적이리라는 직관은 하드웨어 앞에서 무너진다. 또한 스레드 생성이 곧 커널 자원 할당이므로, C++ 서버가 스레드 풀을 미리 만들어 재사용하는 것은 취향이 아니라 컨텍스트 스위치·생성 비용에 대한 직접적 대응이다.</code>
+</p>
+
+<h3>7.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java는 스레드·동기화가 언어에 내장된 "정석 멀티스레드" 진영으로, 요청당 스레드와 스레드 풀이 서버 문화의 뼈대다(최근 가상 스레드로 "대기 작업에 스레드가 아깝다"는 문제를 경량화로 풀었다).
+JS·TS는 반대 극단 — 메인 스레드를 하나로 제한하고 대기를 이벤트 루프로 처리해 경쟁 조건 자체를 구조적으로 회피했으며, 진짜 병렬이 필요할 때만 메모리를 공유하지 않는 Worker를 쓴다(사실상 스레드보다 프로세스에 가까운 철학).
+</p>
+
+<h2>8. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>스케줄링</strong> — 누가 다음에 CPU를 받는가: 선점·우선순위·기아. 컨텍스트 스위치의 "언제"를 정하는 규칙(V3).</li>
+  <li><strong>가상 메모리</strong> — 주소 공간이라는 환상을 만드는 기제: 페이징·스와핑(V2).</li>
+  <li><strong>스레드 안전성</strong> — 공유의 대가를 지불하는 기술: 락·불변성·원자성(G1).</li>
+  <li><strong>코루틴·그린 스레드</strong> — OS 스레드 하나 위에 얹는 경량 흐름들. "스레드는 비싸다"에 대한 언어 런타임들의 답.</li>
+  <li><strong>컨테이너와 프로세스</strong> — 컨테이너는 가상 머신이 아니라 격리를 강화한 프로세스다. 이 장의 격리 개념이 곧 컨테이너 이해의 바탕.</li>
+</ul>
+
+<h2>9. 한 장 요약</h2>
+<ul>
+  <li>프로세스 = 주소 공간을 가진 격리 단위, 스레드 = 그 안에서 스택만 따로 갖는 실행 흐름. 격리 ↔ 공유의 맞바꿈이 모든 선택의 축이다.</li>
+  <li>컨텍스트 스위치 비용의 본체는 레지스터 저장이 아니라 캐시·TLB가 식는 것 — 프로세스 간 전환이 더 무거운 이유도 TLB 무효화다.</li>
+  <li>스레드 증설이 유효한 것은 대기 중심 작업뿐. 계산 작업은 코어 수가 상한이다.</li>
+  <li>IPC(파이프·소켓·공유 메모리)는 격리를 되파는 눈금 조절 — 빠를수록 동기화 책임이 부활한다.</li>
+  <li>언어별 "스레드"는 실체가 다르다: Java(OS 1:1), JS(단일+이벤트 루프), Python(GIL — 계산은 프로세스로), C++(맨손의 OS 스레드).</li>
+  <li>작업 스레드의 예외는 조용히 사라질 수 있다 — 스레드의 생사 관찰은 설계 사항이다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="V2 메모리 관리.html">V2 메모리 관리.html</a> — 주소 공간이라는 환상의 구현: 가상 메모리·페이징·스와핑</li>
+  <li><a href="V3 스케줄링.html">V3 스케줄링.html</a> — 컨텍스트 스위치의 "언제": 선점·우선순위·기아</li>
+  <li><a href="G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a> — 공유 상태의 대가를 지불하는 법: 경쟁 조건·불변성</li>
+</ul>
+
+</body>
+</html>

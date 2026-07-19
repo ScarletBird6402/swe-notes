@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E4 격리 수준과 락</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>E4 격리 수준과 락</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>격리 수준(isolation level)은 <a href="E3 트랜잭션 기초와 ACID.html">E3</a>에서 미룬 질문 — <strong>"동시에 도는 트랜잭션들이 서로를 얼마나 볼 수 있는가"</strong> — 에 대한 단계별 답이다. 완벽한 격리(직렬 실행)는 느리므로, DB는 <strong>정확성을 조금씩 팔아 동시성을 사는 다이얼</strong>을 제공한다.</li>
+  <li>다이얼을 낮출 때 새어 나오는 것이 세 가지 <strong>이상현상(anomaly)</strong>이다: 더티 리드(커밋 안 된 값을 봄) · 반복 불가능 읽기(같은 행을 두 번 읽으니 값이 달라짐) · 팬텀 리드(같은 조건을 두 번 조회하니 행이 늘어남).</li>
+  <li>표준 4단계: READ UNCOMMITTED → <strong>READ COMMITTED</strong> → <strong>REPEATABLE READ</strong> → SERIALIZABLE. 실무의 기본값은 가운데 둘 중 하나다(PostgreSQL·Oracle 계열은 READ COMMITTED, MySQL InnoDB는 REPEATABLE READ).</li>
+  <li>격리의 구현 수단은 두 계열이다. <strong>락(lock)</strong>은 "충돌할 것 같으면 기다리게 한다"(비관적), <strong>MVCC</strong>(multi-version concurrency control, 다중 버전 동시성 제어)는 "버전을 여러 개 유지해 읽기는 기다리지 않게 한다". 현대 주류 DB는 <strong>MVCC로 읽기를, 락으로 쓰기를</strong> 다룬다.</li>
+  <li>실무에서 정말 자주 무는 함정은 이상현상 3종보다 <strong>갱신 유실(lost update)</strong> — "읽고-계산하고-쓰기" 사이에 남이 끼어들어 내 갱신이 남의 갱신을 덮는 것 — 이며, 기본 격리 수준은 이를 막아 주지 않는다. 해법은 <code>SELECT ... FOR UPDATE</code>(비관적 락) 또는 버전 컬럼(낙관적 락)이다.</li>
+</ul>
+
+<h2>1. 왜 다이얼인가 — 완벽한 격리는 공짜가 아니다</h2>
+<p>
+E3의 격리성(I)을 문자 그대로 지키는 가장 확실한 방법은 트랜잭션을 <strong>한 번에 하나씩</strong> 실행하는 것이다.
+그러면 이상현상은 원천 봉쇄되지만, 동시 접속 1만의 서비스가 DB 작업을 한 줄로 세우게 된다 — 정확성 100%, 처리량 붕괴.
+</p>
+<p>
+그래서 모든 DB는 반대 방향의 질문을 던진다: <strong>"어떤 종류의 '서로 보임'까지는 허용해도 되는가?"</strong>
+허용할수록 동시성은 오르고, 대신 특정한 이상 결과가 나올 수 있게 된다. 격리 수준이란 이 거래의 <strong>표준화된 눈금</strong>이고,
+눈금을 고르려면 먼저 무엇이 새는지 — 이상현상의 정체 — 를 알아야 한다.
+</p>
+
+<h2>2. 세 가지 이상현상 — 무엇이 새는가</h2>
+<p>
+모두 "트랜잭션 T1이 읽는 도중에 T2가 끼어드는" 구도다. 끼어드는 방식에 따라 세 종류로 나뉜다.
+</p>
+<table>
+  <tr><th>이상현상</th><th>시나리오</th><th>왜 위험한가</th></tr>
+  <tr>
+    <td><strong>더티 리드</strong><br>(dirty read)</td>
+    <td>T2가 잔액을 100→50으로 바꾸고 <em>아직 커밋 전</em>. T1이 50을 읽음. 직후 T2가 롤백.</td>
+    <td>T1은 <strong>세상에 존재한 적 없는 값</strong>으로 판단·계산을 했다. 제안 단계의 값(E3 2절)이 새어 나간 것.</td>
+  </tr>
+  <tr>
+    <td><strong>반복 불가능 읽기</strong><br>(non-repeatable read)</td>
+    <td>T1이 같은 행을 두 번 읽는 사이에, T2가 그 행을 바꾸고 <em>커밋</em>. 두 읽기의 값이 다름.</td>
+    <td>커밋된 값이므로 "가짜"는 아니지만, <strong>한 트랜잭션 안의 논리가 서로 다른 세계를 본다</strong>. 검증 시점과 사용 시점의 값이 달라지는 버그의 형태.</td>
+  </tr>
+  <tr>
+    <td><strong>팬텀 리드</strong><br>(phantom read)</td>
+    <td>T1이 <code>WHERE amount &gt; 100</code>으로 두 번 조회하는 사이에, T2가 <em>조건에 맞는 새 행을 INSERT</em> 후 커밋. 두 번째 조회에 유령 행이 등장.</td>
+    <td>반복 불가능 읽기의 <strong>집합 버전</strong> — 행 <em>값</em>이 아니라 행의 <em>존재</em>가 달라진다. "조건에 맞는 행"은 잠글 대상이 아직 없어서 행 단위 락으로는 못 막는다는 점이 따로 분류되는 이유.</td>
+  </tr>
+</table>
+<blockquote class="info">
+<p><strong>세 현상의 관계:</strong> 심각도 순서이자 포함 관계처럼 읽으면 된다 — "커밋 안 된 값이 보임" ⊃ "커밋된 변경이 중간에 보임(값)" ⊃ "커밋된 변경이 중간에 보임(집합)". 격리 수준의 눈금은 정확히 이 셋을 <strong>바깥쪽부터 하나씩 차단</strong>하는 구조다.</p>
+</blockquote>
+
+<h2>3. 격리 수준 4단계 — 눈금과 현실의 기본값</h2>
+<p>
+2절의 세 현상을 차단 목록으로 삼으면 표준(SQL) 4단계가 그대로 유도된다.
+</p>
+<table>
+  <tr><th>격리 수준</th><th>더티 리드</th><th>반복 불가능 읽기</th><th>팬텀 리드</th><th>메모</th></tr>
+  <tr><td>READ UNCOMMITTED</td><td>발생</td><td>발생</td><td>발생</td><td>사실상 사용 금지 구역. 일부 DB는 지원 자체를 안 함</td></tr>
+  <tr><td><strong>READ COMMITTED</strong></td><td>차단</td><td>발생</td><td>발생</td><td>"커밋된 것만 본다". PostgreSQL·Oracle 계열 기본값</td></tr>
+  <tr><td><strong>REPEATABLE READ</strong></td><td>차단</td><td>차단</td><td>표준상 발생 가능</td><td>"트랜잭션 시작 시점의 스냅샷을 본다". MySQL InnoDB 기본값 (Oracle에는 이 눈금이 없음 — 아래 참조)</td></tr>
+  <tr><td>SERIALIZABLE</td><td>차단</td><td>차단</td><td>차단</td><td>"직렬 실행과 동일한 결과 보장". 충돌 시 대기 또는 에러로 강제</td></tr>
+</table>
+<ul>
+  <li><strong>기본값이 곧 현실이다.</strong> 대부분의 서비스 코드는 DB 기본값 위에서 돈다. 즉 "우리 서비스에서 어떤 이상현상이 가능한가"는 코드가 아니라 <strong>사용 중인 DB의 기본 격리 수준</strong>이 정하고 있다 — 자기 DB의 기본값을 모르는 채 동시성 버그를 추적하는 것은 지도의 축척을 모른 채 길을 찾는 것과 같다.</li>
+  <li><strong>눈금의 지원 범위 자체도 DB마다 다르다.</strong> Oracle은 4단계 중 <strong>READ COMMITTED(기본)와 SERIALIZABLE 둘만</strong> 제공한다 — READ UNCOMMITTED는 MVCC(undo 기반 읽기 일관성) 구조상 더티 리드가 원천적으로 없어 존재 이유가 없고, REPEATABLE READ는 눈금 자체가 없다(트랜잭션 전체의 스냅샷 고정이 필요하면 SERIALIZABLE 또는 읽기 전용 트랜잭션 <code>SET TRANSACTION READ ONLY</code>로 올라간다). "격리 수준을 올리자"는 결정이 DB에 따라 <em>선택지부터</em> 다르다는 뜻이다.</li>
+  <li><strong>표는 표준, 구현은 각색이다.</strong> 예컨대 MySQL InnoDB의 REPEATABLE READ는 갭 락(gap lock — 행 사이의 "틈"까지 잠금)으로 팬텀을 상당 부분 막고, PostgreSQL의 REPEATABLE READ는 스냅샷 방식이라 표준의 표와 거동이 다르다. Oracle의 SERIALIZABLE 역시 엄밀히는 스냅샷 격리에 가까워 직렬화 충돌 시 <code>ORA-08177</code>(cannot serialize access) 에러로 실패시킨다 — 7절 ①의 "재시도 필수"가 에러 번호로 구체화되는 예. <strong>표준 표는 어휘로, 정확한 거동은 사용 DB 문서로</strong> 확인하는 것이 옳은 습관이다.</li>
+</ul>
+<p>
+그런데 "차단"이라는 말은 선언일 뿐, DB가 실제로 <em>무엇을 해서</em> 차단하는가는 별개의 질문이다. 그 구현 수단이 다음 두 절 — 락과 MVCC — 이다.
+</p>
+
+<h2>4. 락 — 기다리게 해서 지킨다</h2>
+<p>
+첫 번째 수단은 고전적이다: <strong>충돌할 수 있는 접근을 줄 세운다.</strong>
+</p>
+<ul>
+  <li><strong>공유 락(shared, S)</strong> — "읽는 중". 여럿이 동시에 잡을 수 있다(읽기끼리는 충돌하지 않으므로).</li>
+  <li><strong>배타 락(exclusive, X)</strong> — "고치는 중". 오직 하나만, 그리고 공유 락과도 공존 불가. UPDATE·DELETE가 대상 행에 잡으며, <strong>커밋/롤백까지 유지</strong>된다 — E3 4절의 "트랜잭션 길이 = 남이 기다리는 시간"의 정체가 바로 이것이다.</li>
+  <li><strong>granularity(입자)</strong> — 행 단위가 기본이지만 상황에 따라 페이지·테이블 단위로 커진다. 입자가 클수록 관리 비용은 줄고 동시성은 죽는다.</li>
+</ul>
+<h3>4.1 데드락 — 줄 세우기의 필연적 부작용</h3>
+<div class="flow">T1: A행 락 확보 ──&gt; B행 락 대기 ─┐
+                                  ├─ 서로가 서로를 기다림 = 영원히 진행 불가
+T2: B행 락 확보 ──&gt; A행 락 대기 ─┘
+
+DB의 처리: 감지 후 한쪽을 강제 롤백(희생자 선정) + 데드락 에러 반환</div>
+<p>
+두 트랜잭션이 <strong>서로 다른 순서로</strong> 같은 자원들을 잡으면 발생한다. 중요한 태도 전환: 데드락 에러는 DB의 오작동이 아니라 <strong>정상적인 충돌 해소 절차</strong>다.
+예방은 "자원을 항상 같은 순서로 잡기"(예: 계좌 이체 시 항상 작은 id부터 잠금), 대응은 <strong>희생된 트랜잭션의 재시도</strong>다 — 재시도해도 안전하려면 트랜잭션이 멱등하게 설계되어야 한다는 점에서 <a href="D2 API 설계 기초.html">D2</a>의 멱등성 논의와 만난다.
+</p>
+
+<h2>5. MVCC — 버전을 여러 개 둬서 기다림을 없앤다</h2>
+<p>
+락만으로 격리를 구현하면 치명적 병목이 남는다: <strong>읽기가 쓰기를 기다리고, 쓰기가 읽기를 기다린다.</strong>
+조회가 대부분인 웹 서비스에서 이 대기는 견딜 수 없으므로, 현대 DB는 두 번째 수단을 발명했다 —
+행을 고칠 때 덮어쓰지 않고 <strong>새 버전을 만들고 옛 버전을 남겨 두는</strong> 것이다.
+</p>
+<div class="flow">잔액 행의 버전 사슬:   [v1: 100, T5가 커밋] ← [v2: 50, T9가 커밋] ← [v3: 30, T12 진행 중·미커밋]
+
+T10(스냅샷 시점: T9 커밋 직후)이 읽으면 → v2(50)를 봄
+  · T12가 고치는 중이어도 기다리지 않는다  (읽기가 쓰기에 안 막힘)
+  · T12의 미커밋 v3은 안 보인다            (더티 리드 원천 차단)
+  · 트랜잭션 내내 같은 스냅샷을 보면        (반복 불가능 읽기·팬텀도 차단 — REPEATABLE READ의 구현)</div>
+<ul>
+  <li><strong>읽기는 스냅샷으로, 쓰기는 여전히 락으로.</strong> MVCC에서도 같은 행을 동시에 <em>고치는</em> 것까지 허용할 수는 없다 — UPDATE끼리는 4절의 배타 락으로 줄을 선다. "읽기 무대기 + 쓰기 직렬화"가 현대 DB의 표준 조합이다.</li>
+  <li><strong>스냅샷의 기준 시점이 격리 수준을 만든다.</strong> 문장마다 새 스냅샷이면 READ COMMITTED(문장 사이에 남의 커밋이 보임), 트랜잭션 시작 시 고정이면 REPEATABLE READ — 3절의 눈금이 MVCC에서는 <strong>스냅샷 갱신 주기</strong>로 구현되는 것이다.</li>
+  <li><strong>공짜는 아니다.</strong> 옛 버전들이 쌓이므로 청소(가비지 수거 — PostgreSQL의 VACUUM 등)가 필요하고, 장수 트랜잭션은 "아직 누가 보고 있을지 모르는" 옛 버전의 청소를 막아 저장 공간·성능을 갉아먹는다 — 트랜잭션을 짧게 하라는 E3의 원칙이 MVCC에서 한 번 더 강화된다.</li>
+</ul>
+
+<h2>6. 실무 선택 — 그리고 다이얼이 못 막아 주는 것</h2>
+<p>
+여기까지로 다이얼(3절)과 그 내부 장치(4·5절)를 확보했다. 실전의 선택은 의외로 단순한 기본형에서 출발한다:
+<strong>DB 기본 격리 수준을 그대로 쓰되, 정말 충돌이 문제 되는 지점만 국소적으로 보강한다.</strong> 보강이 필요한 대표 상황이 갱신 유실이다.
+</p>
+<h3>6.1 갱신 유실(lost update) — 표에 없는 네 번째 문제</h3>
+<pre><code>-- 재고 차감을 "읽고-계산하고-쓰기"로 구현한 경우 (READ COMMITTED에서)
+T1: SELECT stock FROM items WHERE id = 7;   -- 10을 읽음
+T2: SELECT stock FROM items WHERE id = 7;   -- 역시 10을 읽음
+T1: UPDATE items SET stock = 9 WHERE id = 7; COMMIT;   -- 10-1=9
+T2: UPDATE items SET stock = 9 WHERE id = 7; COMMIT;   -- 자기가 읽은 10 기준 10-1=9
+-- 두 건이 팔렸는데 재고는 1만 줄었다: T1의 갱신이 유실됨</code></pre>
+<p>
+어느 시점에도 더티 리드·반복 불가능 읽기는 없었다 — 모두가 커밋된 값만 읽었다. 문제는 <strong>읽기와 쓰기 사이의 시간</strong>이며, 기본 격리 수준은 이 틈을 지켜 주지 않는다. 표준적 보강책은 둘이다.
+</p>
+<table>
+  <tr><th></th><th>비관적 락 — <code>SELECT ... FOR UPDATE</code></th><th>낙관적 락 — 버전 컬럼</th></tr>
+  <tr><td>발상</td><td>"충돌할 거야" — 읽는 시점부터 배타 락을 잡아 남을 대기시킴</td><td>"충돌 잘 안 해" — 자유롭게 읽고, 쓸 때 <code>WHERE version = 읽었던 값</code>으로 검사. 0건 갱신이면 충돌 → 재시도</td></tr>
+  <tr><td>충돌이 잦으면</td><td>유리(재시도 낭비 없음)</td><td>불리(재시도 폭증)</td></tr>
+  <tr><td>충돌이 드물면</td><td>불리(불필요한 대기·데드락 위험)</td><td>유리(락 비용 0)</td></tr>
+  <tr><td>제일 단순한 대안</td><td colspan="2">가능하다면 읽지 말고 한 문장으로: <code>UPDATE items SET stock = stock - 1 WHERE id = 7 AND stock &gt; 0</code> — 읽기-쓰기 틈 자체를 없앤다</td></tr>
+</table>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "격리 수준을 SERIALIZABLE로 올리면 동시성 문제 끝"?</strong> — 문제의 종류는 사라지지만 대가가 이동한다: 충돌 시 대기·강제 롤백(직렬화 에러)이 늘어나 <strong>재시도 로직이 필수</strong>가 되고 처리량이 떨어진다. 다이얼은 문제를 없애는 게 아니라 "이상 결과"와 "대기/재시도" 사이에서 형태를 바꾼다.</p>
+<p><strong>② "MVCC니까 락은 이제 없다"?</strong> — 읽기의 대기가 없어진 것이다. 쓰기끼리는 여전히 배타 락으로 줄을 서고(5절), 데드락도 그대로 존재한다. 그리고 6.1절의 갱신 유실은 MVCC가 있어도 발생한다.</p>
+<p><strong>③ "REPEATABLE READ면 팬텀까지 안전"?</strong> — DB에 따라 다르다(3절). MySQL InnoDB는 갭 락·스냅샷으로 대부분 막지만, 표준 정의상 REPEATABLE READ는 팬텀을 허용한다. "우리 DB에서는"이라는 한정어 없이 이 문장을 말하면 틀릴 수 있다.</p>
+<p><strong>④ "데드락 에러 = 코드 버그"?</strong> — 동시 실행의 정상 산출물일 수 있다(4.1절). 로그에서 박멸할 대상이 아니라 <em>빈도를 관리하고 재시도로 흡수할</em> 대상이다. 물론 같은 자원 다른 순서 획득처럼 예방 가능한 패턴은 고친다.</p>
+<p><strong>⑤ "이건 DB만의 문제다"?</strong> — 구도가 낯익지 않은가: "읽고-계산하고-쓰기" 사이에 남이 끼어드는 문제는 애플리케이션 메모리의 경쟁 조건(race condition)과 동형이다. 락·낙관적 검사라는 해법 계열까지 평행하다 — <a href="G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a>과 겹쳐 읽으면 하나의 문제 계보임이 보인다.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+격리 수준과 락은 SQL의 세계지만, <strong>그것을 지정하고 활용하는 문은 애플리케이션 코드</strong>에 있다.
+각 언어 생태계가 이 문을 어떻게 노출하는지, 특히 낙관적 락(6.1절)을 어떤 관용구로 지원하는지가 비교의 축이다.
+</p>
+<table>
+  <tr><th>언어</th><th>격리 수준 지정</th><th>갱신 유실 대응 관용구</th><th>비고</th></tr>
+  <tr>
+    <td>Java</td>
+    <td><code>@Transactional(isolation = Isolation.REPEATABLE_READ)</code></td>
+    <td>JPA <code>@Version</code>(낙관적) · <code>@Lock(PESSIMISTIC_WRITE)</code>(비관적)</td>
+    <td>아래 심화 참조</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>ORM 옵션(예: Prisma <code>$transaction(..., { isolationLevel })</code>) 또는 <code>SET TRANSACTION</code> 직접 실행</td>
+    <td>ORM의 버전 필드 패턴 또는 <code>UPDATE ... WHERE version = ?</code> 수동 구현</td>
+    <td>아래 심화 참조 — 격리는 커넥션·트랜잭션 단위 속성</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>SQLAlchemy <code>engine.execution_options(isolation_level=...)</code></td>
+    <td><code>with_for_update()</code>(비관적) · 버전 컬럼 매핑(낙관적)</td>
+    <td>ORM 계층의 어휘가 Java JPA와 거의 1:1</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td><code>SET TRANSACTION ISOLATION LEVEL ...</code> SQL 직접</td>
+    <td><code>SELECT ... FOR UPDATE</code>·버전 WHERE 절 수동</td>
+    <td>추상화가 없어 SQL 표준 어휘가 그대로 코드에 노출</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — 낙관적 락이 프레임워크 관용구로 정착한 세계</h3>
+<pre><code>@Entity
+public class Item {
+    @Id private Long id;
+    private int stock;
+
+    @Version                 // JPA가 UPDATE 시 자동으로 WHERE version = ? 를 붙이고
+    private long version;    // 0건 갱신이면 OptimisticLockException을 던진다
+}
+
+// 호출 측: 예외를 잡아 재시도하는 것까지가 낙관적 락의 완성
+try {
+    orderService.decreaseStock(itemId);
+} catch (OptimisticLockException e) {
+    // 재조회 후 재시도 (횟수 제한과 함께)
+}</code></pre>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> <code>@Version</code>은 6.1절의 "버전 컬럼 + WHERE 검사 + 0건이면 충돌"을 통째로 자동화한다. 놓치기 쉬운 것은 <strong>재시도가 프레임워크 밖의 책임</strong>이라는 점 — 예외를 그대로 500으로 흘리면 낙관적 락은 "가끔 실패하는 기능"으로 보인다. 충돌 감지(프레임워크)와 충돌 해소(내 코드)의 분업을 이해해야 완성된다.</p>
+</blockquote>
+
+<h3>8.2 JS·TS — 격리는 "그 커넥션의, 그 트랜잭션의" 속성이다</h3>
+<pre><code>// Prisma: 트랜잭션 단위로 격리 수준을 지정
+await prisma.$transaction(async (tx) =&gt; {
+  const item = await tx.item.findUnique({ where: { id: 7 } });
+  if (item.stock &lt;= 0) throw new Error('sold out');
+  await tx.item.update({ where: { id: 7 }, data: { stock: { decrement: 1 } } });
+}, { isolationLevel: 'Serializable' });   // 이 트랜잭션에만 적용</code></pre>
+<blockquote class="info">
+<p><strong>JS 관점의 통찰:</strong> E3 6.2절의 "트랜잭션은 커넥션에 귀속된다"가 격리 수준에도 그대로 적용된다 — <code>SET TRANSACTION ...</code>을 풀에서 받은 아무 커넥션에 실행하면 <em>엉뚱한 커넥션의 다음 트랜잭션</em>에 적용될 수 있다. 트랜잭션 콜백의 옵션으로 지정하는 API가 안전한 이유다. 또한 위 예시의 <code>decrement</code>는 6.1절 "한 문장 UPDATE" 전략의 ORM 표현이다.</p>
+</blockquote>
+
+<h3>8.3 Python / C++ — 한 줄 요약</h3>
+<p>
+Python SQLAlchemy의 <code>with_for_update()</code>·버전 컬럼은 Java JPA 관용구의 평행 번역이라, 한쪽을 알면 다른 쪽은 어휘 교체로 충분하다.
+C++처럼 추상화 없이 SQL을 직접 다루는 환경은 오히려 교육적이다 — <code>FOR UPDATE</code>와 버전 WHERE 절을 손으로 써 보면 ORM 애너테이션들이 무엇의 포장이었는지 명확해진다.
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>갭 락과 넥스트 키 락</strong> — MySQL InnoDB가 REPEATABLE READ에서 팬텀을 막는 장치(행 사이 "틈"의 잠금). 예상 밖의 락 대기·데드락의 원인이 되기도 하므로 MySQL 사용자라면 한 단계 깊이 볼 가치가 있다.</li>
+  <li><strong>스냅샷 격리와 쓰기 왜곡(write skew)</strong> — MVCC 기반 REPEATABLE READ가 SERIALIZABLE과 다른 미묘한 지점. "각자 다른 행을 고쳤는데 합쳐 보면 규칙 위반"인 패턴.</li>
+  <li><strong>락 대기 관찰</strong> — 락 경합은 실행 계획에 나타나지 않는 성능 문제다(<a href="E5 실행 계획 읽기.html">E5 실행 계획 읽기.html</a>의 사각지대). DB별 락 대기 뷰·타임아웃 설정(<code>lock timeout</code>)이 관찰 도구다.</li>
+  <li><strong>분산 락</strong> — 여러 애플리케이션 인스턴스에 걸친 상호 배제. DB 락의 바깥 확장판으로, 별도의 도구(예: 인메모리 저장소 기반)와 함정(만료·소유권)을 가진다.</li>
+  <li><strong>애플리케이션 캐시와의 정합성</strong> — DB에서 아무리 격리해도 그 앞의 캐시가 낡은 값을 주면 무효다. 격리의 경계가 어디까지인지 인식할 것.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>격리 수준 = 정확성↔동시성 다이얼. 낮출수록 이상현상(더티 리드 → 반복 불가능 읽기 → 팬텀)이 바깥쪽부터 허용된다.</li>
+  <li>실무 기본값은 READ COMMITTED(PostgreSQL·Oracle) 또는 REPEATABLE READ(MySQL InnoDB) — <strong>자기 DB의 기본값 확인이 출발점</strong>. 지원 눈금 자체도 다르다(Oracle은 READ COMMITTED·SERIALIZABLE 2단만). 표준 표는 어휘, 정확한 거동은 DB 문서.</li>
+  <li>구현은 락(쓰기 줄 세우기, 커밋까지 유지, 데드락은 정상 산출물 — 재시도로 흡수)과 MVCC(버전 사슬 + 스냅샷으로 읽기 무대기)의 조합.</li>
+  <li>표 밖의 실전 함정은 갱신 유실 — 읽기와 쓰기 사이의 틈. 한 문장 UPDATE > 낙관적 락(버전 컬럼+재시도) / 비관적 락(FOR UPDATE)으로 보강.</li>
+  <li>선택 전략: 기본값에서 시작해 충돌이 실증된 지점만 국소 보강. 전역 다이얼 상향은 문제의 형태를 대기·재시도로 바꿀 뿐임을 알고 쓸 것.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="E3 트랜잭션 기초와 ACID.html">E3 트랜잭션 기초와 ACID.html</a> — 이 문서가 확대한 격리성(I)이 속한 전체 그림(선수)</li>
+  <li><a href="E1 인덱스 원리와 복합 인덱스.html">E1 인덱스 원리와 복합 인덱스.html</a> — 락의 대상이 되는 행을 "찾는" 비용의 문제 — 인덱스 없는 UPDATE는 더 넓게 잠근다는 점에서 연결</li>
+  <li><a href="E5 실행 계획 읽기.html">E5 실행 계획 읽기.html</a> — 실행 계획에 보이지 않는 성능 문제(락 대기)와 보이는 문제(스캔)의 구분</li>
+  <li><a href="G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a> — 같은 문제 계보의 애플리케이션 메모리 버전: 경쟁 조건·상호 배제·낙관적 기법</li>
+</ul>
+
+</body>
+</html>

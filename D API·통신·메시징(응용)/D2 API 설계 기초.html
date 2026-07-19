@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>D2 API 설계 기초</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>D2 API 설계 기초</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>API는 프론트와 백엔드 사이의 <strong>계약(contract)</strong>이다. 좋은 API 설계란 "문서를 안 봐도 예측 가능한 계약"을 만드는 일이다.</li>
+  <li>REST의 핵심은 <strong>자원(명사)은 URI에, 행위(동사)는 HTTP 메서드에</strong> 담는 역할 분담이다. <code>/deleteUser?id=3</code>이 아니라 <code>DELETE /users/3</code>.</li>
+  <li>멱등성(idempotency)은 <strong>"같은 요청을 여러 번 보내도 결과(서버 상태)가 한 번 보낸 것과 같다"</strong>는 성질이다. 네트워크는 반드시 끊기므로, <strong>재시도해도 되는 요청과 안 되는 요청의 구분</strong>이 멱등성에서 나온다.</li>
+  <li>상태 코드는 <strong>클래스(2xx/3xx/4xx/5xx)부터 정확히</strong> 고른다. 클라이언트·프록시·모니터링이 모두 코드를 보고 자동으로 행동하기 때문에, "200에 에러 메시지 담기"는 계약 위반이다.</li>
+  <li>301 vs 302 선택의 실체는 <strong>캐시 가능성</strong>이다. 301(영구)은 브라우저가 기억해 다음부터 원래 주소를 묻지도 않고 건너뛰고, 302(임시)는 매번 다시 물어본다. <strong>돌이킬 수 없는 쪽이 301</strong>이다.</li>
+  <li>버저닝(versioning)은 <strong>깨지는 변경(breaking change)</strong>이 생겼을 때만 올린다. 필드 추가는 대개 안 깨지고, 필드 삭제·의미 변경·타입 변경은 깨진다.</li>
+</ul>
+
+<h2>1. API 설계는 계약 설계다</h2>
+<p>
+프론트엔드(예: Vue 컴포넌트의 Axios 호출)와 백엔드(예: Java 컨트롤러)는 서로의 코드를 보지 못한 채 <strong>HTTP 요청·응답의 형태만으로</strong> 협업한다.
+URL이 무엇이고, 어떤 메서드를 쓰고, 성공·실패 시 상태 코드와 본문이 어떻게 생겼는가 — 이 약속의 집합이 API 계약이다.
+</p>
+<p>
+계약이 좋으면 상대방은 문서를 최소한만 보고도 동작을 예측한다. <code>GET /orders/42</code>가 주문 조회라는 것, 없는 주문이면 404가 온다는 것, 조회를 두 번 해도 아무 일도 일어나지 않는다는 것 —
+이 예측 가능성이 REST가 주는 실질적 가치다. 반대로 계약이 자의적이면(모든 요청이 POST, 모든 응답이 200) 매 엔드포인트마다 문서와 소스를 확인해야 하고, 중간 장비(캐시·프록시)와 도구(모니터링·재시도 로직)의 자동화가 전부 무력화된다.
+그렇다면 예측 가능성은 어디서 만들어지는가 — 첫 번째 지렛대는 <strong>"의미를 어디에 두는가"</strong>이고, 그 답이 REST다.
+</p>
+
+<h2>2. REST — 자원은 URI에, 행위는 메서드에</h2>
+<p>
+REST(Representational State Transfer)는 프로토콜이 아니라 <strong>HTTP를 설계 의도대로 쓰는 스타일</strong>이다. 실무에서 지켜야 할 골자는 두 가지다.
+</p>
+<ul>
+  <li><strong>URI는 자원(resource)을 가리키는 명사</strong>로 만든다. 컬렉션은 복수형(<code>/users</code>), 개별 자원은 식별자를 붙여(<code>/users/3</code>), 소속 관계는 계층으로(<code>/users/3/orders</code>) 표현한다.</li>
+  <li><strong>행위는 HTTP 메서드</strong>로 표현한다. URI에 <code>get</code>, <code>create</code>, <code>delete</code> 같은 동사가 들어가기 시작하면 메서드와 역할이 중복되고 있다는 신호다.</li>
+</ul>
+<div class="flow">동사 URI 방식 (안티패턴)              자원 중심 방식 (REST)
+──────────────────────────           ─────────────────────
+POST /getUserList                    GET    /users
+POST /createUser                     POST   /users
+POST /updateUser?id=3                PUT    /users/3
+POST /deleteUser?id=3                DELETE /users/3</div>
+<p>
+오른쪽 방식의 이득은 미학이 아니다. <code>GET</code>은 캐시가 가능해지고, <code>DELETE</code>는 실패 시 재시도해도 안전하다는 판단이 가능해지며(아래 멱등성),
+로그와 모니터링에서 "어떤 자원에 어떤 종류의 작업이 몰리는가"가 메서드×경로만으로 집계된다. <strong>의미를 표준 위치에 두면 표준 도구가 전부 공짜로 따라온다.</strong>
+</p>
+<blockquote class="info">
+<p><strong>현실적인 선:</strong> 모든 행위가 자원으로 깔끔하게 환원되지는 않는다. "주문 취소" 같은 도메인 동작은 <code>POST /orders/42/cancel</code>처럼 동사를 허용하는 절충이 널리 쓰인다. 원칙은 "기본은 자원 중심, 예외는 의도적으로"다.</p>
+</blockquote>
+
+<h2>3. HTTP 메서드의 성질 — 안전성과 멱등성</h2>
+<p>
+2절은 "행위는 메서드에"라고 했지만, <em>어떤</em> 행위에 <em>어떤</em> 메서드를 쓸지는 아직 정하지 않았다.
+그 선택 기준은 "느낌"이 아니라 표준이 정의한 두 가지 성질이다.
+<strong>안전(safe)</strong>은 서버 상태를 바꾸지 않는다는 뜻이고, <strong>멱등(idempotent)</strong>은 같은 요청을 1번 보내든 N번 보내든 서버 상태가 같아진다는 뜻이다.
+</p>
+<table>
+  <tr><th>메서드</th><th>용도</th><th>안전</th><th>멱등</th><th>비고</th></tr>
+  <tr><td><code>GET</code></td><td>조회</td><td>O</td><td>O</td><td>본문 없이, 캐시 가능</td></tr>
+  <tr><td><code>PUT</code></td><td>전체 교체(해당 위치에 이 내용을 두라)</td><td>X</td><td><strong>O</strong></td><td>같은 본문으로 반복해도 결과 동일</td></tr>
+  <tr><td><code>DELETE</code></td><td>삭제</td><td>X</td><td><strong>O</strong></td><td>두 번째부터는 404여도 <em>상태</em>는 동일</td></tr>
+  <tr><td><code>POST</code></td><td>생성·비멱등 처리</td><td>X</td><td><strong>X</strong></td><td>반복하면 자원이 N개 생길 수 있음</td></tr>
+  <tr><td><code>PATCH</code></td><td>부분 수정</td><td>X</td><td>보장 없음</td><td>내용에 따라 다름("+1 하라"는 비멱등)</td></tr>
+</table>
+<p>
+멱등성이 왜 계약의 핵심인가? <strong>네트워크 실패는 "요청이 안 갔는지, 응답만 못 받았는지" 구분해 주지 않기 때문</strong>이다.
+타임아웃이 났을 때, 멱등한 요청(<code>PUT /users/3</code>)은 그냥 다시 보내면 된다 — 서버에 이미 반영됐어도 같은 결과이므로.
+비멱등한 요청(<code>POST /orders</code>)은 다시 보내면 <strong>주문이 두 건</strong> 생길 수 있다. 그래서 HTTP 클라이언트·프록시의 자동 재시도는 관례상 멱등 메서드에만 적용되고,
+POST의 안전한 재시도가 필요하면 멱등 키(idempotency key — 클라이언트가 요청마다 고유 ID를 부여하고 서버가 중복을 흡수) 같은 별도 장치를 계약에 추가해야 한다.
+</p>
+<blockquote class="warn">
+<p><strong>흔한 오해:</strong> "멱등 = 응답이 항상 같다"가 아니다. DELETE를 두 번 보내면 첫 번째는 204, 두 번째는 404로 <em>응답은</em> 다를 수 있다. 같아야 하는 것은 <strong>서버의 상태</strong>다(그 자원이 없는 상태).</p>
+</blockquote>
+
+<h2>4. 상태 코드 — 클래스부터 정확히</h2>
+<p>
+URI와 메서드가 <strong>요청 쪽</strong> 계약이었다면, 상태 코드는 <strong>응답 쪽</strong> 계약이다.
+그리고 요청 쪽과 마찬가지로, 상태 코드도 사람이 아니라 <strong>기계가 먼저 읽는다</strong>. 브라우저는 3xx를 보고 자동 이동하고, 캐시는 200/301을 보고 저장 여부를 정하고,
+모니터링은 5xx 비율로 알림을 울리고, 재시도 로직은 4xx(내 잘못 — 다시 보내도 똑같이 실패)와 5xx(서버 사정 — 잠시 후 재시도 가치 있음)를 다르게 다룬다.
+</p>
+<table>
+  <tr><th>클래스</th><th>의미</th><th>실무 대표</th></tr>
+  <tr><td>2xx</td><td>성공</td><td>200 OK(본문 있음) · 201 Created(생성, <code>Location</code> 헤더로 새 자원 위치) · 204 No Content(성공, 본문 없음 — 삭제·수정 후)</td></tr>
+  <tr><td>3xx</td><td>다른 곳으로 — 리다이렉트</td><td>301 · 302 · 304 Not Modified(캐시 유효, 본문 생략)</td></tr>
+  <tr><td>4xx</td><td>클라이언트 잘못 — 고쳐서 보내라</td><td>400(요청 형식 오류) · 401(인증 안 됨 — 누구인지 모름) · 403(인가 안 됨 — 누군지 알지만 권한 없음) · 404(자원 없음) · 409(상태 충돌) · 422(형식은 맞으나 의미상 검증 실패)</td></tr>
+  <tr><td>5xx</td><td>서버 잘못 — 클라이언트는 죄 없음</td><td>500(내부 오류) · 502/504(뒤 서버 연결 실패/시간 초과) · 503(과부하·점검)</td></tr>
+</table>
+<blockquote class="warn">
+<p><strong>"200 + 본문에 <code>{"success": false}</code>" 안티패턴</strong> — 상태 코드로는 성공이라 캐시·모니터링·재시도가 모두 속는다. 5xx가 나야 할 장애가 대시보드에서 전부 정상으로 보이고, 실패 응답이 캐시에 저장되는 사고까지 이어진다. 에러의 <em>분류</em>는 상태 코드로, <em>상세</em>(에러 코드·메시지)는 본문으로 — 역할을 나눠야 한다.</p>
+</blockquote>
+
+<h2>5. 301 vs 302 — 멱등성·캐시 관점의 선택 근거</h2>
+<p>
+4절의 표에서 유일하게 "성공도 실패도 아닌" 클래스가 3xx였다. 리다이렉트를 따로 한 절로 다루는 이유는,
+여기가 <strong>캐시(응답 계약의 관심사)와 멱등성(요청 계약의 관심사)이 정확히 교차하는 지점</strong>이라 앞 두 절의 개념 없이는 올바른 선택이 불가능하기 때문이다.
+리다이렉트 응답은 "네가 찾는 것은 여기가 아니라 저기"라는 안내이고, <code>Location</code> 헤더가 목적지를 담는다.
+301과 302의 차이는 안내문의 뉘앙스 차이가 아니라 <strong>클라이언트(특히 브라우저와 캐시)가 그 안내를 얼마나 오래 기억하는가</strong>의 차이다.
+</p>
+<table>
+  <tr><th></th><th>301 Moved Permanently</th><th>302 Found (임시 이동)</th></tr>
+  <tr><td>의미</td><td>영구 이사 — 앞으로도 계속 저기</td><td>임시 안내 — 지금만 저기, 다음엔 다시 물어보라</td></tr>
+  <tr><td>캐시</td><td><strong>기본적으로 캐시됨</strong>. 브라우저가 기억해 두고, 다음부터는 원 주소에 요청조차 안 보내고 바로 새 주소로 감</td><td>기본적으로 캐시 안 됨. 매번 원 주소에 접속해 안내를 다시 받음</td></tr>
+  <tr><td>되돌리기</td><td>서버가 마음을 바꿔도 <strong>이미 캐시한 브라우저에게 알릴 방법이 없음</strong></td><td>서버가 언제든 안내를 바꾸거나 없앨 수 있음</td></tr>
+  <tr><td>전형적 용도</td><td>도메인 이전, <code>http→https</code>, URL 구조 개편</td><td>로그인 후 원래 페이지로, 점검 페이지, A/B 분기</td></tr>
+</table>
+<p>
+<strong>선택 기준을 한 문장으로:</strong> "이 안내를 클라이언트가 영원히 기억해도 괜찮은가?" 괜찮으면 301, 조금이라도 바뀔 수 있으면 302다.
+301을 잘못 쓰면 사용자의 브라우저 캐시라는, <strong>서버가 손댈 수 없는 곳에 잘못된 안내가 박제</strong>된다.
+로그인 페이지로의 이동을 301로 보냈다가 로그인 이후에도 계속 로그인 페이지로 끌려가는 사고가 전형적인 예다.
+</p>
+<h3>5.1 멱등성 관점 — 307/308이 존재하는 이유</h3>
+<p>
+원래 규격상 301/302는 리다이렉트 시 요청 메서드를 유지해야 하지만, 역사적으로 <strong>대부분의 브라우저가 POST를 GET으로 바꿔서</strong> 따라간다.
+이것이 위험한 이유가 정확히 멱등성이다 — <strong>비멱등한 POST(주문 제출)가 안전한 GET(조회)으로 둔갑</strong>하면서 본문이 유실되고, 서버는 처리 요청을 받지 못한다.
+이 모호함을 없애려고 <strong>메서드 변경을 금지한 짝</strong>이 추가됐다: <code>307 Temporary Redirect</code>(302의 엄격판), <code>308 Permanent Redirect</code>(301의 엄격판).
+POST 요청을 본문 그대로 다른 곳에서 다시 처리하게 하려면 307/308을 써야 한다.
+</p>
+<div class="flow">기억할 2×2:
+                 임시(캐시 안 됨)      영구(캐시됨)
+메서드 GET화 허용      302                 301
+메서드 그대로 유지     307                 308</div>
+<blockquote class="ok">
+<p><strong>연결:</strong> "리다이렉트를 서버가 보낼지, 프론트 JS가 이동할지"의 구분은 <a href="C3 클라이언트 vs 서버사이드 리다이렉트.html">C3 클라이언트 vs 서버사이드 리다이렉트.html</a> 참조. 여기서는 <em>서버가 보낼 때 몇 번을 고를지</em>를 다뤘다.</p>
+</blockquote>
+
+<h2>6. 버저닝 — 깨지는 변경을 관리하는 기술</h2>
+<p>
+여기까지가 계약을 <em>처음 맺는</em> 기술이었다면, 버저닝은 이미 맺은 계약을 <em>바꾸는</em> 기술이다.
+API는 배포 후에도 진화한다. 문제는 <strong>이미 배포된 클라이언트(사용자 브라우저의 옛 프론트 번들, 외부 연동사)가 옛 계약을 계속 사용</strong>한다는 점이다.
+그래서 변경을 두 부류로 나누는 감각이 먼저다.
+</p>
+<ul>
+  <li><strong>호환 변경(non-breaking)</strong> — 응답에 필드 추가, 새 엔드포인트 추가, 선택 파라미터 추가. 옛 클라이언트는 모르는 필드를 무시하면 되므로 버전을 올릴 필요가 없다. (단, 이는 "모르는 필드를 무시한다"가 역직렬화 설정에 반영돼 있을 때 이야기다 — <a href="C10 직렬화와 역직렬화.html">C10 직렬화와 역직렬화.html</a>의 스키마 진화와 같은 문제.)</li>
+  <li><strong>깨지는 변경(breaking)</strong> — 필드 삭제·이름 변경·타입 변경·의미 변경, 필수 파라미터 추가, 상태 코드 의미 변경. 옛 클라이언트가 오동작하므로 <strong>새 버전을 열고 옛 버전을 유예 기간 동안 병행 운영</strong>해야 한다.</li>
+</ul>
+<table>
+  <tr><th>방식</th><th>모양</th><th>장점</th><th>단점</th></tr>
+  <tr><td>URI 버전</td><td><code>/v1/users</code> → <code>/v2/users</code></td><td>명시적, 브라우저로 확인 가능, 라우팅 단순</td><td>"같은 자원인데 URI가 둘"이라는 이론적 어색함</td></tr>
+  <tr><td>헤더/미디어 타입</td><td><code>Accept: application/vnd.api.v2+json</code></td><td>URI 불변, 협상 유연</td><td>눈에 안 보이고 도구·캐시 설정이 번거로움</td></tr>
+  <tr><td>쿼리 파라미터</td><td><code>/users?version=2</code></td><td>도입 간단</td><td>빠뜨리기 쉽고 캐시 키 관리가 지저분함</td></tr>
+</table>
+<p>
+실무 다수파는 URI 버전이다. 어떤 방식이든 요점은 방식 선택보다 운영 규율이다: <strong>버전은 자주 올리는 것이 아니라 최대한 안 올리는 것</strong>(호환 변경으로 흡수),
+올렸다면 <strong>구버전 폐기(deprecation) 일정과 공지</strong>까지가 버저닝이다.
+</p>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "PUT vs PATCH는 취향이다"?</strong> — 계약이 다르다. PUT은 "이 내용으로 전체 교체"라서 빠뜨린 필드는 지워지는 것이 원칙적 의미이고, PATCH는 "보낸 필드만 수정"이다. 부분 수정 의도로 PUT을 쓰면 클라이언트마다 해석이 갈려 데이터가 소리 없이 지워진다.</p>
+<p><strong>② "401과 403은 비슷하다"?</strong> — 401은 "누구인지 모르겠다(인증 실패 — 로그인 창으로)", 403은 "누군지 알지만 안 된다(인가 실패 — 권한 안내로)". 프론트의 후속 동작이 완전히 달라지므로 섞으면 UX가 망가진다.</p>
+<p><strong>③ "GET에 본문을 담으면 편한데"?</strong> — 규격상 정의되지 않은 영역이라 프록시·캐시·서버 구현이 본문을 버리거나 거부할 수 있다. 복잡한 조회 조건은 쿼리 파라미터로, 정 안 되면 <code>POST /users/search</code> 같은 검색 전용 엔드포인트로 절충한다.</p>
+<p><strong>④ "일단 302 대신 301을 쓰면 요청이 줄어 성능에 좋다"?</strong> — 맞는 말이지만 그 성능은 <strong>되돌릴 수 없음</strong>과의 거래다. 확신이 없으면 302(또는 307)로 시작하고, 영구임이 확정된 뒤 301로 승격하는 순서가 안전하다.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+"멱등한 요청만 자동 재시도한다", "상태 코드 클래스로 분기한다" 같은 계약의 성질은 각 언어의 HTTP 클라이언트·서버 도구에 그대로 새겨져 있다.
+도구가 왜 그렇게 만들어졌는지를 보면 계약의 의미가 역으로 확인된다.
+</p>
+<table>
+  <tr><th>언어</th><th>서버 쪽 표현</th><th>클라이언트 쪽 표현</th><th>비고</th></tr>
+  <tr>
+    <td>Java</td>
+    <td>Spring <code>@GetMapping</code>/<code>@PostMapping</code>·<code>ResponseEntity.status(...)</code></td>
+    <td><code>HttpClient</code>·RestTemplate — 재시도 라이브러리가 멱등 메서드 기본 대상</td>
+    <td>아래 심화 참조</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>Express <code>app.get/post(...)</code>·<code>res.status(...)</code></td>
+    <td><code>fetch</code>(리다이렉트 자동 추적)·Axios(4xx/5xx를 예외로 승격)</td>
+    <td>아래 심화 참조 — 브라우저가 301을 "기억"하는 현장</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>FastAPI 데코레이터가 메서드·상태 코드를 선언부에 명시</td>
+    <td><code>requests</code> — <code>resp.history</code>로 리다이렉트 추적 확인, <code>raise_for_status()</code></td>
+    <td>타입 힌트 기반으로 OpenAPI 문서 자동 생성</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td>표준 웹 프레임워크 없음(Crow·Drogon 등 서드파티)</td>
+    <td>libcurl — <code>CURLOPT_FOLLOWLOCATION</code>으로 리다이렉트 추적을 직접 제어</td>
+    <td>저수준일수록 계약 처리(재시도·리다이렉트)가 전부 개발자 몫임이 드러남</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — 메서드·상태 코드가 타입과 애너테이션으로 고정된다</h3>
+<pre><code>@RestController
+@RequestMapping("/users")
+public class UserController {
+
+    @GetMapping("/{id}")                      // 안전·멱등 — 캐시·재시도 대상
+    public ResponseEntity&lt;User&gt; get(@PathVariable Long id) {
+        return userService.find(id)
+                .map(ResponseEntity::ok)                       // 200
+                .orElse(ResponseEntity.notFound().build());    // 404 — "없음"은 예외가 아니라 계약
+    }
+
+    @PostMapping                              // 비멱등 — 재시도 함부로 금지
+    public ResponseEntity&lt;Void&gt; create(@RequestBody UserRequest req) {
+        Long id = userService.create(req);
+        return ResponseEntity.created(URI.create("/users/" + id)).build();  // 201 + Location
+    }
+}</code></pre>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> Spring Retry, Resilience4j 같은 재시도 도구의 문서가 한결같이 "멱등한 연산에만 적용하라"고 경고한다. 프레임워크는 어떤 POST가 안전한지 알 수 없으므로, <strong>멱등성 판단은 계약을 설계한 사람만 할 수 있는 결정</strong>이다 — 도구가 대신 못 해 주는 몇 안 되는 지점이다.</p>
+</blockquote>
+
+<h3>8.2 JS·TS — 브라우저와 Axios가 계약을 대신 해석한다</h3>
+<pre><code>// Vue 컴포넌트에서의 전형적 호출
+try {
+  const { data } = await axios.get('/api/users/3');
+  user.value = data;
+} catch (err) {
+  if (err.response?.status === 404) {        // 4xx: 내 요청 문제 — 재시도 무의미
+    showNotFound();
+  } else if (err.response?.status >= 500) {  // 5xx: 서버 문제 — 재시도·안내 가치 있음
+    showRetryBanner();
+  }
+}
+// 참고: fetch는 4xx/5xx에서 예외를 던지지 않는다(네트워크 실패만 reject).
+// Axios가 이를 예외로 승격해 주는 것 — 도구마다 "계약 해석"이 다르다.</code></pre>
+<blockquote class="info">
+<p><strong>JS 관점의 통찰:</strong> 301 오설정 사고를 프론트 개발자가 가장 먼저 겪는다 — 서버에서 리다이렉트를 고쳤는데 내 브라우저만 계속 옛 주소로 간다면, 브라우저가 캐시한 301 때문이다(시크릿 창에서는 정상). "서버가 손댈 수 없는 곳에 박제된다"는 말의 실체를 확인할 수 있는 현장이다.</p>
+</blockquote>
+
+<h3>8.3 Python / C++ — 한 줄 요약</h3>
+<p>
+Python <code>requests</code>는 <code>resp.history</code>에 거쳐 온 리다이렉트 응답들을 남겨 주므로 301/302 동작을 실험으로 확인하기에 가장 좋은 도구다.
+C++ libcurl은 리다이렉트 추적조차 옵트인(<code>CURLOPT_FOLLOWLOCATION</code>)인데, 이는 고수준 도구들이 "당연히" 해 주던 일이 전부 계약 해석 코드였음을 보여 준다.
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>API 문서화와 스키마 우선 설계</strong> — 계약을 코드보다 먼저 문서(OpenAPI)로 확정하는 흐름. <a href="D11 API 문서화와 스키마.html">D11 API 문서화와 스키마.html</a>에서 다룬다.</li>
+  <li><strong>REST 너머의 스타일</strong> — 오버페칭·스트리밍 등 REST의 한계와 GraphQL·gRPC의 답은 <a href="D3 REST vs GraphQL vs gRPC.html">D3 REST vs GraphQL vs gRPC.html</a> 참조.</li>
+  <li><strong>페이지네이션(pagination)</strong> — 컬렉션 조회 계약의 필수 요소. offset 방식과 커서(cursor) 방식의 트레이드오프.</li>
+  <li><strong>멱등 키(idempotency key)</strong> — 결제처럼 POST인데 중복이 치명적인 곳에서, 클라이언트 생성 고유 키로 서버가 중복 요청을 흡수하는 패턴.</li>
+  <li><strong>HATEOAS</strong> — 응답에 다음 행동 링크를 담는 REST의 원전적 이상. 실무 채택은 드물지만 "계약의 자기 서술"이라는 문제의식은 유효하다.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>API 설계 = 예측 가능한 계약 설계. 자원은 URI(명사), 행위는 메서드(동사)에.</li>
+  <li>멱등성 = N번 보내도 상태가 1번과 동일. 재시도 가능 여부의 근거이며 GET·PUT·DELETE는 멱등, POST는 아니다.</li>
+  <li>상태 코드는 기계가 읽는다 — 클래스(2/3/4/5xx)부터 정확히. 200에 에러 담기 금지.</li>
+  <li>301은 캐시되어 되돌릴 수 없고 302는 매번 다시 묻는다 — "영원히 기억돼도 되는가"로 고른다. 메서드 보존이 필요하면 307/308.</li>
+  <li>버저닝은 깨지는 변경에만. 호환 변경으로 흡수하는 것이 상책, 올렸으면 구버전 폐기 계획까지.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="C10 직렬화와 역직렬화.html">C10 직렬화와 역직렬화.html</a> — 본문(JSON)의 스키마 진화·버전 호환, 버저닝 절의 짝이 되는 주제</li>
+  <li><a href="D1 HTTP 심화.html">D1 HTTP 심화.html</a> — 메서드·상태 코드·헤더의 프로토콜 수준 기반(선수)</li>
+  <li><a href="D3 REST vs GraphQL vs gRPC.html">D3 REST vs GraphQL vs gRPC.html</a> — REST의 한계와 대안 스타일 비교(다음 단계)</li>
+  <li><a href="D11 API 문서화와 스키마.html">D11 API 문서화와 스키마.html</a> — 계약을 문서로 관리하는 방법</li>
+</ul>
+
+</body>
+</html>

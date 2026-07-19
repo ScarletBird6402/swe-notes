@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E3 트랜잭션 기초와 ACID</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>E3 트랜잭션 기초와 ACID</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>트랜잭션(transaction)은 <strong>"전부 성공하거나, 전부 없던 일이 되어야 하는 작업 묶음"</strong>이다. 계좌 이체에서 출금만 되고 입금이 안 되는 중간 상태를 세상에 남기지 않기 위한 장치다.</li>
+  <li>조작법은 세 마디다: <code>BEGIN</code>(묶음 시작) → 작업들 → <code>COMMIT</code>(확정) 또는 <code>ROLLBACK</code>(전체 취소). <strong>커밋 전의 변경은 "제안"일 뿐</strong>이고, 커밋 순간에야 세상에 공표된다.</li>
+  <li>ACID는 이 장치가 지키는 네 가지 약속이다 — <strong>A</strong>tomicity(전부 아니면 전무), <strong>C</strong>onsistency(규칙 위반 상태 금지), <strong>I</strong>solation(동시 실행이 서로 안 보임), <strong>D</strong>urability(커밋했으면 장애에도 생존).</li>
+  <li>네 글자의 무게는 다르다: A와 D는 <strong>DB가 로그(undo/redo)로 기계적으로 보장</strong>하고, C는 <strong>절반이 개발자 책임</strong>(제약 조건 + 애플리케이션 불변식)이며, I는 <strong>보장 수준을 개발자가 골라야 하는</strong> 유일한 글자다(→ <a href="E4 격리 수준과 락.html">E4 격리 수준과 락.html</a>).</li>
+  <li>실무 원칙 한 줄: <strong>트랜잭션은 짧게, 경계는 명시적으로, 외부 API 호출은 밖으로.</strong> 트랜잭션이 길수록 다른 트랜잭션을 기다리게 하고(락), 롤백할 수 없는 부수효과가 섞일수록 "전체 취소"라는 약속이 거짓이 된다.</li>
+</ul>
+
+<h2>1. 트랜잭션 — 중간 상태를 세상에 남기지 않는 기술</h2>
+<p>
+계좌 이체는 최소 두 개의 UPDATE다: A 계좌에서 빼고, B 계좌에 더한다.
+문제는 <strong>두 문장 사이에 세상이 멈춰 주지 않는다</strong>는 것이다 — 첫 UPDATE 직후 서버가 죽을 수 있고, 정전이 날 수 있고, 두 번째 UPDATE가 제약 위반으로 실패할 수 있다.
+그 순간 DB에는 "돈이 증발한" 상태가 남는다.
+</p>
+<div class="flow">이체 10,000원 (트랜잭션 없이)
+  UPDATE accounts SET balance = balance - 10000 WHERE id = 'A';   -- 성공
+  ← 여기서 장애가 나면?
+  UPDATE accounts SET balance = balance + 10000 WHERE id = 'B';   -- 실행 못 함
+  결과: 10,000원 증발. 어느 문장도 "틀리지" 않았는데 전체는 틀렸다.</div>
+<p>
+개별 문장은 각각 옳았다는 점이 핵심이다. 잘못은 문장이 아니라 <strong>묶음의 부재</strong>에 있다.
+트랜잭션은 "이 문장들은 하나의 논리적 작업이니, 운명을 같이하게 하라"고 DB에 선언하는 방법이고,
+그 선언과 해제를 담당하는 것이 다음 절의 커밋과 롤백이다.
+</p>
+
+<h2>2. 커밋과 롤백 — 제안, 확정, 그리고 전체 취소</h2>
+<p>
+1절의 "운명을 같이하게 하라"는 선언은 구체적으로 세 문장으로 이루어진다.
+</p>
+<pre><code>BEGIN;                                                          -- 묶음 시작
+UPDATE accounts SET balance = balance - 10000 WHERE id = 'A';
+UPDATE accounts SET balance = balance + 10000 WHERE id = 'B';
+-- 여기까지의 변경은 이 트랜잭션 안에서만 보이는 "제안" 상태
+COMMIT;                                                         -- 확정: 이제 세상에 공표
+-- 중간에 무엇이든 잘못되면 대신:
+ROLLBACK;                                                       -- 전체 취소: BEGIN 이전으로</code></pre>
+<ul>
+  <li><strong>커밋 전 변경은 제안이다.</strong> 같은 트랜잭션 안에서는 보이지만(내가 뺀 잔액은 내 다음 SELECT에 반영), 다른 접속에서는 원칙적으로 보이지 않는다. "원칙적으로"의 정확한 범위가 격리 수준이다(4절 I, 상세는 E4).</li>
+  <li><strong>롤백은 명시적 취소만이 아니다.</strong> 트랜잭션 도중 접속이 끊기거나 서버가 죽으면 DB는 해당 트랜잭션을 <em>자동으로 롤백</em>한다 — 1절의 장애 시나리오에서 돈이 증발하지 않는 이유다.</li>
+  <li><strong>자동 커밋(autocommit)</strong> — 대부분의 DB·드라이버 기본값은 "문장 하나 = 트랜잭션 하나"다. 즉 <code>BEGIN</code>을 안 썼다면 UPDATE마다 즉시 커밋되고 있었던 것이다. 여러 문장을 묶으려면 자동 커밋을 벗어나 경계를 명시해야 한다.</li>
+  <li><strong>여는 문장은 방언이 갈린다</strong> — PostgreSQL·MySQL은 <code>BEGIN</code>(또는 <code>START TRANSACTION</code>)으로 명시적으로 열지만, <strong>Oracle은 여는 문장이 아예 없다</strong>: 첫 DML(INSERT/UPDATE/DELETE)이 실행되는 순간 트랜잭션이 암묵적으로 시작되고, 닫는 쪽(<code>COMMIT</code>/<code>ROLLBACK</code>)만 공통이다. 여기에 Oracle 특유의 함정이 하나 얹힌다: <strong>DDL(CREATE·ALTER·DROP·TRUNCATE)은 실행 전후로 암묵 커밋을 수행</strong>하므로, 트랜잭션 도중 DDL이 끼면 <em>그때까지의 DML이 조용히 확정</em>되어 이후 ROLLBACK이 닿지 않는다 — "전체 취소"의 범위가 방언에 따라 달라지는 대표 사례다.</li>
+</ul>
+<blockquote class="info">
+<p><strong>이 절의 요점을 한 문장으로:</strong> 트랜잭션의 인터페이스는 놀랄 만큼 단순하다(시작·확정·취소). 어려움은 인터페이스가 아니라, 이 단순한 세 마디가 <em>어떻게 그리고 어디까지</em> 약속을 지키는가에 있다 — 그 약속의 명세가 ACID다.</p>
+</blockquote>
+
+<h2>3. ACID — 네 가지 약속과 각각의 무게</h2>
+<p>
+ACID는 한 단어처럼 외우지만, 네 글자는 <strong>보장 주체도 보장 방식도 다르다</strong>. 하나씩 뜯어 보자.
+</p>
+
+<h3>3.1 A — 원자성(Atomicity): 전부 아니면 전무</h3>
+<p>
+트랜잭션 안의 문장들은 쪼개지지 않는 한 덩어리다. 일부만 반영된 상태는 존재할 수 없다.
+DB는 이를 위해 변경 전 값을 <strong>undo 로그</strong>에 남겨 두고, 롤백(명시적이든 장애로 인한 자동이든)이 필요하면 로그를 역재생해 원상 복구한다.
+개발자가 할 일은 하나 — <strong>함께 살고 죽어야 할 문장들을 같은 트랜잭션 안에 넣는 것</strong>. 경계를 잘못 그으면 원자성은 엉뚱한 단위로 보장된다.
+</p>
+
+<h3>3.2 C — 일관성(Consistency): 규칙 위반 상태 금지</h3>
+<p>
+트랜잭션이 끝난 시점의 DB는 <strong>정의된 모든 규칙을 만족하는 상태</strong>여야 한다.
+여기서 "규칙"이 두 층이라는 점이 C의 함정이다.
+</p>
+<ul>
+  <li><strong>DB가 아는 규칙</strong> — 제약 조건(<code>NOT NULL</code>, <code>UNIQUE</code>, <code>FOREIGN KEY</code>, <code>CHECK</code>). 위반하는 커밋은 DB가 거부한다.</li>
+  <li><strong>DB가 모르는 규칙</strong> — "잔액 총합은 이체 전후 동일해야 한다" 같은 업무 불변식(invariant). DB는 이 규칙의 존재 자체를 모르므로, <strong>지키는 것은 트랜잭션 안의 코드를 짜는 개발자</strong>다. ACID의 C는 "규칙을 지키면 그 상태를 보존해 준다"는 뜻이지 "규칙을 대신 만들어 준다"가 아니다.</li>
+</ul>
+
+<h3>3.3 I — 격리성(Isolation): 동시 실행이 서로 안 보임</h3>
+<p>
+같은 데이터 위에서 여러 트랜잭션이 동시에 돈다. 격리성은 "각 트랜잭션이 <strong>마치 혼자 실행되는 것처럼</strong> 보이게 한다"는 약속인데,
+이 약속을 완벽히 지키면(직렬 실행) 성능이 무너지므로, 현실의 DB는 <strong>약속의 강도를 단계별로 골라 쓰게</strong> 해 준다.
+네 글자 중 유일하게 <strong>설정 가능한 다이얼</strong>이 달려 있는 글자이고, 다이얼의 눈금(격리 수준)과 대가(락·이상현상)는 분량상 <a href="E4 격리 수준과 락.html">E4 격리 수준과 락.html</a>에서 별도로 다룬다.
+이 문서에서는 "I는 공짜도 절대적이지도 않다"까지만 기억하면 된다.
+</p>
+
+<h3>3.4 D — 지속성(Durability): 커밋했으면 장애에도 생존</h3>
+<p>
+<code>COMMIT</code>이 성공 응답을 돌려줬다면, 직후에 정전이 나도 그 변경은 살아남아야 한다.
+DB는 이를 위해 데이터 파일을 고치기 <em>전에</em> 변경 내역을 <strong>로그(WAL, write-ahead log — 선기록 로그)에 먼저 디스크로 기록</strong>하고 나서야 커밋 성공을 응답한다.
+재기동 시 로그를 재생(redo)하면 커밋된 변경이 복원된다. A가 "취소를 위한 로그(undo)"라면 D는 "생존을 위한 로그(redo)" — <strong>트랜잭션의 마법은 대부분 로그의 마법</strong>이다.
+</p>
+
+<table>
+  <tr><th></th><th>약속</th><th>주 보장 주체</th><th>핵심 메커니즘</th></tr>
+  <tr><td>A 원자성</td><td>전부 아니면 전무</td><td>DB</td><td>undo 로그 + 롤백</td></tr>
+  <tr><td>C 일관성</td><td>규칙 위반 상태 금지</td><td><strong>DB + 개발자</strong></td><td>제약 조건 + 코드의 불변식</td></tr>
+  <tr><td>I 격리성</td><td>동시 실행 상호 불가시</td><td>DB(<strong>수준은 개발자 선택</strong>)</td><td>락·MVCC (→ E4)</td></tr>
+  <tr><td>D 지속성</td><td>커밋 후 장애 생존</td><td>DB</td><td>WAL + redo 재생</td></tr>
+</table>
+
+<h2>4. 트랜잭션 경계 설계 — 어디부터 어디까지 묶을 것인가</h2>
+<p>
+3절이 보여 주듯 A·D는 DB가 알아서 하고 C·I에 개발자 몫이 있는데, 그 몫이 실제 코드에서 나타나는 자리가 바로 <strong>경계(boundary) 설계</strong> —
+BEGIN과 COMMIT을 어디에 놓는가 — 다. 원칙은 세 개다.
+</p>
+<ul>
+  <li><strong>① 함께 죽어야 하는 것만 묶는다.</strong> 주문 생성 + 재고 차감은 한 묶음(하나만 성공하면 안 되므로). 반면 "주문 후 추천 목록 갱신"처럼 실패해도 주문을 취소할 이유가 없는 작업은 <em>밖으로</em> — 묶으면 부가 기능의 실패가 핵심 기능을 롤백시킨다.</li>
+  <li><strong>② 짧게 유지한다.</strong> 트랜잭션이 잡은 락은 커밋/롤백까지 유지되므로(E4), 트랜잭션의 길이는 <strong>다른 사용자가 기다리는 시간</strong>이다. 무거운 계산·대량 조회는 트랜잭션 시작 전에 끝내고, 쓰기 묶음만 짧게 감싼다.</li>
+  <li><strong>③ 롤백 불가능한 부수효과를 안에 넣지 않는다.</strong> 트랜잭션 안에서 이메일 발송·외부 결제 API 호출을 하면, 이후 롤백 시 <strong>DB는 없던 일이 되는데 이메일은 이미 나갔다</strong>. "전체 취소"라는 약속은 DB 안에서만 유효하다 — 외부 호출은 커밋 <em>후</em>에, 그리고 실패·중복 대비는 별도로(멱등성 설계, <a href="D2 API 설계 기초.html">D2 API 설계 기초.html</a>의 멱등 키 참조).</li>
+</ul>
+<div class="flow">나쁜 경계                              좋은 경계
+BEGIN                                  (검증·계산·외부 조회를 먼저)
+  재고 조회·검증 (오래 걸림)              BEGIN
+  외부 결제 API 호출  ← 롤백 불가!          주문 INSERT
+  주문 INSERT                              재고 UPDATE
+  재고 UPDATE                            COMMIT
+  추천 목록 재계산 (오래 걸림)            (커밋 후: 결제 확정 처리·알림 발송)
+COMMIT</div>
+
+<h2>5. 흔히 헷갈리는 지점</h2>
+<p>
+경계까지 그었다면 기초는 갖춰졌다. 남은 것은 이 개념들이 어긋나게 이해되기 쉬운 지점들이다.
+</p>
+<blockquote class="warn">
+<p><strong>① "롤백하면 정말 전부 되돌아간다"?</strong> — DB 안의 데이터는 그렇다. 그러나 자동 증가(auto-increment) 번호는 롤백해도 되돌지 않고 건너뛰며(번호 연속성을 가정한 설계는 위험), 트랜잭션 안에서 실행한 외부 부수효과(4절 ③)는 당연히 남는다. "전부"의 범위는 DB가 관리하는 상태까지다.</p>
+<p><strong>② "ACID의 C는 DB가 보장하니까 신경 안 써도 된다"?</strong> — 3.2절의 두 층 중 아래층(업무 불변식)은 전적으로 코드 책임이다. 제약 조건을 통과했다고 업무적으로 옳은 것이 아니다.</p>
+<p><strong>③ "BEGIN을 안 썼으니 트랜잭션이 없다"?</strong> — 자동 커밋 모드에서는 <em>모든 문장이 각자 1문장짜리 트랜잭션</em>이다. 문제는 트랜잭션의 부재가 아니라 <strong>묶음 단위가 의도와 다른 것</strong>이다 — 2문장이 묶여야 하는데 각자 커밋되고 있는 상태.</p>
+<p><strong>④ "트랜잭션 = 락"?</strong> — 트랜잭션은 논리적 묶음이고, 락은 격리성(I)을 구현하는 수단 중 하나다. 락 없이 격리를 구현하는 MVCC도 있다(E4). 개념의 층위가 다르다.</p>
+<p><strong>⑤ "커밋이 성공 응답을 줬으니 무조건 디스크에 있다"?</strong> — 원칙은 그렇다(3.4절). 다만 일부 DB는 성능을 위해 로그 디스크 동기화 시점을 완화하는 설정을 제공하며, 이 경우 D의 보장이 약해진다. "기본값은 안전, 완화는 명시적 트레이드오프"로 이해하면 된다.</p>
+</blockquote>
+
+<h2>★ 6. 언어별 대조</h2>
+<p>
+개념이 섰다면 마지막 질문은 "내 코드에서 BEGIN/COMMIT은 어디 있는가"다.
+언어·프레임워크마다 트랜잭션 경계를 표현하는 관용구가 다르고, <strong>경계가 눈에 안 보이는 방식일수록 4절의 경계 설계 실수가 숨기 쉽다</strong>.
+</p>
+<table>
+  <tr><th>언어</th><th>경계 표현 관용구</th><th>경계의 가시성</th><th>비고</th></tr>
+  <tr>
+    <td>Java</td>
+    <td>Spring <code>@Transactional</code> — 메서드 전체가 하나의 트랜잭션</td>
+    <td><strong>낮음</strong>(선언적 — 프록시가 대신 BEGIN/COMMIT)</td>
+    <td>아래 심화 참조</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>드라이버 수동(<code>BEGIN</code>/<code>COMMIT</code> 쿼리) 또는 ORM 콜백(예: <code>prisma.$transaction(async tx =&gt; {...})</code>)</td>
+    <td>높음(콜백 블록 = 경계)</td>
+    <td>아래 심화 참조 — 커넥션과 트랜잭션의 결합이 관건</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>컨텍스트 매니저 — <code>with session.begin():</code> 블록</td>
+    <td>높음(들여쓰기 블록 = 경계, 예외 시 자동 롤백)</td>
+    <td>언어의 <code>with</code> 문이 "시작-끝-예외 처리" 삼위일체를 문법으로 제공</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td>SQL 직접 전송 또는 RAII 가드 객체(소멸자에서 미커밋 시 롤백)</td>
+    <td>수동(규율 의존)</td>
+    <td>RAII 패턴이 Python의 <code>with</code>와 같은 역할 — "잊어도 롤백"을 언어 장치로</td>
+  </tr>
+</table>
+
+<h3>6.1 Java — 선언적 경계의 편리함과 그 대가</h3>
+<pre><code>@Service
+public class TransferService {
+
+    @Transactional                       // 이 메서드 전체 = 하나의 트랜잭션
+    public void transfer(Long from, Long to, long amount) {
+        accountRepo.withdraw(from, amount);
+        accountRepo.deposit(to, amount);
+        // 정상 반환 → 커밋 / RuntimeException → 롤백 (프록시가 처리)
+    }
+}</code></pre>
+<blockquote class="warn">
+<p><strong>Java 관점의 함정:</strong> <code>@Transactional</code>은 마법이 아니라 <strong>프록시</strong>다 — 스프링이 객체를 감싼 대리인이 메서드 호출 전후로 BEGIN/COMMIT을 넣는다. 따라서 ① <em>같은 클래스 안에서 자기 메서드 호출</em>(self-invocation)은 프록시를 안 거치므로 애너테이션이 무시되고, ② 기본 설정은 체크 예외(checked exception)에는 롤백하지 않는다. "붙였는데 트랜잭션이 안 걸려 있었다"는 사고의 두 단골 원인이며, 경계가 안 보이는 선언적 방식의 대가다.</p>
+</blockquote>
+
+<h3>6.2 JS·TS — 트랜잭션은 커넥션에 붙어 있다</h3>
+<pre><code>// node-postgres 수동 트랜잭션의 정석 형태
+const client = await pool.connect();     // 반드시 "같은 커넥션"을 잡아서
+try {
+  await client.query('BEGIN');
+  await client.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [amt, from]);
+  await client.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [amt, to]);
+  await client.query('COMMIT');
+} catch (e) {
+  await client.query('ROLLBACK');        // 실패 시 명시적 롤백
+  throw e;
+} finally {
+  client.release();                      // 풀에 반납 — 누락 시 커넥션 고갈
+}</code></pre>
+<blockquote class="info">
+<p><strong>JS 관점의 통찰:</strong> 트랜잭션 상태는 <strong>커넥션에 귀속</strong>된다. 풀에서 매 쿼리마다 커넥션을 새로 받으면 BEGIN과 UPDATE가 <em>서로 다른 커넥션</em>에서 실행되어 묶이지 않는다 — "트랜잭션을 걸었는데 안 묶인다"의 단골 원인. Prisma의 <code>$transaction(async tx =&gt; ...)</code>처럼 콜백에 전달되는 <code>tx</code> 객체만 쓰게 강제하는 API는 이 실수를 타입 수준에서 막으려는 설계다.</p>
+</blockquote>
+
+<h3>6.3 Python / C++ — 한 줄 요약</h3>
+<p>
+Python의 <code>with session.begin():</code>은 블록 이탈 방식(정상/예외)에 따라 커밋/롤백을 자동 분기한다 — 6.2절 try/catch/finally 정석 형태의 문법 내장판이다.
+C++의 RAII 가드(스코프를 벗어날 때 소멸자가 미커밋 트랜잭션을 롤백)는 같은 발상을 소멸자로 구현한 것으로, "롤백을 잊을 수 없게 만든다"가 언어를 관통하는 공통 목표임을 보여 준다.
+</p>
+
+<h2>7. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>격리 수준과 락</strong> — 3.3절에서 미룬 I의 다이얼. 이 문서의 직접 후속인 <a href="E4 격리 수준과 락.html">E4 격리 수준과 락.html</a>.</li>
+  <li><strong>분산 트랜잭션과 사가(saga)</strong> — 트랜잭션 하나로 못 묶는 <em>여러 DB·여러 서비스</em>에 걸친 작업의 원자성 문제. 2단계 커밋의 비용 때문에 실무는 보상 트랜잭션(사가) 쪽으로 기운다 — 4절 ③의 "외부 부수효과" 문제의 확장판.</li>
+  <li><strong>트랜잭셔널 아웃박스(transactional outbox)</strong> — "DB 변경과 메시지 발행을 함께" 문제의 표준 해법: 보낼 메시지를 같은 트랜잭션으로 테이블에 기록하고, 별도 프로세스가 발행.</li>
+  <li><strong>WAL과 복제</strong> — 3.4절의 로그는 지속성만이 아니라 복제(replication)·시점 복구(PITR)의 기반이기도 하다.</li>
+  <li><strong>저장 프로시저 안의 트랜잭션</strong> — 경계를 애플리케이션이 아닌 DB 쪽에 두는 선택지. 경계가 두 곳에 흩어지면 추적이 어려워지므로 한쪽으로 통일하는 것이 요령.</li>
+</ul>
+
+<h2>8. 한 장 요약</h2>
+<ul>
+  <li>트랜잭션 = 운명을 같이하는 작업 묶음. BEGIN으로 열고 COMMIT(확정) 또는 ROLLBACK(전체 취소)으로 닫는다. 커밋 전은 제안, 장애 시엔 자동 롤백.</li>
+  <li>ACID의 무게는 다르다 — A(undo 로그)·D(WAL/redo)는 DB가 기계적으로, C는 제약+<strong>코드의 불변식</strong>으로 절반이 개발자 몫, I는 수준을 <strong>개발자가 선택</strong>(→ E4).</li>
+  <li>경계 설계 3원칙: 함께 죽을 것만 묶고, 짧게 유지하고, 롤백 불가능한 외부 부수효과는 밖으로(커밋 후 + 멱등성 대비).</li>
+  <li>자동 커밋 기본값 주의 — BEGIN이 없으면 "문장마다 각자 커밋"이 이미 일어나고 있다. 방언 차이도 경계의 일부: Oracle은 첫 DML로 암묵 시작하며 <strong>DDL이 암묵 커밋을 유발</strong>한다.</li>
+  <li>프레임워크의 경계 표현을 정확히 알 것 — Java 프록시(@Transactional의 self-invocation·예외 규칙), JS 커넥션 귀속, Python with 블록. 경계가 안 보일수록 실수가 숨는다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="E4 격리 수준과 락.html">E4 격리 수준과 락.html</a> — 3.3절에서 미룬 격리성의 다이얼: 이상현상·격리 수준·락·MVCC (직접 후속)</li>
+  <li><a href="E1 인덱스 원리와 복합 인덱스.html">E1 인덱스 원리와 복합 인덱스.html</a> — 트랜잭션이 "정합성"의 기둥이라면 인덱스는 "성능"의 기둥 — DB 기초의 다른 한 축</li>
+  <li><a href="D2 API 설계 기초.html">D2 API 설계 기초.html</a> — 트랜잭션 밖으로 밀어낸 외부 호출의 재시도 안전성(멱등성·멱등 키)</li>
+  <li><a href="G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a> — "동시 접근이 만드는 문제"의 애플리케이션 메모리 버전 — E4와 함께 보면 두 세계가 겹쳐 보인다</li>
+</ul>
+
+</body>
+</html>

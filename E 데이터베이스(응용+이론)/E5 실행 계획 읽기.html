@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E5 실행 계획 읽기</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>E5 실행 계획 읽기</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>SQL은 <strong>"무엇을"</strong>만 말하고 <strong>"어떻게"</strong>는 말하지 않는 선언형 언어다. "어떻게"를 정하는 것은 DB의 옵티마이저(optimizer)이고, 그 결정문을 사람이 읽을 수 있게 펼친 것이 <strong>실행 계획(execution plan)</strong>이다.</li>
+  <li>여는 주문은 쿼리 앞에 <code>EXPLAIN</code>을 붙이는 것. <strong><code>EXPLAIN</code>은 실행 없이 "예상"을, <code>EXPLAIN ANALYZE</code>는 실제로 실행한 "실측"을</strong> 보여 준다 — 느린 쿼리 수사의 시작과 끝이 이 두 명령이다.</li>
+  <li>가장 먼저 볼 것은 <strong>접근 방식</strong>이다: 인덱스로 소수 행을 집는가(<a href="E1 인덱스 원리와 복합 인덱스.html">E1</a>의 열매), 아니면 테이블 전체를 훑는가(풀스캔). 그리고 <strong>rows(예상 처리 행 수)</strong> — "1건 찾자고 100만 행을 읽는" 낭비가 숫자로 드러난다.</li>
+  <li>인덱스가 <em>있는데도</em> 안 타는 데는 전형적 이유가 있다: 컬럼을 함수·연산으로 감쌈, 타입 불일치(암묵적 형변환), 복합 인덱스 선두 컬럼 누락, <code>LIKE '%…'</code>, 그리고 <strong>"안 타는 게 실제로 더 빠른 경우"</strong>(낮은 선택도) — 마지막 것은 고칠 대상이 아니다.</li>
+  <li>실행 계획의 rows·비용은 <strong>통계 기반 추정치</strong>다. 추정과 실측(ANALYZE)이 크게 어긋나면 쿼리가 아니라 <strong>통계가 낡은 것</strong>일 수 있다.</li>
+  <li>단, 실행 계획은 만능 진단서가 아니다 — <strong>락 대기(→ <a href="E4 격리 수준과 락.html">E4</a>)는 계획에 나타나지 않는다.</strong> "계획은 완벽한데 느리다"면 다른 범인을 찾아야 한다.</li>
+</ul>
+
+<h2>1. 선언과 절차 사이 — 실행 계획이 존재하는 이유</h2>
+<p>
+<code>SELECT * FROM orders WHERE user_id = 42</code>라는 문장에는 "orders를 처음부터 훑어라"도 "인덱스를 타라"도 적혀 있지 않다.
+같은 질문에 대한 <strong>실행 경로는 여러 개</strong>이고 — 전체 스캔, 이 인덱스, 저 인덱스, 조인이라면 순서와 방식까지 — 어느 경로가 싼지는
+데이터의 분포와 양에 따라 다르다. 옵티마이저는 테이블 통계를 근거로 각 경로의 비용을 추정해 가장 싼 경로를 고르는 부품이다.
+</p>
+<p>
+개발자 입장에서 이 구조가 뜻하는 바: <strong>내가 쓴 SQL과 실제 실행되는 절차 사이에는 번역기가 하나 끼어 있다.</strong>
+쿼리가 느릴 때 SQL 문장만 노려봐서는 답이 안 나오는 이유이고, 번역 결과를 직접 확인하는 창구가 필요한 이유다. 그 창구가 EXPLAIN이다.
+</p>
+
+<h2>2. EXPLAIN 여는 법 — 예상과 실측</h2>
+<p>
+사용법은 허무할 만큼 간단하다. 문법과 출력 형태는 DB마다 다르지만(이 문서는 널리 쓰이는 MySQL·PostgreSQL·Oracle을 대표 예시로 쓴다), 개념은 공통이다.
+</p>
+<pre><code>-- 예상 계획: 실행하지 않고 옵티마이저의 선택만 확인 (안전, 운영에서도 부담 없음)
+EXPLAIN SELECT * FROM orders WHERE user_id = 42;              -- MySQL·PostgreSQL
+
+EXPLAIN PLAN FOR SELECT * FROM orders WHERE user_id = 42;     -- Oracle: 계획을 plan_table에 기록 후
+SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);                      --         꺼내서 보는 2단계
+
+-- 실측 계획: 실제로 실행하고 단계별 실제 소요·실제 행 수까지 표시
+EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id = 42;      -- MySQL(8.0.18+)·PostgreSQL
+
+SELECT /*+ GATHER_PLAN_STATISTICS */ * FROM orders WHERE user_id = 42;          -- Oracle: 실측 수집 힌트로 실행 후
+SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(NULL, NULL, 'ALLSTATS LAST'));    --         방금 실행의 실측 계획 조회
+-- 주의: 실측 계열은 정말 실행된다. UPDATE/DELETE에 쓰면 데이터가 정말 바뀐다(트랜잭션으로 감싸고 롤백할 것)</code></pre>
+<p>
+출력에서 처음부터 다 읽으려 하지 말고, <strong>세 가지만</strong> 찾는 습관으로 시작한다.
+</p>
+<table>
+  <tr><th>볼 것</th><th>MySQL EXPLAIN에서</th><th>PostgreSQL EXPLAIN에서</th><th>Oracle DBMS_XPLAN에서</th><th>답하는 질문</th></tr>
+  <tr><td><strong>① 접근 방식</strong></td><td><code>type</code> 컬럼 (<code>const</code>/<code>ref</code>/<code>range</code>/<code>index</code>/<code>ALL</code>)</td><td>노드 이름 (<code>Index Scan</code>/<code>Seq Scan</code> 등)</td><td>Operation 열 (<code>INDEX UNIQUE SCAN</code>/<code>INDEX RANGE SCAN</code>/<code>TABLE ACCESS FULL</code> 등)</td><td>집어서 읽나, 훑어서 읽나</td></tr>
+  <tr><td><strong>② 사용 인덱스</strong></td><td><code>key</code> 컬럼 (NULL이면 미사용)</td><td><code>Index Scan using 인덱스명</code></td><td>INDEX 계열 연산 행의 Name 열에 인덱스명</td><td>어떤 인덱스를(못) 탔나</td></tr>
+  <tr><td><strong>③ 처리 행 수</strong></td><td><code>rows</code> (추정)</td><td><code>rows=추정 (actual rows=실측)</code></td><td><code>Rows</code>(추정) / <code>A-Rows</code>(실측 — DISPLAY_CURSOR 시)</td><td>얼마나 읽어서 얼마를 건지나</td></tr>
+</table>
+
+<h2>3. 접근 방식 스펙트럼 — 풀스캔 진단의 기준선</h2>
+<p>
+2절의 ①을 읽으려면 눈금이 필요하다. 접근 방식은 "얼마나 정확히 집어 읽는가"의 스펙트럼으로 이해하면 된다(MySQL <code>type</code> 어휘 기준, 개념은 공통).
+</p>
+<div class="flow">정확히 집음 ◀──────────────────────────────────────────▶ 전부 훑음
+
+ const/eq_ref        ref              range           index         ALL
+ PK·유니크로     일반 인덱스로     인덱스로 구간을    인덱스를      테이블
+ 최대 1행        같은 값 여러 행    (BETWEEN,&gt;,&lt;)    처음부터 끝까지  전체 스캔
+                                                    (풀스캔의 인덱스판)  (풀스캔)</div>
+<p>
+어휘만 다를 뿐 스펙트럼은 DB 공통이다 — Oracle로 옮기면 대략
+<code>const/eq_ref</code> ≒ <code>INDEX UNIQUE SCAN</code>, <code>ref</code>·<code>range</code> ≒ <code>INDEX RANGE SCAN</code>,
+<code>index</code> ≒ <code>INDEX FULL SCAN</code>, <code>ALL</code> ≒ <code>TABLE ACCESS FULL</code>에 대응하고,
+PostgreSQL의 <code>Seq Scan</code>이 곧 <code>ALL</code>/<code>TABLE ACCESS FULL</code> 자리다. 이하 본문은 MySQL 어휘로 쓰되, 판단 기준은 세 방언에 동일하게 적용된다.
+</p>
+<ul>
+  <li><strong><code>ALL</code>(풀스캔)이 뜨면 우선 용의자</strong>다 — 단, 유죄 확정은 아니다. 수백 행짜리 코드 테이블은 전체를 읽는 게 인덱스 왕복보다 싸고, 옵티마이저도 그래서 풀스캔을 <em>선택</em>한 것이다. 풀스캔이 문제인 것은 <strong>큰 테이블에서 소수 행을 찾을 때</strong>다.</li>
+  <li><strong><code>index</code>는 이름과 달리 좋은 신호가 아니다</strong> — 인덱스를 "타는" 게 아니라 인덱스 <em>전체를</em> 훑는 것(풀 인덱스 스캔)으로, ALL보다 약간 나은 정도다.</li>
+  <li>판단 공식: <strong>테이블 크기 × 건질 비율</strong>. "orders 500만 행에서 user 하나의 주문 30건"에 ALL이 떴다면 명백한 수사 대상, "지역 코드 200행 전체 조회"에 ALL은 정상이다.</li>
+</ul>
+
+<h2>4. 인덱스가 있는데 안 탄다 — 전형적 이유 다섯</h2>
+<p>
+3절의 눈금으로 "타야 할 자리에서 안 탔다"가 확인됐다면, 다음 질문은 <strong>왜</strong>다. 원인의 대부분은 다음 다섯 패턴 안에 있다.
+</p>
+<table>
+  <tr><th>패턴</th><th>예시</th><th>원리</th><th>처방</th></tr>
+  <tr>
+    <td>① 컬럼을 감쌈</td>
+    <td><code>WHERE YEAR(created_at) = 2026</code></td>
+    <td>인덱스는 <em>원본 값</em>으로 정렬돼 있다. 함수를 통과한 값의 정렬은 모른다</td>
+    <td>컬럼을 벗겨 구간 조건으로: <code>created_at &gt;= '2026-01-01' AND created_at &lt; '2027-01-01'</code></td>
+  </tr>
+  <tr>
+    <td>② 타입 불일치</td>
+    <td>문자열 컬럼에 <code>WHERE phone = 01012345678</code>(숫자)</td>
+    <td>DB가 <em>컬럼 쪽</em>을 암묵 형변환하면 ①과 동일해진다</td>
+    <td>리터럴·바인딩 타입을 컬럼과 일치('...'로). 애플리케이션 바인딩 타입도 점검</td>
+  </tr>
+  <tr>
+    <td>③ 복합 인덱스 선두 누락</td>
+    <td>인덱스 <code>(user_id, status)</code>인데 <code>WHERE status = 'PAID'</code>만</td>
+    <td>복합 인덱스는 선두 컬럼부터의 사전식 정렬 — 선두 없이는 진입 불가(E1의 핵심 규칙)</td>
+    <td>선두 컬럼 조건 추가, 또는 <code>(status, ...)</code> 인덱스 검토</td>
+  </tr>
+  <tr>
+    <td>④ 앞쪽 와일드카드</td>
+    <td><code>WHERE name LIKE '%철수'</code></td>
+    <td>정렬의 기준인 "첫 글자"가 미정이라 어디서 시작할지 알 수 없다</td>
+    <td>가능하면 전방 일치(<code>'김%'</code>)로 설계, 아니면 전문 검색(full-text) 계열 도구</td>
+  </tr>
+  <tr>
+    <td>⑤ 낮은 선택도(selectivity)</td>
+    <td><code>WHERE deleted = false</code> (전체의 95%)</td>
+    <td>어차피 대부분을 읽어야 하면 인덱스 왕복(찾고→본문 접근)이 풀스캔보다 비싸다 — <strong>옵티마이저가 옳다</strong></td>
+    <td>고치지 않는다. 진짜 필터는 다른 조건에 맡기고, 그 조건의 인덱스를 챙긴다</td>
+  </tr>
+</table>
+<blockquote class="info">
+<p><strong>다섯 패턴의 공통 원리:</strong> ①~④는 전부 "<strong>인덱스는 정렬된 자료구조이고, 정렬 순서를 활용할 수 없는 조건은 못 탄다</strong>"의 변주다(원리는 E1). ⑤만 성격이 다르다 — 탈 수 <em>있는데</em> 안 타는 것이고, 그것이 합리적 선택이다. 즉 "인덱스를 안 탔다"는 관찰은 곧바로 "고쳐야 한다"로 번역되지 않는다.</p>
+</blockquote>
+
+<h2>5. rows와 비용 — 이 숫자들은 추정치다</h2>
+<p>
+4절까지는 계획을 믿고 읽었다. 그러나 계획의 숫자에는 태생적 한계가 있다: 옵티마이저는 실행 <em>전에</em> 비용을 계산해야 하므로,
+실제 데이터가 아니라 <strong>표본으로 만든 통계(행 수, 값 분포 히스토그램 등)</strong>에 의존한다. 통계가 현실과 어긋나면 — 대량 적재 직후, 분포가 급변한 뒤 —
+옵티마이저는 낡은 지도로 길을 고른다.
+</p>
+<pre><code>-- PostgreSQL EXPLAIN ANALYZE 출력의 전형적 "통계 낡음" 신호
+Index Scan using idx_orders_user on orders
+  (cost=0.43..8.45 rows=3 ...)        ← 추정: 3행이라 판단해 이 계획을 선택
+  (actual ... rows=182,400 ...)       ← 실측: 18만 행. 추정이 6만 배 어긋남</code></pre>
+<ul>
+  <li><strong>추정 vs 실측의 큰 괴리 = 통계 문제의 신호.</strong> 이때의 처방은 쿼리 수정이 아니라 통계 갱신이다 — PostgreSQL <code>ANALYZE 테이블</code>, MySQL <code>ANALYZE TABLE</code>, Oracle <code>DBMS_STATS.GATHER_TABLE_STATS('스키마','테이블')</code>. (Oracle은 야간 자동 통계 수집 작업이 기본 구성되어 있어, "대량 적재 <em>직후</em>"처럼 자동 주기가 못 따라온 시점이 전형적 괴리 구간이다.)</li>
+  <li><strong>비용(cost) 숫자는 절대 시간(초)이 아니다.</strong> 같은 쿼리의 계획 후보끼리 비교하기 위한 상대 단위다. "cost 8.45니까 8.45ms"식 독해는 오독.</li>
+  <li>같은 이유로, <strong>개발 DB(1만 행)에서 본 계획은 운영 DB(1억 행)의 계획과 다를 수 있다</strong> — 데이터가 다르면 통계가 다르고, 통계가 다르면 선택이 달라진다. 계획 확인은 실 분포에 가까운 데이터에서.</li>
+</ul>
+
+<h2>6. 진단 루틴 — 도구들을 절차로 묶기</h2>
+<p>
+이제 부품(EXPLAIN, 접근 방식 눈금, 미사용 원인 목록, 통계 감각)이 모였으니 절차로 조립한다. 느린 쿼리 앞에서의 표준 루틴:
+</p>
+<div class="flow">① 범인 특정      슬로우 쿼리 로그·APM에서 "실제로 느린 그 쿼리"와 실제 바인딩 값 확보
+      ↓            (추측으로 고른 쿼리를 튜닝하는 것이 최대의 낭비)
+② 예상 확인      EXPLAIN — 접근 방식(type/노드)·인덱스(key)·rows 세 가지 독해 (2·3절)
+      ↓
+③ 가설 수립      풀스캔? → 4절 다섯 패턴 대조 / 계획 자체가 이상? → 5절 통계 의심
+      ↓
+④ 수정           쿼리 형태 수정(①②④) 또는 인덱스 추가·재설계(③) 또는 통계 갱신(5절)
+      ↓
+⑤ 재검증         EXPLAIN ANALYZE로 실측 비교 — "빨라진 것 같다"가 아니라 숫자로 확인
+      ↓
+⑥ 원상 감시      배포 후 슬로우 로그 재확인. 인덱스 추가는 쓰기 비용 증가이기도 하다(E1)</div>
+<blockquote class="warn">
+<p><strong>루틴의 사각지대:</strong> 실행 계획은 "읽고 찾는 비용"의 지도이지 "기다림"의 지도가 아니다. 계획도 실측도 훌륭한데 특정 시간대만 느리다면 <strong>락 대기(<a href="E4 격리 수준과 락.html">E4</a>)·커넥션 풀 고갈·리소스 경합</strong> 계열을 의심해야 한다. EXPLAIN 밖의 범인은 EXPLAIN으로 안 잡힌다.</p>
+</blockquote>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "풀스캔 = 무조건 악"?</strong> — 3절·4절 ⑤에서 봤듯 소량 테이블·낮은 선택도에서는 풀스캔이 최적해다. 박멸 대상은 풀스캔이 아니라 "큰 테이블에서 소수를 찾는데 훑는" 조합이다.</p>
+<p><strong>② "인덱스를 만들었으니 쓰겠지"?</strong> — 옵티마이저는 인덱스의 존재가 아니라 비용으로 선택한다. 4절의 다섯 이유 중 하나로 외면당할 수 있고, 특히 ⑤라면 외면이 정답이다. 확인 수단은 언제나 EXPLAIN이지 인덱스 목록이 아니다.</p>
+<p><strong>③ "EXPLAIN이 좋게 나왔으니 끝"?</strong> — EXPLAIN은 추정이다(5절). 통계가 낡았다면 좋아 보이는 계획이 실행 시 배신한다. 최종 판정은 EXPLAIN ANALYZE의 실측으로.</p>
+<p><strong>④ "개발 환경에서 빨랐는데 운영에서 느리다"?</strong> — 5절의 마지막 항목. 데이터 규모·분포가 다르면 옵티마이저는 다른 계획을 고른다. 버그가 아니라 설계된 동작이다.</p>
+<p><strong>⑤ "ORM을 쓰니까 실행 계획은 DBA의 일"?</strong> — ORM은 SQL을 대신 써 줄 뿐 계획을 대신 읽어 주지 않는다. 오히려 ORM이 생성한 SQL은 눈에 안 보여서 4절 패턴(특히 타입 불일치·함수 감싸기)이 몰래 들어오기 쉽다 — ★8절의 주제.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+실행 계획 자체는 언어 중립(SQL의 세계)이므로, 언어별로 갈리는 지점은 하나다:
+<strong>내 코드가 만들어 보내는 SQL을 어떻게 꺼내서 EXPLAIN 앞에 세우는가.</strong> ORM을 쓸수록 이 "꺼내는" 단계가 진단 루틴 ①의 관건이 된다.
+</p>
+<table>
+  <tr><th>언어</th><th>SQL을 꺼내는 방법</th><th>계획 확인 관용구</th><th>비고</th></tr>
+  <tr>
+    <td>Java</td>
+    <td>JPA/Hibernate SQL 로깅 + 바인딩 파라미터 로깅</td>
+    <td>로그의 SQL에 실제 값 대입 → EXPLAIN</td>
+    <td>아래 심화 참조 — N+1과 실행 계획의 관계</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>Prisma/TypeORM 쿼리 로깅 옵션</td>
+    <td>로깅된 SQL → EXPLAIN. ORM에 raw 쿼리로 EXPLAIN 직접 실행도 가능</td>
+    <td>아래 심화 참조</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>SQLAlchemy <code>echo=True</code>·로거로 SQL 노출</td>
+    <td>동일 — 로그 SQL을 EXPLAIN에</td>
+    <td><code>print(query)</code>로 컴파일된 SQL을 바로 볼 수 있는 점이 편리</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td>SQL을 직접 쓰므로 이미 손에 있음</td>
+    <td>그대로 EXPLAIN</td>
+    <td>"꺼내는" 문제가 없다 — ORM 편의의 대가가 무엇이었는지 보여 주는 대조군</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — 계획을 보기 전에, 쿼리가 몇 번 나가는지부터</h3>
+<pre><code># application.yml — 생성 SQL과 바인딩 값을 보이게
+spring.jpa.properties.hibernate.format_sql: true
+logging.level.org.hibernate.SQL: debug
+logging.level.org.hibernate.orm.jdbc.bind: trace   # 바인딩 파라미터
+
+# 로그에서 발견되는 전형적 N+1:
+# select * from orders where user_id=?        ← 1번
+# select * from order_items where order_id=?  ← 주문 수만큼 반복 (100번)</code></pre>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> ORM 환경의 성능 문제는 "쿼리 한 개가 느림"(실행 계획의 영역)과 "빠른 쿼리가 100번 나감"(N+1 — 페치 전략의 영역)의 두 종류가 있고, <strong>EXPLAIN은 앞의 것만 잡는다</strong>. 개별 쿼리의 계획이 전부 <code>const</code>로 완벽해도 100번의 왕복이면 느리다. 그래서 Java의 진단 루틴 ①은 "느린 SQL 찾기" 전에 "SQL이 <em>몇 번</em> 나가는지 세기"가 먼저다.</p>
+</blockquote>
+
+<h3>8.2 JS·TS — 로깅을 켜야 보이는 것, 켜도 안 보이는 것</h3>
+<pre><code>// Prisma: 쿼리 로깅 + 소요 시간
+const prisma = new PrismaClient({ log: [{ emit: 'event', level: 'query' }] });
+prisma.$on('query', (e) =&gt; console.log(e.query, e.params, `${e.duration}ms`));
+
+// 잡아낸 SQL을 그대로 계획 확인에 (raw 쿼리로 EXPLAIN 직접 실행)
+const plan = await prisma.$queryRawUnsafe(
+  `EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id = $1`, 42
+);</code></pre>
+<blockquote class="info">
+<p><strong>JS 관점의 통찰:</strong> 로깅에서 특히 볼 것은 <code>params</code>다 — 4절 ②(타입 불일치)는 SQL 문자열이 아니라 <strong>바인딩된 값의 타입</strong>에서 발생하므로, "SQL은 똑같은데 DB 콘솔에서는 빠르고 앱에서는 느린" 미스터리의 단골 정체가 바인딩 타입이다. SQL만 복사해 EXPLAIN하면 재현이 안 되는 이유이기도 하다.</p>
+</blockquote>
+
+<h3>8.3 Python / C++ — 한 줄 요약</h3>
+<p>
+Python은 <code>echo=True</code> 한 줄로 전체 SQL이 흐르는 것을 볼 수 있어 학습 단계에서 "ORM이 뭘 만드는지" 감각을 기르기에 가장 좋다.
+C++처럼 SQL을 직접 쓰는 환경은 "꺼내기" 단계가 없다는 것이 역설적 장점 — ORM 스택에서 진단 루틴의 절반이 왜 로깅 설정인지 대조로 알 수 있다.
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>커버링 인덱스(covering index)</strong> — SELECT 대상 컬럼까지 인덱스에 다 있어 본문 접근 없이 인덱스만으로 끝내는 형태. 계획에 별도 표시(MySQL <code>Using index</code> 등)가 뜨는, 3절 스펙트럼 바깥의 보너스 단계.</li>
+  <li><strong>조인 계획 읽기</strong> — 다중 테이블 쿼리에서는 조인 순서·방식(중첩 루프/해시/정렬 병합)이 계획의 몸통이 된다. 이 문서의 단일 테이블 독해가 그 선수 과목.</li>
+  <li><strong>옵티마이저 힌트</strong> — 계획을 강제하는 최후 수단. 데이터가 변해도 강제가 남는 부작용 때문에 "통계·쿼리·인덱스로 해결 불가일 때만"이 통례.</li>
+  <li><strong>슬로우 쿼리 로그와 APM</strong> — 진단 루틴 ①의 도구. 임계 시간 설정과 로그 주기 검토가 운영 습관이다.</li>
+  <li><strong>실행 계획 캐시와 파라미터 민감성</strong> — 바인딩 값에 따라 최적 계획이 다른 쿼리에서, 캐시된 계획이 특정 값에만 유리한 문제(일부 DB). "가끔만 느린 쿼리"의 원인 후보.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>SQL은 선언, 실행 절차는 옵티마이저의 선택 — 그 선택문이 실행 계획이고 EXPLAIN(예상)/EXPLAIN ANALYZE(실측)로 읽는다.</li>
+  <li>독해는 세 가지부터: 접근 방식(집나/훑나), 사용 인덱스, rows. 풀스캔은 "큰 테이블 × 소수 행"일 때만 용의자.</li>
+  <li>인덱스 외면의 5대 원인 — 함수 감싸기·타입 불일치·선두 컬럼 누락·앞쪽 와일드카드는 "정렬을 못 쓰게 한 것"(수정 대상), 낮은 선택도는 옵티마이저가 옳은 것(수정 비대상).</li>
+  <li>계획의 숫자는 통계 기반 추정 — 실측과의 큰 괴리는 통계 갱신 신호. 개발↔운영 계획 상이도 같은 원리.</li>
+  <li>루틴: 실제 느린 쿼리 특정 → EXPLAIN 독해 → 패턴 대조 → 수정 → ANALYZE 재검증. 단 락 대기 등 "기다림"은 이 지도 밖(→ E4).</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="E1 인덱스 원리와 복합 인덱스.html">E1 인덱스 원리와 복합 인덱스.html</a> — 계획 독해의 전제인 인덱스 자료구조·선두 컬럼 규칙·선택도(선수)</li>
+  <li><a href="E4 격리 수준과 락.html">E4 격리 수준과 락.html</a> — 실행 계획에 나타나지 않는 성능 문제: 락 대기와 경합</li>
+  <li><a href="E3 트랜잭션 기초와 ACID.html">E3 트랜잭션 기초와 ACID.html</a> — EXPLAIN ANALYZE를 쓰기 변경 쿼리에 안전하게 쓰기 위한 트랜잭션·롤백 기초</li>
+</ul>
+
+</body>
+</html>

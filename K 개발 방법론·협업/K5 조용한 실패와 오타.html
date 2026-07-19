@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>K5 조용한 실패와 오타</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>K5 조용한 실패(silent failure)와 오타</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li><strong>조용한 실패(silent failure)</strong>란 "동작은 안 하는데 에러도 없는" 상태다. 스택 트레이스가 나오는 요란한 실패보다 <strong>훨씬 비싼</strong> 실패다 — 어디가 잘못됐는지 아무 단서가 없기 때문이다.</li>
+  <li>가장 흔한 원인은 허무할 만큼 단순하다: <strong>이름 불일치(오타)</strong>. 이벤트명, JSON 키, 폼 필드명, 속성명 같은 <strong>문자열 기반 연결 지점</strong>은 이름이 틀려도 시스템이 에러를 내지 않고 그냥 "아무 일도 안 한다".</li>
+  <li>두 번째 원인은 코드가 실패를 <strong>스스로 삼키는 것</strong>이다: 빈 <code>catch</code>, 남용된 옵셔널 체이닝(optional chaining), 그리고 <strong>false류 반환값을 돌려줬는데 호출부가 확인하지 않는</strong> 패턴.</li>
+  <li>핵심 원리는 <strong>실패의 전파 vs 흡수</strong>다. 실패는 처리할 수 있는 곳까지 <em>전파</em>되어야 하며, 처리 계획 없이 <em>흡수</em>되는 순간 조용한 실패가 태어난다.</li>
+  <li>방어선은 기계에 맡긴다: <strong>린터(linter)·타입체커(type checker)</strong>는 이름 오타와 무시된 반환값을 사람 눈보다 훨씬 잘 잡는다. "정적 검사가 닿지 않는 문자열 경계"가 어디인지 아는 것이 실무 감각이다.</li>
+  <li>디버깅 규칙 하나만 기억하자: <strong>"동작 안 함 + 에러 없음"이면 로직보다 이름부터 의심한다.</strong></li>
+</ul>
+
+<h2>1. 조용한 실패 — 왜 가장 비싼 실패인가</h2>
+<p>
+실패에는 두 종류가 있다. 요란한 실패는 예외와 스택 트레이스를 남긴다 — 고장 지점의 좌표가 찍혀 있으므로, 사실 <strong>디버깅의 절반은 끝난 셈</strong>이다.
+조용한 실패는 반대다. 버튼을 눌렀는데 아무 일도 안 일어난다. 콘솔도 로그도 깨끗하다. 코드 어디를 봐야 할지조차 모른다.
+</p>
+
+<div class="flow">요란한 실패:  고장 → 예외 발생 → 스택 트레이스 → 좌표 확보 → 수정
+조용한 실패:  고장 → (아무 신호 없음) → "왜 안 되지?" → 전 구간 수색
+
+  비용 차이는 고장의 크기가 아니라 "신호의 유무"에서 나온다</div>
+
+<p>
+더 나쁜 것은 <strong>발견 시점</strong>이다. 요란한 실패는 발생 즉시 드러나지만, 조용한 실패는 며칠 뒤 "데이터가 왜 비어 있죠?"라는 형태로 발견되곤 한다.
+고장 시점과 발견 시점 사이가 벌어질수록 원인 추적은 기하급수로 어려워진다.
+그래서 이 주제의 결론은 역설적이다 — <strong>좋은 코드는 잘 실패하는 코드, 즉 실패를 크게 알리는 코드</strong>다.
+</p>
+
+<h2>2. 원인 ① 이름 불일치 — 문자열로 연결된 곳은 오타에 침묵한다</h2>
+<p>
+1절에서 실패의 비용을 가르는 것은 고장의 크기가 아니라 <strong>신호의 유무</strong>라고 했다. 그렇다면 신호는 어디서 사라지는가 — 경로는 둘이다. 이 절은 그 첫 번째, <strong>신호가 애초에 태어나지 못하는 경우</strong>다. 컴파일러가 이름을 검사해 주는 구간(변수·메서드 호출)에서는 오타가 즉시 에러가 된다.
+문제는 <strong>이름이 문자열로만 연결되는 지점</strong>이다. 이런 곳에서 시스템은 "그런 이름은 없는데?"라고 말하는 대신, <strong>없는 것을 없는 대로 조용히 처리</strong>한다.
+</p>
+<table>
+  <tr><th>연결 지점</th><th>오타 예</th><th>시스템의 반응</th></tr>
+  <tr>
+    <td>이벤트 이름</td>
+    <td>Vue에서 자식이 <code>emit('submit')</code>, 부모는 <code>@sumbit</code>으로 청취</td>
+    <td>에러 없음 — 아무도 안 듣는 방송이 될 뿐</td>
+  </tr>
+  <tr>
+    <td>객체 속성 접근(JS)</td>
+    <td><code>user.userNmae</code></td>
+    <td>에러 없음 — <code>undefined</code>가 값처럼 흘러감</td>
+  </tr>
+  <tr>
+    <td>JSON·폼 필드 키</td>
+    <td>백엔드는 <code>deliveryMemo</code> 기대, 프론트는 <code>deliverymemo</code> 전송</td>
+    <td>에러 없음 — 해당 필드만 null로 저장됨</td>
+  </tr>
+  <tr>
+    <td>맵/딕셔너리 조회</td>
+    <td><code>config.get("timeuot")</code></td>
+    <td>에러 없음 — 기본값 또는 null 반환</td>
+  </tr>
+  <tr>
+    <td>CSS 클래스·셀렉터</td>
+    <td><code>.btn-primry</code></td>
+    <td>에러 없음 — 스타일만 적용 안 됨</td>
+  </tr>
+</table>
+<p>
+공통 구조가 보이는가: <strong>"찾는 이름이 없음"을 정상 상황처럼 취급하는 API</strong>들이다.
+설계 의도는 유연성이지만(없을 수도 있는 키 조회는 실제로 흔하다), 그 유연성이 오타를 <strong>버그가 아니라 데이터</strong>로 둔갑시킨다.
+</p>
+
+<blockquote class="info">
+<p><strong>진단 규칙:</strong> "동작 안 함 + 에러 없음"을 만나면, 로직을 의심하기 전에 <strong>연결 양끝의 이름을 복사해 나란히 놓고 비교</strong>하라. 눈으로 읽으면 뇌가 오타를 자동 보정해 버리므로, 반드시 기계적으로(복사·붙여넣기, 검색) 대조한다. 이 30초가 반나절의 수색을 대체한다.</p>
+</blockquote>
+
+<h2>3. 원인 ② 실패의 흡수 — 코드가 스스로 신호를 지운다</h2>
+<p>
+신호가 사라지는 두 번째 경로다. 2절이 신호가 <em>태어나지 못하는</em> 경우였다면, 이 절은 태어난 신호가 <em>전달 도중 지워지는</em> 경우다 — 이름이 다 맞아도, 코드가 실패 신호를 중간에서 지워버리면 결과는 같다.
+실패 신호가 지워지는 대표 지점 세 곳을 보자.
+</p>
+
+<h3>3.1 false류 반환값의 무시 — 전파되지 못한 실패</h3>
+<p>
+저장 함수가 실패 시 예외를 던지는 대신 <code>false</code>(또는 null, 빈 결과, 에러 코드)를 반환하는 설계는 그 자체로 흔하다.
+문제는 <strong>호출부가 그 값을 확인하지 않을 때</strong> 시작된다.
+</p>
+<pre><code>// 제공자: 실패를 "반환값"이라는 약한 신호로 알림
+public boolean saveOrder(Order order) {
+    try {
+        repository.insert(order);
+        return true;
+    } catch (DataAccessException e) {
+        log.warn("주문 저장 실패", e);
+        return false;              // 예외를 여기서 흡수하고 신호를 약화
+    }
+}
+
+// 호출부: 약한 신호마저 무시
+public void submitOrder(Order order) {
+    orderService.saveOrder(order);          // 반환값을 버림
+    notifyUser("주문이 완료되었습니다!");    // 실패했어도 무조건 성공 안내
+}</code></pre>
+<p>
+결과: 사용자는 완료 화면을 보고, 로그에는 warn 한 줄이 스치고, <strong>DB에는 주문이 없다</strong>.
+장애는 "주문이 안 들어왔어요"라는 고객 문의로, 며칠 뒤에 발견된다.
+</p>
+<p>
+이 사례의 구조를 일반화하면 이렇다:
+</p>
+<div class="flow">실패 발생(예외) → [제공자] 예외를 잡아 false로 변환   ← 신호 1차 약화
+                → [호출부] 반환값 미확인               ← 신호 2차 소멸
+                → [사용자] 성공 알림                    ← 실패가 성공으로 반전
+
+  각 단계는 "누군가 처리하겠지"라고 가정했고, 아무도 처리하지 않았다</div>
+<p>
+여기서 <strong>실패의 전파 vs 흡수</strong>라는 원리가 나온다.
+실패 신호는 <em>그 실패에 대응할 수 있는 계층</em>(재시도할지, 사용자에게 알릴지, 트랜잭션을 되돌릴지 결정할 수 있는 곳)까지 <strong>전파</strong>되어야 한다.
+전파 수단이 예외든 반환값이든, 원칙은 같다 — <strong>흡수하는 쪽이 처리를 책임진다. 처리 계획이 없으면 흡수할 자격도 없다.</strong>
+위 예제의 진짜 결함은 <code>false</code> 반환 그 자체가 아니라, ① 처리 계획 없는 예외 흡수(제공자)와 ② 신호 무시(호출부)가 겹친 것이다.
+</p>
+
+<blockquote class="ok">
+<p><strong>실전 감각 — 반환값 방식을 쓸 때의 규율:</strong> 실패를 반환값으로 알리는 설계를 택했다면, "호출부가 반드시 확인한다"는 규율이 세트로 따라와야 한다. 언어·도구가 이를 강제할 수 있다 — 무시된 반환값을 경고하는 정적 분석 규칙, 확인을 빼먹으면 컴파일 단계에서 알려주는 어노테이션/속성(★6 참고). 규율을 강제할 수단이 없는 환경이라면, 차라리 예외가 더 안전한 선택이다: 예외는 <em>무시하려면 명시적 코드(catch)가 필요</em>하지만, 반환값은 <em>아무것도 안 하면 무시</em>되기 때문이다.</p>
+</blockquote>
+
+<h3>3.2 옵셔널 체이닝 남용 — "없음"의 정상화</h3>
+<p>
+3.1의 흡수가 개발자가 <em>작성한</em> 코드에서 일어났다면, 이번 것은 <strong>언어가 문법으로 내장해 둔 흡수 지점</strong>이다. 옵셔널 체이닝(optional chaining — 대상이 null/undefined면 에러 대신 undefined를 돌려주는 접근 연산자, JS의 <code>?.</code>)은 "없을 수도 있는 값"을 다루는 훌륭한 도구다.
+문제는 <strong>"반드시 있어야 하는 값"에까지 습관적으로 붙일 때</strong>다.
+</p>
+<pre><code>// user는 이 시점에 반드시 존재해야 하는 값이라고 하자
+const name = user?.profile?.displayName ?? '';
+// user 로딩 로직이 고장 나 undefined가 와도
+// → 에러 없음, 화면에는 빈 이름 → 고장이 "빈 문자열"로 변장</code></pre>
+<p>
+있어야 할 값이 없다는 것은 <strong>버그의 증거</strong>인데, <code>?.</code>는 그 증거를 인멸한다.
+원래라면 그 자리에서 요란하게 터졌을 에러("cannot read property of undefined")가, 조용한 빈 화면으로 바뀐다.
+기준은 명확하다: <strong>없어도 정상인 값에만 <code>?.</code>, 없으면 버그인 값은 그대로 접근해서 일찍 터지게 두거나 명시적으로 검증</strong>한다.
+</p>
+
+<h3>3.3 빈 catch — 실패의 무덤</h3>
+<p>
+반환값 방치(3.1)가 소극적 무시, <code>?.</code> 남용(3.2)이 습관적 흡수라면, 마지막 형태는 능동적 인멸이다.
+</p>
+<pre><code>try {
+    syncInventory();
+} catch (Exception e) {
+    // TODO: 나중에 처리
+}</code></pre>
+<p>
+가장 노골적인 흡수다. 예외라는 강한 신호를 받아서 <strong>아무 흔적 없이 폐기</strong>한다.
+"일단 안 죽게만"이라는 의도로 태어나지만, 몇 달 뒤 이 블록은 장애 원인을 몇 시간씩 숨기는 블랙홀이 된다.
+최소한의 규율: 잡았으면 <strong>로그라도 남기고</strong>, 정말 무시해도 되는 예외라면 <strong>왜 무시해도 되는지 주석으로 근거</strong>를 남긴다.
+</p>
+
+<h2>4. 방어선 — 사람 눈이 아니라 도구에 맡긴다</h2>
+<p>
+두 갈래의 원인에는 각각 대응하는 방어선이 있다 — 아래 표에서 타입체커·린터·이름의 상수화는 주로 2절(이름 불일치)을, 반환값 확인 강제는 3절(신호 흡수)을, 이른 검증은 두 원인이 만든 고장이 하류로 번지는 것을 겨냥한다. 공통 원칙은 하나다: 오타와 신호 무시는 "주의력"으로 막는 것이 아니다. 사람의 눈은 오타를 자동 보정하도록 진화했다. 방어는 기계의 몫이다.
+</p>
+<table>
+  <tr><th>방어선</th><th>잡아주는 것</th><th>예</th></tr>
+  <tr>
+    <td><strong>타입체커</strong></td>
+    <td>존재하지 않는 속성·필드 접근, 시그니처 불일치</td>
+    <td>TS가 <code>user.userNmae</code>를 컴파일 에러로 승격 — "조용한 undefined"가 "요란한 빨간 줄"이 됨</td>
+  </tr>
+  <tr>
+    <td><strong>린터</strong></td>
+    <td>선언 안 된 변수 사용(오타의 대표 증상), 빈 catch, 미사용 값</td>
+    <td>ESLint의 미정의 변수 검사, 빈 블록 경고</td>
+  </tr>
+  <tr>
+    <td><strong>반환값 확인 강제</strong></td>
+    <td>무시된 실패 신호</td>
+    <td>반환값 미사용을 경고하는 어노테이션·컴파일러 속성(★6)</td>
+  </tr>
+  <tr>
+    <td><strong>이름의 상수화·코드 생성</strong></td>
+    <td>문자열 리터럴 연결점 자체를 축소</td>
+    <td>이벤트명·키를 상수/enum으로 한 곳에 정의, API 스키마에서 타입 자동 생성</td>
+  </tr>
+  <tr>
+    <td><strong>이른 검증(fail fast)</strong></td>
+    <td>필수 값 누락이 하류로 흘러가는 것</td>
+    <td>함수 진입부에서 필수 인자 null 검사 후 즉시 예외</td>
+  </tr>
+</table>
+<p>
+마지막 줄의 <strong>fail fast(빠른 실패)</strong>가 이 문서 전체의 반대 원리다:
+조용한 실패가 "고장을 하류로 떠넘겨 발견을 늦추는 것"이라면, fail fast는 <strong>고장 지점에서 즉시, 요란하게 실패해 좌표를 남기는 것</strong>이다.
+검증 코드 한 줄이 늘어나는 대신, 실패가 원인 바로 옆에서 터진다.
+</p>
+
+<h2>5. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "에러를 안 내는 코드가 튼튼한 코드다"?</strong> — 절반만 맞다. <em>고장이 없어서</em> 에러가 없는 것과 <em>고장을 숨겨서</em> 에러가 없는 것은 정반대다. 후자는 튼튼함이 아니라 계기판을 테이프로 가린 것이다. 견고함(robustness)의 목표는 "에러 무발생"이 아니라 "실패의 통제된 처리"다.</p>
+<p><strong>② "옵셔널 체이닝·기본값은 나쁜 습관이다"?</strong> — 아니다. "없어도 정상"인 값(선택 입력, 아직 로딩 전 상태)에는 정당한 도구다. 문제는 의미 구분 없이 <em>모든</em> 접근에 붙이는 습관 — 그 순간 "없으면 버그"인 값의 고장 신호까지 함께 지워진다. 도구가 아니라 무차별 적용이 나쁜 것이다.</p>
+<p><strong>③ "로그에 남겼으니 조용한 실패가 아니다"?</strong> — 아무도 보지 않는 로그는 신호가 아니다. 3.1의 예제도 warn 로그는 남겼다 — 그러나 사용자에게는 성공이 통보되었고 아무 대응도 일어나지 않았다. 신호는 <em>대응할 수 있는 곳에 닿아야</em> 신호다(사용자 안내, 알림, 트랜잭션 롤백 등).</p>
+<p><strong>④ "타입체커를 쓰면 오타 문제는 끝"?</strong> — 정적 검사는 <em>코드 내부</em>의 이름만 지킨다. JSON 키, 폼 필드명, 환경변수 키, DB 컬럼명처럼 <strong>시스템 경계를 넘는 문자열</strong>은 여전히 무방비다. 타입체커의 보호가 끝나는 경계가 어디인지 알고, 그곳에 스키마 검증·계약 테스트 같은 런타임 검문소를 세워야 한다.</p>
+</blockquote>
+
+<h2>★ 6. 언어별 대조</h2>
+<p>같은 원리지만, 언어마다 "오타가 어디까지 컴파일 타임에 잡히는가"(2절의 방어 범위)와 "실패 신호의 기본 전달 방식"(3절의 전파 수단)이 다르게 조합된다.</p>
+<table>
+  <tr><th>언어</th><th>이름 오타가 잡히는 범위</th><th>조용한 실패의 단골 지점</th><th>대표 방어 도구</th></tr>
+  <tr>
+    <td>Java</td>
+    <td>변수·메서드·필드 전부 컴파일 타임(강함)</td>
+    <td>무시된 boolean/null 반환값, 빈 catch, 리플렉션·JSON 키</td>
+    <td>예외 우선 설계, 반환값 확인 어노테이션, <code>Optional</code>로 "없음" 명시화</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>JS는 속성 오타 무방비(<code>undefined</code>), TS는 타입 선언 범위 내 컴파일 타임</td>
+    <td><code>?.</code> 남용, 이벤트명·키 문자열, 처리 안 된 Promise 거부</td>
+    <td>TS strict 모드, ESLint, 이벤트명 상수화, 스키마 검증</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>런타임에야 발각(<code>AttributeError</code>/<code>NameError</code>) — 실행 안 된 경로는 무검사</td>
+    <td><code>dict.get()</code> 기본값 뒤에 숨는 키 오타, 광범위 <code>except</code></td>
+    <td>타입 힌트+정적 검사기, 린터, 테스트로 경로 실행 강제</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td>이름은 컴파일 타임(강함)</td>
+    <td>무시된 에러 코드 반환값 — C 계열 API의 고질병</td>
+    <td><code>[[nodiscard]]</code>, 컴파일러 경고를 에러로 승격</td>
+  </tr>
+</table>
+
+<h3>6.1 JS·TS — "undefined는 에러가 아니라 값"인 언어</h3>
+<p>
+JS의 설계 철학은 관대함이다. 없는 속성을 읽으면 예외 대신 <code>undefined</code>라는 <strong>값</strong>을 준다.
+이 값은 비교·연산·전달이 전부 가능해서, 오타 하나가 만든 <code>undefined</code>가 여러 함수를 거쳐 흘러가다가 <strong>전혀 엉뚱한 곳에서 증상</strong>(빈 화면, NaN, 잘못된 분기)으로 나타난다.
+고장 지점과 증상 지점이 멀어지는 것 — 조용한 실패의 전형이다.
+</p>
+<pre><code>// Vue3 — 오타가 만드는 3중 침묵의 예
+// 자식: emit 이름 오타
+emit('update-quantiy', qty)        // ① 아무도 안 듣는 이벤트 (에러 없음)
+
+// 부모 템플릿: 존재하지 않는 프로퍼티 바인딩
+&lt;OrderItem :item="orderItme" /&gt;   // ② undefined가 props로 전달 (에러 없음)
+
+// 스크립트: 옵셔널 체이닝이 마무리
+const total = props.item?.price ?? 0  // ③ 고장이 "0원"으로 변장 (에러 없음)</code></pre>
+<p>
+TS는 이 중 <strong>타입이 선언된 구간</strong>(②의 컴포넌트 props, 선언된 객체의 속성)을 컴파일 타임 검사로 되찾아 온다.
+이벤트명 같은 문자열 연결점도 타입으로 선언하면(컴포넌트의 emit 타입 정의 등) 검사 범위에 들어온다 — <strong>"문자열이던 연결을 타입의 세계로 끌어올리는 것"</strong>이 TS 시대의 오타 방어 전략이다.
+</p>
+<p>
+<code>JS·TS 관점의 통찰: 비동기에도 같은 문제가 있다 — await나 catch 없이 버려진 Promise의 실패는 처리되지 않은 거부(unhandled rejection)로 허공에 뜬다. "반환값 무시" 문제의 비동기 버전인 셈이다. 린터의 부동(floating) Promise 검사 규칙이 이를 잡는 도구로, 3.1의 반환값 확인 강제와 정확히 같은 역할을 한다.</code>
+</p>
+
+<h3>6.2 Java — 이름은 컴파일러가 지키지만, 신호 무시는 못 막는 언어</h3>
+<p>
+Java에서 변수·메서드 이름 오타는 컴파일 에러이므로, JS식 속성 오타 문제는 거의 없다.
+Java의 조용한 실패는 주로 <strong>신호 무시</strong> 쪽에서 온다 — 3.1의 boolean 반환 사례가 전형이다.
+언어 차원의 흥미로운 장치는 검사 예외(checked exception)다: 호출부가 처리(catch)하거나 전파(throws)를 <strong>명시하지 않으면 컴파일이 안 되는</strong>, "실패 신호를 무시할 수 없게 강제하는" 메커니즘이다.
+다만 실무에서는 이 강제가 성가셔서 빈 catch로 도장만 찍는 부작용도 낳았다 — <strong>강제된 처리가 형식적 처리로 변질</strong>된 사례로, 도구가 규율을 완전히 대체하지는 못함을 보여준다.
+</p>
+<p>
+<code>Java 관점의 통찰: 반환값 무시를 막는 정적 분석 어노테이션(대표적으로 @CheckReturnValue 계열)을 붙이면, saveOrder(order)의 반환값을 버리는 코드가 빌드 검사에서 걸린다. 또 "실패하면 null 반환" 관례는 Optional<T>로 대체할 수 있는데, 핵심 효용은 null 제거가 아니라 "없을 수 있음"이 시그니처에 명시되어 호출부가 그 사실을 잊을 수 없게 되는 것이다 — 조용한 실패 방어란 결국 "잊을 수 없게 만들기"다.</code>
+</p>
+
+<h3>6.3 Python / C++ — 한 줄 요약</h3>
+<p>
+Python은 오타가 런타임 예외(<code>AttributeError</code>)로는 잘 터지지만 <strong>그 코드 경로가 실행되어야만</strong> 발각된다 — 드물게 타는 분기의 오타는 배포 후에 터지므로, 타입 힌트+정적 검사기와 테스트 커버리지가 "실행 전 발각" 수단이 된다. 또한 <code>dict.get(key, default)</code>의 기본값은 키 오타를 영원히 숨길 수 있는 대표 지점이다.
+C++은 C 계열 API의 에러 코드 반환 관례 탓에 "무시된 반환값" 문제가 오래된 고질병이며, 표준 속성 <code>[[nodiscard]]</code>가 반환값을 버리는 호출을 컴파일 경고로 만드는 공식 해법이다 — 경고를 에러로 승격하는 빌드 설정과 짝을 이룬다.
+</p>
+
+<h2>7. 함께 알면 좋은 것</h2>
+<p>본문의 논의를 한 걸음씩 확장하는 어휘들이다 — 앞의 둘은 4절의 "이른 실패" 축을, 셋째는 5-④의 정적 검사 사각지대를, 넷째는 3.1의 반환값 문제를, 다섯째는 2절의 진단 규칙을 각각 잇는다.</p>
+<ul>
+  <li><strong>fail fast 원칙</strong> — 잘못된 상태를 감지한 즉시, 원인 지점에서 요란하게 실패시키는 설계 태도. 조용한 실패의 정반대 극이자 처방.</li>
+  <li><strong>단언(assertion)</strong> — "여기서는 이 조건이 반드시 참"이라는 가정을 코드로 박아, 가정이 깨지는 순간을 조기 발각하는 도구. 있어야 할 값의 부재를 잡는 데 특히 유효.</li>
+  <li><strong>계약 테스트·스키마 검증</strong> — 타입체커가 지키지 못하는 시스템 경계(JSON·폼·API)의 이름 일치를 런타임/CI에서 검사하는 수단.</li>
+  <li><strong>결과 타입(result type) 패턴</strong> — 성공/실패를 명시적 타입으로 반환해, 실패 케이스를 처리하지 않으면 값 자체를 꺼낼 수 없게 만드는 스타일. "반환값 무시"를 구조적으로 봉쇄하는 현대적 접근.</li>
+  <li><strong>디버깅 체크리스트화</strong> — "동작 안 함+에러 없음 → ① 연결 양끝 이름 대조 ② 값이 undefined/null로 변하는 최초 지점 추적 ③ 흡수 지점(catch·기본값·?.) 수색"처럼 증상별 절차를 몸에 새기는 것.</li>
+</ul>
+
+<h2>8. 한 장 요약</h2>
+<ul>
+  <li>조용한 실패 = <strong>동작 안 함 + 에러 없음</strong>. 신호가 없어 고장 지점과 발견 시점이 멀어지는, 가장 비싼 실패 유형.</li>
+  <li>원인 ①: <strong>문자열로 연결된 지점의 이름 불일치</strong> — 이벤트명·JSON 키·폼 필드·맵 키. "없음"을 정상 취급하는 API가 오타를 데이터로 둔갑시킨다.</li>
+  <li>원인 ②: <strong>실패의 흡수</strong> — 빈 catch, 습관적 옵셔널 체이닝, 그리고 확인되지 않는 false류 반환값. 흡수하는 쪽이 처리를 책임지지 않으면 신호는 소멸한다.</li>
+  <li>원리: 실패는 <strong>대응 가능한 계층까지 전파</strong>되어야 한다. 예외는 무시에 명시적 코드가 필요하지만, 반환값은 방치만으로 무시된다 — 반환값 방식엔 확인 강제 장치가 세트다.</li>
+  <li>방어는 도구로: 타입체커·린터·반환값 검사·이름 상수화·fail fast. 단, 정적 검사는 시스템 경계의 문자열 앞에서 멈춘다 — 그곳에 런타임 검증을 세운다.</li>
+  <li>진단 습관: "동작 안 함+에러 없음"이면 <strong>로직보다 이름부터</strong>, 눈이 아니라 <strong>복사·대조로</strong> 확인한다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="I1 응집도와 결합도.html">I1 응집도와 결합도.html</a> — 전역 상태를 통한 공통 결합이 "누가 언제 바꿨는지 추적 불가한 조용한 실패의 온상"이 되는 구조적 배경</li>
+</ul>
+
+</body>
+</html>

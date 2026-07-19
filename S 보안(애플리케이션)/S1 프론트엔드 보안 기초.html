@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S1 프론트엔드 보안 기초</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote { margin: 16px 0; padding: 12px 16px; border-radius: 6px; border-left: 4px solid; }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+    padding: 14px; text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0; white-space: pre; overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>S1 프론트엔드 보안 기초</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>프론트엔드 보안 사고의 뿌리는 하나다: <strong>데이터로 취급해야 할 문자열이 코드로 승격되어 실행되는 것</strong>. 교차 사이트 스크립팅(cross-site scripting, XSS)은 이 문제의 브라우저판이다.</li>
+  <li>브라우저는 HTML 문자열 안의 <code>&lt;script&gt;</code>와 이벤트 속성을 구분 없이 해석한다 — 사용자 입력이 그대로 마크업에 섞이면, 입력이 곧 코드가 된다.</li>
+  <li>1차 방어는 <strong>출력 이스케이프</strong>(output escaping): 값을 화면에 넣는 <em>순간</em>, 넣는 <em>맥락</em>에 맞게 특수문자를 무력화한다. 현대 프레임워크는 이것을 기본으로 해 준다.</li>
+  <li><code>v-html</code>·<code>innerHTML</code>류는 그 기본 방어를 <strong>의도적으로 끄는 스위치</strong>다 — 여기에 사용자 유래 데이터를 넣는 순간 XSS의 문이 열린다.</li>
+  <li>콘텐츠 보안 정책(Content Security Policy, CSP)은 2차 방어다: 뚫린 뒤에도 "어디서 온 스크립트만 실행 가능"을 브라우저 수준에서 강제해 피해를 차단한다.</li>
+  <li>입력 필터링만으로는 부족하다 — 같은 값도 <strong>어느 맥락에 출력되느냐</strong>에 따라 위험이 달라지기 때문이다.</li>
+</ul>
+
+<h2>1. 문제의 뿌리 — 데이터가 코드로 승격될 때</h2>
+<p>
+모든 인젝션 계열 공격(XSS, SQL 인젝션, 명령 인젝션…)은 같은 구조를 가진다.
+프로그램이 "명령"과 "데이터"를 <strong>같은 문자열 안에 섞어서</strong> 해석기(브라우저·DB·셸)에 넘기면, 해석기는 어디까지가 명령이고 어디부터가 데이터인지 알 길이 없다.
+공격자는 데이터 자리에 명령의 문법을 밀어 넣어 그 경계를 무너뜨린다.
+</p>
+<div class="flow">개발자 의도:   &lt;p&gt;안녕하세요, [사용자이름]님&lt;/p&gt;        ← 이름은 "데이터"
+공격자 입력:   &lt;script&gt;steal(document.cookie)&lt;/script&gt;
+브라우저가 본 것: &lt;p&gt;안녕하세요, &lt;script&gt;…&lt;/script&gt;님&lt;/p&gt;  ← 데이터가 "코드"로 승격</div>
+<p>
+프론트엔드에서 이 해석기는 브라우저이고, 브라우저의 언어는 HTML·JS다.
+따라서 프론트엔드 보안 기초의 핵심 질문은 이것이다: <strong>사용자 유래 문자열이 브라우저에게 코드로 읽힐 수 있는 경로가 어디인가, 그 경로마다 승격을 어떻게 차단하는가.</strong>
+</p>
+
+<h2>2. XSS의 세 형태 — 주입 경로로 구분한다</h2>
+<table>
+  <tr><th>형태</th><th>악성 스크립트가 오는 경로</th><th>특징</th></tr>
+  <tr><td>반사형(reflected)</td><td>요청(URL 파라미터 등)에 실려 와서 응답에 즉시 되돌아 나옴</td><td>피해자가 조작된 링크를 클릭해야 성립</td></tr>
+  <tr><td>저장형(stored)</td><td>게시글·댓글·프로필 등으로 <strong>서버에 저장</strong>되었다가, 열람하는 모든 사용자에게 실행</td><td>가장 위험 — 한 번 심으면 다수가 자동 피격</td></tr>
+  <tr><td>DOM 기반</td><td>서버를 거치지 않고, 프론트 JS가 URL 조각 등을 읽어 직접 DOM에 꽂으면서 발생</td><td>서버 로그에 안 남아 탐지 어려움. SPA에서 비중 증가</td></tr>
+</table>
+<p>
+실행된 스크립트는 그 페이지의 사용자 권한으로 움직인다 — 세션 쿠키·토큰 탈취, 사용자인 척 API 호출, 화면 위조(가짜 로그인 폼)까지.
+"우리 서비스엔 훔칠 게 없다"는 판단은 대개 틀린다: <strong>로그인 상태 자체</strong>가 훔칠 물건이다.
+</p>
+
+<h2>3. 방어 1 — 출력 이스케이프: 맥락이 전부다</h2>
+<p>
+이스케이프는 특수문자를 "문법 기호"가 아니라 "그냥 글자"로 바꾸는 변환이다: <code>&lt;</code> → <code>&amp;lt;</code>, <code>"</code> → <code>&amp;quot;</code>.
+중요한 것은 <strong>출력되는 맥락마다 위험한 문자가 다르다</strong>는 사실이다.
+</p>
+<table>
+  <tr><th>출력 맥락</th><th>예</th><th>승격 문자</th></tr>
+  <tr><td>HTML 본문</td><td><code>&lt;p&gt;{값}&lt;/p&gt;</code></td><td><code>&lt; &gt; &amp;</code></td></tr>
+  <tr><td>HTML 속성</td><td><code>&lt;img alt="{값}"&gt;</code></td><td>따옴표 — 속성을 닫고 <code>onerror=</code> 같은 이벤트 속성 주입</td></tr>
+  <tr><td>JS 문자열 안</td><td><code>var name = "{값}";</code></td><td>따옴표·역슬래시·<code>&lt;/script&gt;</code></td></tr>
+  <tr><td>URL</td><td><code>&lt;a href="{값}"&gt;</code></td><td><code>javascript:</code> 스킴 자체</td></tr>
+</table>
+<p>
+그래서 "입구에서 한 번 필터링"은 원리적으로 불완전하다 — 입구에서는 이 값이 나중에 <em>어느 맥락</em>에 출력될지 모른다.
+올바른 위치는 <strong>출력 지점</strong>이고, 현대 프레임워크의 템플릿 바인딩(Vue의 <code>{{ }}</code>, React의 JSX 등)이 HTML 맥락 이스케이프를 기본으로 수행하는 이유가 이것이다.
+</p>
+<blockquote class="warn">
+<p><strong><code>v-html</code>은 "이 값은 이스케이프하지 말고 HTML로 해석하라"는 명시적 선언이다.</strong> 즉 프레임워크의 기본 방어를 끄는 스위치. 서버가 만든 신뢰된 마크업을 넣는 정당한 용도가 있지만, <em>사용자 유래 데이터가 한 방울이라도 섞인 값</em>을 넣으면 그 지점이 곧 XSS다. <code>innerHTML</code> 직접 대입, <code>document.write</code>도 같은 부류다. 텍스트를 넣을 곳엔 <code>textContent</code>·일반 바인딩을 쓴다.</p>
+</blockquote>
+
+<h2>4. 방어 2 — CSP: 뚫린 다음을 대비하는 층</h2>
+<p>
+이스케이프가 완벽해도 사람은 실수한다. CSP는 서버가 응답 헤더로 "이 페이지에서 실행 가능한 스크립트의 출처"를 선언하면, <strong>브라우저가 그 외의 실행을 거부</strong>하는 2차 방어선이다.
+</p>
+<pre><code>Content-Security-Policy: script-src 'self' https://cdn.example.com</code></pre>
+<p>
+이 선언 하나로 인라인 <code>&lt;script&gt;</code>와 이벤트 속성(<code>onclick="…"</code>) 실행이 기본 차단된다 — 주입에 성공한 공격 코드 대부분이 바로 이 형태라, 이스케이프가 뚫려도 실행 단계에서 막힌다.
+핵심 태도는 <strong>심층 방어</strong>(defense in depth)다: 한 겹이 완벽하다고 가정하지 않고 겹을 쌓는다. 도입 시에는 보고 전용 모드(<code>Content-Security-Policy-Report-Only</code>)로 무엇이 막힐지 관찰한 뒤 강제로 전환하는 것이 정석이다.
+</p>
+
+<h2>5. 흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"입력 검증을 하니까 안전하다" — 검증과 이스케이프는 역할이 다르다.</strong> 검증은 "이 값이 형식에 맞는가"(이메일·길이 등), 이스케이프는 "이 값이 출력 맥락에서 코드로 승격되지 않는가"다. 이름에 <code>&lt;</code>가 들어간 정당한 입력도 있고, 검증을 통과한 값도 맥락이 바뀌면 위험해진다. 둘 다 한다.</li>
+  <li><strong>이스케이프 vs 새니타이즈(sanitize).</strong> 이스케이프는 전부 글자로 만들기, 새니타이즈는 "허용한 태그만 남기고 위험 요소를 제거"하기다. 사용자에게 서식(굵게·링크)을 허용해야 해서 <code>v-html</code>이 불가피하다면, 검증된 새니타이저 라이브러리로 정화한 결과만 넣는다 — 직접 정규식으로 만드는 새니타이저는 우회 사례가 축적된 실패 장르다.</li>
+  <li><strong>"프론트에서 막았으니 됐다" — 프론트 검증은 UX, 보안은 서버의 몫.</strong> 공격자는 브라우저를 거치지 않고 API를 직접 호출한다. 저장형 XSS의 정화·검증은 서버에서도 반드시 수행돼야 한다.</li>
+  <li><strong>조용한 확산 — 저장형 XSS는 터진 시점과 심은 시점이 다르다.</strong> 취약점을 고쳐도 이미 DB에 저장된 악성 콘텐츠는 남아 있다. 패치 후 기존 데이터 정화까지가 대응이다.</li>
+</ul>
+
+<h2>★ 6. 언어별 대조</h2>
+<p>
+"데이터의 코드 승격"은 브라우저만의 문제가 아니다. 각 언어 생태계에는 저마다의 승격 표면과, 그것을 막는 표준 관용구가 있다 — XSS 방어에서 배운 원리(맥락별 무력화, 코드와 데이터의 분리)가 그대로 반복된다.
+</p>
+<table>
+  <tr><th>언어/환경</th><th>대표 승격 표면</th><th>표준 방어</th></tr>
+  <tr><td>Java(서버 템플릿)</td><td>JSP에 값 직접 출력</td><td>JSTL <code>&lt;c:out&gt;</code>·템플릿 엔진의 자동 이스케이프</td></tr>
+  <tr><td>JS·TS(브라우저)</td><td><code>innerHTML</code>·<code>v-html</code>·<code>eval</code></td><td><code>textContent</code>·기본 바인딩·CSP</td></tr>
+  <tr><td>Python</td><td>템플릿 수동 조립·<code>eval</code>류</td><td>Jinja2 자동 이스케이프·리터럴 파서(아래 심화)</td></tr>
+  <tr><td>C++</td><td>포맷 문자열·셸 명령 조립</td><td>포맷 인자 분리·<code>exec</code>류 인자 배열(아래 심화)</td></tr>
+</table>
+
+<h3>6.1 Python — eval의 유혹과 "코드가 아닌 파서"</h3>
+<p>
+Python에서 흔한 승격 사고는 "문자열을 파이썬답게 해석하고 싶을 때" 일어난다. 사용자가 보낸 <code>"[1, 2, 3]"</code>을 리스트로 만들려고 <code>eval</code>을 쓰는 순간, 그 입력칸은 파이썬 인터프리터의 입력창이 된다.
+</p>
+<pre><code>import ast
+
+user_input = "[1, 2, 3]"
+data = eval(user_input)              # 승격: "__import__('os').system('…')"도 실행됨
+data = ast.literal_eval(user_input)  # 안전: 리터럴(숫자·문자열·리스트…)만 파싱, 코드는 거부
+</code></pre>
+<p>
+<code>Python 관점의 통찰: literal_eval은 "표현력을 깎아서 안전을 사는" 설계다 — 리터럴 문법만 받는 파서라 애초에 실행할 코드 개념이 없다. 웹 템플릿의 Jinja2가 자동 이스케이프를 기본값으로 켜 두는 것과 같은 철학이다: 안전이 기본, 위험(|safe 필터)이 명시적 선언. Vue의 {{ }} 기본 / v-html 명시 구도와 정확히 평행하다.</code>
+</p>
+
+<h3>6.2 C++ — 포맷 문자열과 셸: 가장 오래된 승격들</h3>
+<p>
+C 계열의 고전 승격이 포맷 문자열 취약점이다. <code>printf(user_input)</code>처럼 사용자 문자열을 포맷 자리에 직접 넣으면, 입력 속 <code>%s</code>·<code>%n</code> 같은 지시자가 <strong>코드로 해석</strong>되어 스택 읽기·메모리 쓰기까지 이어진다. 셸 명령 조립(<code>system("cmd " + input)</code>)도 같은 구조 — 입력 속 <code>;</code>가 명령 구분자로 승격된다.
+</p>
+<pre><code>// 취약: 입력이 "포맷 언어"로 해석됨
+printf(user_input);                    // 입력에 %n이 있으면 메모리 쓰기
+// 안전: 포맷(코드)과 값(데이터)을 분리
+printf("%s", user_input);
+
+// 취약: 입력이 "셸 언어"로 해석됨
+system(("ping " + host).c_str());      // host = "8.8.8.8; rm -rf /"
+// 안전: 인자 배열로 넘겨 셸 해석 자체를 생략 (execvp 계열)
+</code></pre>
+<p>
+<code>C++ 관점의 통찰: 안전한 API의 공통 형태는 "코드 채널과 데이터 채널의 분리"다 — printf의 포맷/인자 분리, execvp의 명령/인자 배열, DB의 파라미터 바인딩, 그리고 프론트의 템플릿/바인딩 분리까지 전부 같은 해법의 변주다. 인젝션 방어를 개별 암기가 아니라 이 한 문장으로 기억하는 편이 오래간다.</code>
+</p>
+
+<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java 서버 렌더링에서는 "표현식으로 값 직접 출력"이 위험 표면이고 <code>&lt;c:out&gt;</code>·현대 템플릿 엔진의 자동 이스케이프가 답이다.
+JS·TS는 이 문서의 본문 그 자체 — 덧붙이면, 프레임워크 없는 바닐라 DOM 조작에서 <code>textContent</code> vs <code>innerHTML</code>의 선택이 곧 이스케이프 여부의 선택이다.
+</p>
+
+<h2>7. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>인젝션의 형제들</strong> — SQL 인젝션·명령 인젝션은 해석기만 다른 같은 병. 파라미터 바인딩이 그쪽의 "이스케이프"다.</li>
+  <li><strong>HttpOnly·Secure 쿠키</strong> — 스크립트에서 쿠키 접근을 차단해, XSS가 성공해도 세션 탈취를 어렵게 하는 완화층.</li>
+  <li><strong>Trusted Types</strong> — <code>innerHTML</code>류 싱크에 검증된 타입만 들어가도록 브라우저가 강제하는 최신 방어(DOM XSS 겨냥).</li>
+  <li><strong>새니타이저 라이브러리</strong> — 서식 허용이 필요할 때의 표준 답. 직접 구현 대신 검증된 것을 쓴다.</li>
+  <li><strong>CSP 보고 모드 운영</strong> — 차단 전 관찰 기간을 두는 도입 전략과 위반 리포트 수집.</li>
+</ul>
+
+<h2>8. 한 장 요약</h2>
+<ul>
+  <li>XSS = 사용자 유래 문자열이 브라우저에게 코드로 승격되는 것. 반사형·저장형·DOM 기반은 주입 경로의 차이다.</li>
+  <li>1차 방어는 출력 지점의 맥락별 이스케이프 — 프레임워크 기본 바인딩이 해 주며, <code>v-html</code>·<code>innerHTML</code>은 그 방어를 끄는 명시적 스위치다.</li>
+  <li>2차 방어는 CSP — 실행 가능한 스크립트 출처를 브라우저 수준에서 제한하는 심층 방어.</li>
+  <li>검증≠이스케이프≠새니타이즈: 역할이 다르며, 서식 허용이 필요하면 검증된 새니타이저만.</li>
+  <li>보안 판단의 최종 책임은 서버 — 프론트 검증은 우회 가능하다.</li>
+  <li>모든 인젝션의 공통 해법: 코드 채널과 데이터 채널의 분리.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="S3 인젝션 방어.html">S3 인젝션 방어.html</a> — 같은 원리의 서버판: SQL 인젝션과 파라미터 바인딩</li>
+  <li><a href="S2 토큰 기반 인증 — JWT vs 세션.html">S2 토큰 기반 인증 — JWT vs 세션.html</a> — XSS가 노리는 물건(세션·토큰)의 구조와 보관 전략</li>
+</ul>
+
+</body>
+</html>

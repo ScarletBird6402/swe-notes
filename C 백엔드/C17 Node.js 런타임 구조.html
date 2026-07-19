@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C17 Node.js 런타임 구조</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>C17 Node.js 런타임 구조</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>Node.js = <strong>V8(자바스크립트 엔진) + libuv(이벤트 루프·비동기 I/O 라이브러리) + 표준 라이브러리</strong>. "브라우저 밖에서 JS를 돌리는 서버 런타임"의 실체가 이 조합이다.</li>
+  <li>"싱글 스레드"의 정확한 뜻: <strong>내 자바스크립트 코드를 실행하는 스레드가 하나</strong>라는 것이지, Node 프로세스에 스레드가 하나라는 뜻이 아니다. 뒤에는 libuv의 워커 스레드 풀과 V8 내부 스레드들이 있다.</li>
+  <li>적은 스레드로 많은 동시 접속을 처리하는 비결은 <strong>논블로킹 I/O</strong> — "기다리지 말고 다른 일을 하다가, 준비되면 통지받는다". 네트워크 I/O는 OS의 이벤트 통지 기능(epoll 등)으로, 파일 I/O 등은 <strong>스레드 풀</strong>로 처리된다.</li>
+  <li>이벤트 루프는 <strong>단계(phase)를 도는 반복문</strong>이다: 타이머 → 폴링(I/O 대기·콜백 실행) → <code>setImmediate</code> → … 이 한 바퀴가 계속 돈다. 각 콜백 사이마다 마이크로태스크(Promise·<code>process.nextTick</code>)가 끼어들어 먼저 소진된다.</li>
+  <li>치명적 약점은 대칭적이다: <strong>JS 스레드가 하나이므로, 콜백 하나가 오래 계산하면(CPU 바운드) 서버 전체가 멈춘다</strong>. I/O 대기는 공짜지만 계산은 공짜가 아니다.</li>
+  <li>CPU 바운드 작업의 탈출구는 <code>worker_threads</code>(스레드), <code>cluster</code>/멀티 프로세스(코어 수만큼 복제)다.</li>
+</ul>
+
+<h2>1. Node.js의 3층 구조 — V8, libuv, 그리고 그 사이</h2>
+<p>
+자바스크립트 언어 자체에는 파일을 읽거나 소켓을 여는 기능이 없다. 브라우저에서 그 일을 브라우저(웹 API)가 해 주듯,
+서버에서는 Node.js 런타임이 해 준다. 구조는 세 층이다.
+</p>
+<div class="flow">┌────────────────────────────────────────────┐
+│  내 JS 코드 + Node 표준 라이브러리(fs, http, …)   │  ← 개발자가 보는 층
+├────────────────────────────────────────────┤
+│  V8: JS 해석·JIT 컴파일·메모리(힙) 관리            │  ← "JS를 실행"하는 층
+├────────────────────────────────────────────┤
+│  libuv: 이벤트 루프·논블로킹 I/O·스레드 풀 (C 라이브러리) │  ← "기다림을 관리"하는 층
+└────────────────────────────────────────────┘
+              ↕ OS (epoll / kqueue / IOCP, 파일시스템, 소켓)</div>
+<p>
+역할 분담이 요점이다. <strong>V8은 계산을, libuv는 기다림을</strong> 담당한다. <code>fs.readFile()</code>을 호출하면 JS에서는 함수 호출 한 번이지만,
+실제로는 "libuv에 작업을 접수하고 즉시 반환 → libuv가 OS와 협업해 완료 → 완료 통지가 이벤트 루프를 통해 콜백으로 돌아옴"이라는 왕복이 일어난다.
+비동기 프로그래밍의 개념 원론(콜백·Promise·async/await·이벤트 루프 일반론)은 <a href="G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a>에서 다루며, 이 문서는 그것의 <strong>Node 구현</strong>을 다룬다.
+</p>
+
+<h2>2. "싱글 스레드"의 실체</h2>
+<p>
+1절 그림의 세 층 가운데 먼저 V8 층 — "JS를 실행한다"는 부분 — 을 확대해 보자.
+Node가 싱글 스레드라는 말은 이 층에 대해서만, 그것도 절반만 맞다. 정확히는 다음과 같다.
+</p>
+<ul>
+  <li><strong>JS 실행 스레드(메인 스레드)는 하나</strong> — 내 코드의 어떤 두 줄도 동시에 실행되지 않는다. 콜백은 항상 <em>하나씩, 끝까지(run-to-completion)</em> 실행된다.</li>
+  <li>그 뒤에 <strong>libuv 워커 스레드 풀</strong>(기본 4개, <code>UV_THREADPOOL_SIZE</code> 환경변수로 조절)이 파일 I/O·DNS 조회·암호화 같은 "논블로킹 API가 없는 작업"을 대신 수행한다.</li>
+  <li>V8도 가비지 컬렉션·JIT 최적화용 보조 스레드를 따로 굴린다.</li>
+</ul>
+<p>
+이 구조의 실용적 의미: <strong>공유 상태에 락이 필요 없다.</strong> 두 요청의 핸들러가 같은 변수를 건드려도 동시에 실행되지 않으므로 경쟁 조건(race condition)의 상당 부분이 원천 차단된다
+(멀티스레드 언어에서 이것이 왜 큰 문제인지는 <a href="G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a> 참조).
+대신 대가로, <strong>메인 스레드의 1초는 서버 전체의 1초</strong>가 된다 — 아래 6절.
+</p>
+<blockquote class="info">
+<p><strong>Java 개발자를 위한 대응 관계:</strong> 전통적 Java 서블릿 컨테이너는 "요청 1개 = 스레드 1개"로, 스레드가 DB 응답을 <em>블로킹 대기</em>한다. 동시 접속 1만이면 스레드 1만 개가 필요해 메모리·컨텍스트 스위치 비용이 폭발한다. Node는 "요청 1만 개 = JS 스레드 1개 + 대기 중인 소켓 1만 개"로, 기다림을 스레드가 아닌 <strong>이벤트 목록</strong>으로 관리한다. (프로세스·스레드·컨텍스트 스위치의 기초는 <a href="V1 프로세스와 스레드.html">V1 프로세스와 스레드.html</a>.)</p>
+</blockquote>
+
+<h2>3. 논블로킹 I/O — "기다리지 않는다"의 두 가지 구현</h2>
+<p>
+"기다림을 스레드가 아닌 이벤트 목록으로 관리한다"(2절)가 성립하려면, 애초에 스레드가 기다리며 멈추는 일이 없어야 한다.
+이제 libuv 층으로 내려가 그 구현을 보자. 블로킹 I/O는 "다 될 때까지 이 스레드는 여기서 멈춤"이고, 논블로킹 I/O는 "접수만 하고 즉시 반환, 완료는 나중에 통지"다.
+libuv는 작업 종류에 따라 두 가지 방법으로 이를 구현한다.
+</p>
+<table>
+  <tr><th>작업 종류</th><th>구현 방법</th><th>동작</th></tr>
+  <tr>
+    <td><strong>네트워크 I/O</strong> (소켓 — HTTP, DB 연결 등)</td>
+    <td>OS의 이벤트 통지 기능<br>(Linux <code>epoll</code> / macOS <code>kqueue</code> / Windows IOCP)</td>
+    <td>수천 개 소켓을 OS에 등록해 두고 "준비된 것 있으면 알려 달라"고 <strong>한 번에</strong> 묻는다. 스레드 소비 0 — 진짜 논블로킹</td>
+  </tr>
+  <tr>
+    <td><strong>파일 I/O·DNS·CPU성 내장 작업</strong> (fs, dns.lookup, crypto의 일부, zlib)</td>
+    <td>libuv <strong>워커 스레드 풀</strong>(기본 4개)</td>
+    <td>OS 파일 API는 통지형 인터페이스가 마땅치 않아, 워커 스레드가 <em>대신 블로킹</em>하고 끝나면 메인에 통지 — "블로킹의 외주화"</td>
+  </tr>
+</table>
+<blockquote class="warn">
+<p><strong>스레드 풀 4개의 함정:</strong> 파일 읽기나 <code>crypto.pbkdf2</code>(비밀번호 해싱) 같은 작업을 동시에 5개 이상 던지면 5번째부터는 <em>풀이 빌 때까지 큐에서 대기</em>한다. "논블로킹인데 왜 느리지?"의 흔한 정체다. 네트워크 I/O는 이 제한과 무관하다는 점이 핵심 구분이다.</p>
+</blockquote>
+
+<h2>4. 이벤트 루프 — libuv의 단계(phase) 순환</h2>
+<p>
+3절에서 "접수만 하고 즉시 반환"한 작업들의 완료 통지는, 그럼 어떻게 내 콜백 호출로 되돌아오는가?
+그 배달을 맡는 장치가 이벤트 루프다 — 신비한 무언가가 아니라 <strong>C로 짠 while 루프</strong>다. 한 바퀴(tick)마다 정해진 단계를 순서대로 방문하며, 각 단계의 큐에 쌓인 콜백을 실행한다.
+</p>
+<div class="flow">   ┌─&gt; ① timers        : 시간이 된 setTimeout / setInterval 콜백
+   │   ② pending       : 일부 지연된 시스템 콜백
+   │   ③ poll          : ★ I/O 완료 통지 수거·콜백 실행. 할 일 없으면 여기서 대기
+   │   ④ check         : setImmediate 콜백
+   └── ⑤ close         : 소켓 close 등 정리 콜백
+   
+   ※ 각 콜백이 끝날 때마다: process.nextTick 큐 → Promise(마이크로태스크) 큐를
+     전부 비운 뒤에야 다음 콜백으로 진행</div>
+<p>
+기억할 것은 세 가지다.
+</p>
+<ul>
+  <li><strong>poll 단계가 심장</strong>이다. 대부분의 시간을 여기서 보내며, OS에 "준비된 I/O 있나"를 묻고(epoll 대기) 도착한 완료 통지의 콜백을 실행한다. 다음 타이머 만기가 가까우면 그만큼만 기다렸다가 ①로 돌아간다.</li>
+  <li><strong>마이크로태스크는 새치기 줄</strong>이다. <code>await</code> 다음 줄, <code>.then()</code> 콜백은 이벤트 루프 단계 사이가 아니라 <em>지금 실행 중인 콜백이 끝나는 즉시</em> 처리된다. <code>process.nextTick</code>은 그보다도 먼저다.</li>
+  <li><strong><code>setTimeout(fn, 0)</code>도 최소 한 바퀴 뒤</strong>다. "0ms"는 "즉시"가 아니라 "다음 timers 단계에"라는 뜻이다.</li>
+</ul>
+<pre><code>console.log('A');                          // 1: 동기
+setTimeout(() =&gt; console.log('B'), 0);     // 4: 다음 바퀴 timers 단계
+Promise.resolve().then(() =&gt; console.log('C')); // 3: 현재 콜백 직후 마이크로태스크
+console.log('D');                          // 2: 동기
+// 출력: A D C B — "Promise가 setTimeout보다 항상 먼저"의 이유</code></pre>
+<blockquote class="info">
+<p><strong>브라우저와의 관계:</strong> 이벤트 루프라는 개념은 브라우저에도 있지만(<a href="B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a>), 구현이 다르다. 브라우저는 렌더링(화면 갱신)과의 조율이 중심이고 Node(libuv)는 I/O 단계 순환이 중심이다. "마이크로태스크가 태스크 사이에 끼어든다"는 규칙은 양쪽 공통이다.</p>
+</blockquote>
+
+<h2>5. 하나로 모자랄 때 — worker_threads와 cluster</h2>
+<p>
+여기까지의 구조는 전부 "JS 스레드 하나 + 루프 하나" 위의 이야기였다. 이 구도가 감당 못 하는 두 상황 —
+계산이 무겁거나, 코어가 남아돌거나 — 을 위해 Node는 공식 탈출구를 제공한다.
+</p>
+<table>
+  <tr><th>도구</th><th>무엇</th><th>언제</th></tr>
+  <tr>
+    <td><code>worker_threads</code></td>
+    <td>JS 실행 스레드를 <strong>추가로</strong> 띄움. 메모리는 기본 격리, 메시지로 통신</td>
+    <td>이미지 처리·대형 JSON 파싱·암호화 등 <strong>CPU 바운드 작업을 메인에서 격리</strong>할 때</td>
+  </tr>
+  <tr>
+    <td><code>cluster</code> / 멀티 프로세스</td>
+    <td>Node <strong>프로세스</strong>를 CPU 코어 수만큼 복제, 같은 포트를 나눠 받음</td>
+    <td>멀티코어 서버에서 처리량을 코어만큼 확장할 때(프로세스 매니저·컨테이너 오케스트레이션으로 대체되기도)</td>
+  </tr>
+  <tr>
+    <td><code>child_process</code></td>
+    <td>외부 프로그램 실행(쉘 명령 등)</td>
+    <td>Node 밖의 도구를 부릴 때</td>
+  </tr>
+</table>
+<p>
+구분 감각: <strong>I/O가 많다 → 기본 구조로 충분</strong>(이벤트 루프가 설계상 그 용도), <strong>계산이 많다 → worker_threads</strong>,
+<strong>코어를 다 쓰고 싶다 → 프로세스 복제</strong>. 프로세스 복제 시에는 프로세스 간 메모리가 격리되므로 인메모리 세션 같은 공유 상태가 깨진다는 점을 함께 설계해야 한다.
+</p>
+
+<h2>6. CPU 바운드가 루프를 막는다 — 진단과 방어</h2>
+<p>
+탈출구가 마련되어 있다는 것은 뒤집으면, <strong>탈출시키지 않은 무거운 계산이 메인에 남아 있으면 안 된다</strong>는 뜻이다.
+Node의 모든 강점은 "메인 스레드가 항상 빨리 루프로 복귀한다"는 전제 위에 서 있다. 콜백 하나가 3초짜리 반복문을 돌면,
+그 3초 동안 <strong>타이머도, 새 요청 수락도, 진행 중이던 다른 응답도 전부 정지</strong>한다. 동시 접속 1만의 서버라면 1만 명이 함께 멈춘다.
+</p>
+<pre><code>app.get('/report', (req, res) =&gt; {
+  const result = heavyAggregation(bigData);  // 3초 동안 동기 계산
+  res.json(result);
+});
+// 이 3초 동안 /health 조차 응답 불가 → 로드밸런서가 인스턴스를 죽었다고 판단할 수도</code></pre>
+<ul>
+  <li><strong>진단</strong>: 이벤트 루프 지연(event loop lag — "1ms 뒤에 실행해 달라"고 한 타이머가 실제로 얼마나 늦게 실행되는지) 지표를 모니터링한다. 지연이 수백 ms면 어딘가에서 동기 작업이 루프를 잡고 있다는 뜻이다.</li>
+  <li><strong>방어</strong>: 큰 계산은 worker_threads로 격리, 큰 배열 처리는 청크로 쪼개 사이사이 루프에 양보, <code>JSON.parse</code>할 대상의 크기 상한 설정, <code>fs.readFileSync</code> 등 <code>*Sync</code> API를 요청 처리 경로에서 금지.</li>
+</ul>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "async를 붙이면 병렬로 실행된다"?</strong> — 아니다. <code>async/await</code>는 <em>기다림을 양보</em>하게 할 뿐, JS 코드 실행은 여전히 한 번에 하나다. 동시에 진행되는 것은 <em>I/O 대기</em>이지 <em>계산</em>이 아니다. CPU 작업에 async를 붙여도 루프는 똑같이 막힌다.</p>
+<p><strong>② "논블로킹이니까 뭘 해도 안 막힌다"?</strong> — 논블로킹은 I/O의 성질이다. 동기 계산, <code>*Sync</code> API, 거대한 <code>JSON.stringify</code>는 그대로 막는다.</p>
+<p><strong>③ <code>process.nextTick</code> 남용</strong> — nextTick 큐는 이벤트 루프 진행보다 항상 먼저 <em>완전히</em> 비워진다. nextTick 안에서 다시 nextTick을 예약하는 재귀는 I/O를 영원히 굶긴다(starvation). 지연 실행 의도라면 <code>setImmediate</code>가 안전한 선택이다.</p>
+<p><strong>④ "스레드가 없으니 동시성 버그도 없다"?</strong> — 락 경쟁은 없지만, <code>await</code> 지점마다 <em>다른 콜백이 끼어들 수 있다</em>. "읽고-await-쓰기" 사이에 다른 요청이 같은 값을 바꾸는 논리적 경쟁은 여전히 존재한다. 스레드 안전성과는 다른 층위의, 그러나 실재하는 문제다.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+"동시 접속을 무엇으로 감당하는가"라는 질문에 각 언어 생태계가 내놓은 답을 나란히 놓으면, Node의 선택이 여러 답 중 하나임이 보인다.
+축은 두 개다 — <strong>대기를 스레드로 감당하는가, 이벤트로 감당하는가</strong>.
+</p>
+<table>
+  <tr><th>언어</th><th>전통적 모델</th><th>이벤트/비동기 모델</th><th>비고</th></tr>
+  <tr>
+    <td>Java</td>
+    <td>요청당 스레드(서블릿) — 블로킹 I/O를 스레드 수로 감당</td>
+    <td>Netty·리액티브 스택(이벤트 루프), 최근에는 가상 스레드(경량 스레드를 대량 생성)</td>
+    <td>아래 심화 참조</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>— (처음부터 단일 스레드)</td>
+    <td>이벤트 루프가 유일한 모델. 브라우저와 Node가 구현만 다름</td>
+    <td>"모델 선택지가 없다"는 것이 단순함의 원천</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>스레드는 있으나 GIL(전역 인터프리터 락)로 CPU 병렬 불가 — 사실상 I/O용</td>
+    <td><code>asyncio</code> — 이벤트 루프 + async/await, Node와 가장 유사</td>
+    <td>아래 심화 참조</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td>스레드·프로세스 직접 관리</td>
+    <td><code>epoll</code>/<code>io_uring</code> 직접 사용, Boost.Asio — libuv가 감춘 층을 맨손으로</td>
+    <td>libuv 자체가 C/C++로 짠 이 층의 추상화다</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — 요청당 스레드와 이벤트 루프, 양쪽을 다 가진 언어</h3>
+<pre><code>// 전통 서블릿: 이 메서드를 실행하는 동안 스레드 하나가 "점유"된다
+protected void doGet(HttpServletRequest req, HttpServletResponse res) {
+    Data d = jdbc.query("...");   // DB 응답까지 이 스레드는 블로킹 대기 (잠자며 메모리만 차지)
+    res.getWriter().write(render(d));
+}
+// 동시 처리량 ≒ 스레드 풀 크기. 풀이 200이면 201번째 요청은 큐에서 대기.</code></pre>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> Java가 가상 스레드(수십만 개를 띄워도 되는 경량 스레드)로 간 것과 Node가 이벤트 루프로 간 것은 <strong>같은 문제("스레드는 비싸다")에 대한 반대 방향의 답</strong>이다 — Java는 스레드를 싸게 만들었고, Node는 스레드를 안 쓰기로 했다. Node의 콜백/await가 하는 "대기 지점에서 양보"를, 가상 스레드는 런타임이 블로킹 코드 그대로에서 자동으로 해 준다.</p>
+</blockquote>
+
+<h3>8.2 Python — asyncio는 Node의 평행 세계</h3>
+<pre><code>import asyncio
+
+async def handler():
+    data = await fetch_from_db()      # Node의 await와 동일: 루프에 양보
+    return render(data)
+
+# 다른 점 하나: Node는 프로그램 시작부터 루프가 돌지만,
+# Python은 개발자가 루프를 명시적으로 기동한다
+asyncio.run(main())</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> Python에는 스레드가 있는데도 asyncio가 필요한 이유가 GIL이다 — 스레드가 여럿이어도 파이썬 바이트코드는 한 번에 하나만 실행되므로, CPU 병렬은 원래 안 됐다. "그럴 바에 이벤트 루프로 I/O 동시성만 깔끔하게 얻자"는 결론이 asyncio이고, 이는 Node의 설계 논리와 정확히 같다. 반대로 CPU 병렬이 필요하면 Python은 멀티프로세스로, Node는 worker_threads/cluster로 — 탈출구까지 평행하다.</p>
+</blockquote>
+
+<h3>8.3 C++ / JS·TS — 한 줄 요약</h3>
+<p>
+C++에서 <code>epoll_wait()</code>를 직접 호출해 보면 이벤트 루프 poll 단계의 정체("준비된 fd 목록을 받아 순회하며 처리")를 원형 그대로 보게 된다 — libuv는 이것의 크로스 플랫폼 포장이다.
+JS·TS 개발자에게 Node와 브라우저의 차이는 "루프를 누가 무엇을 위해 돌리는가"(I/O vs 렌더링)로 요약된다.
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>비동기 프로그래밍 모델 일반론</strong> — 콜백→Promise→async/await의 진화와 이벤트 루프 개념 원론. <a href="G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a> (이 문서의 선수).</li>
+  <li><strong>스트림(stream)과 백프레셔(backpressure)</strong> — 큰 데이터를 메모리에 다 올리지 않고 흘려보내는 Node의 핵심 추상화. 생산 속도 &gt; 소비 속도일 때의 제어가 백프레셔다.</li>
+  <li><strong>이벤트 루프 지연 모니터링</strong> — <code>perf_hooks.monitorEventLoopDelay()</code>. 운영에서 CPU 바운드 침입을 조기 발견하는 표준 지표.</li>
+  <li><strong>V8 메모리 구조와 GC</strong> — 힙 상한, old/new space. "이벤트 루프는 한가한데 프로세스가 죽는" 유형의 문제는 이쪽이다.</li>
+  <li><strong>libuv 문서의 단계 설명</strong> — 본 문서의 단계 그림은 단순화본이다. pending/prepare 등 세부 단계는 공식 문서 기준으로 확인.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>Node = V8(계산) + libuv(기다림). JS 실행 스레드는 하나, 뒤에 워커 풀(기본 4)이 있다.</li>
+  <li>네트워크 I/O는 OS 이벤트 통지(epoll 등)로 스레드 소비 없이, 파일 I/O 등은 워커 풀이 대신 블로킹.</li>
+  <li>이벤트 루프 = timers → poll(심장) → check(setImmediate)… 의 단계 순환. 마이크로태스크(Promise·nextTick)는 콜백 사이마다 새치기로 전부 소진.</li>
+  <li>강점(락 없는 동시성, 접속 수만을 스레드 1개로)과 약점(콜백 하나의 긴 계산 = 서버 전체 정지)은 같은 설계의 양면.</li>
+  <li>CPU 바운드는 worker_threads로 격리, 코어 확장은 프로세스 복제로. <code>*Sync</code> API는 요청 경로에서 금지.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="V1 프로세스와 스레드.html">V1 프로세스와 스레드.html</a> — 스레드·컨텍스트 스위치·블로킹의 OS 수준 기초</li>
+  <li><a href="C18 Node.js 서버 기초.html">C18 Node.js 서버 기초.html</a> — 이 런타임 위에서 HTTP 서버를 실제로 짜는 방법(다음 단계)</li>
+  <li><a href="G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a> — async/await·이벤트 루프의 언어 중립적 개념 원론(선수)</li>
+  <li><a href="B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a> — 같은 개념의 브라우저 구현과의 대조</li>
+</ul>
+
+</body>
+</html>

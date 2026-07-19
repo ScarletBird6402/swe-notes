@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>I4 의존성 주입과 테스트 용이성</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>I4 의존성 주입(DI)과 테스트 용이성</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li><strong>의존성 주입(DI, Dependency Injection)</strong>은 "필요한 것을 직접 만들지(<code>new</code>) 않고, <strong>밖에서 받아서</strong> 쓴다"는 한 문장으로 요약된다.</li>
+  <li>클래스 내부의 <code>new</code>는 그 구현체와의 <strong>영구 결합 선언</strong>이다 — 교체 불가, 대체 불가. DI는 이 결합을 "인터페이스로 받는 자리"로 바꿔 <strong>갈아 끼울 수 있는 틈(seam)</strong>을 만든다.</li>
+  <li>그 틈의 최대 수혜자가 <strong>테스트</strong>다: 진짜 DB·메일 서버 대신 <strong>가짜(mock) 객체를 주입</strong>하면, 외부 세계 없이 내 로직만 빠르고 결정적으로 검증할 수 있다.</li>
+  <li>주입 방식은 <strong>생성자 주입</strong>을 기본으로 한다 — 필수 의존성이 시그니처에 드러나고, 주입 없이는 객체가 만들어질 수조차 없기 때문이다. setter 주입은 "선택적·교체 가능" 의존성에 한정한 보조 수단이다.</li>
+  <li>DI는 <strong>프레임워크가 아니라 설계 기법</strong>이다. Spring 없이 <code>new OrderService(new EmailSender())</code>라고 손으로 조립해도 DI다. 프레임워크(DI 컨테이너)는 그 조립을 자동화해 줄 뿐이다.</li>
+  <li>실무 감각: "이 클래스, 테스트하기 어렵네"라는 느낌은 대개 <strong>숨은 의존성(내부 <code>new</code>, 전역 접근)의 냄새</strong>다. 테스트 용이성은 설계 품질의 리트머스지다.</li>
+</ul>
+
+<h2>1. 문제 — 클래스 안의 <code>new</code>가 만드는 강한 결합</h2>
+<p>
+주문이 완료되면 확인 메일을 보내는 서비스를 보자. 가장 자연스러워 보이는 코드는 이렇다.
+</p>
+<pre><code>public class OrderService {
+    private final EmailSender emailSender = new EmailSender();  // 내부에서 직접 생성
+
+    public void completeOrder(Order order) {
+        // ... 주문 처리 로직 ...
+        emailSender.send(order.getEmail(), "주문이 완료되었습니다");
+    }
+}</code></pre>
+<p>
+동작에는 문제가 없다. 문제는 <strong>변화와 검증</strong>에서 드러난다.
+</p>
+<ul>
+  <li><strong>교체 불가</strong> — 알림을 메일에서 문자로 바꾸려면? <code>OrderService</code>의 <em>내부 코드를</em> 열어 고쳐야 한다. 알림 수단이라는 "남의 사정"이 주문 로직의 수정 이유가 된다.</li>
+  <li><strong>테스트 불가</strong> — <code>completeOrder</code>의 주문 처리 로직을 테스트하고 싶을 뿐인데, 이 코드를 실행하면 <strong>진짜 메일이 발송된다</strong>. 메일 서버가 없는 환경에서는 테스트가 실패하고, 있는 환경에서는 테스트 돌릴 때마다 메일이 날아간다.</li>
+  <li><strong>숨은 의존성</strong> — 이 클래스가 메일 발송 능력을 요구한다는 사실이 시그니처 어디에도 없다. 사용자는 코드를 열어 보고서야 "아, 이게 메일을 보내는구나"를 알게 된다.</li>
+</ul>
+<p>
+원인은 하나다: <code>new EmailSender()</code>라는 한 줄이 <strong>"나는 반드시, 진짜 EmailSender와만 일한다"는 선언</strong>이기 때문이다.
+생성을 내부에서 해버리면 그 무엇도 끼어들 수 없다.
+</p>
+
+<h2>2. 전환 — 만들지 말고, 받아라</h2>
+<p>
+의존성 주입의 발상은 생성의 방향을 뒤집는 것이다: <strong>필요한 것을 안에서 만들지 않고, 밖에서 넣어 준다.</strong>
+</p>
+<pre><code>public class OrderService {
+    private final NotificationSender sender;   // ① 인터페이스로 받는 "자리"
+
+    public OrderService(NotificationSender sender) {  // ② 생성자로 주입받음
+        this.sender = sender;
+    }
+
+    public void completeOrder(Order order) {
+        // ... 주문 처리 로직 ...
+        sender.send(order.getEmail(), "주문이 완료되었습니다");
+    }
+}
+
+// 조립하는 쪽(외부)이 무엇을 꽂을지 결정한다
+OrderService service = new OrderService(new EmailSender());   // 운영: 진짜 메일
+OrderService service = new OrderService(new SmsSender());     // 교체: 문자로</code></pre>
+
+<div class="flow">Before:  OrderService ──(내부 new)──&gt; EmailSender      결합이 코드에 박제
+After :  OrderService ──(자리만 선언)──&gt; NotificationSender(인터페이스)
+                                    ↑
+              외부 조립자가 구현체를 "주입"  ← 무엇을 꽂을지는 바깥의 결정</div>
+
+<p>
+바뀐 것을 정리하면:
+</p>
+<ul>
+  <li><code>OrderService</code>는 이제 "알림을 보낼 수 있는 <strong>무언가</strong>"만 알 뿐, 그것이 메일인지 문자인지 모른다. 구체와의 결합이 <strong>추상과의 결합</strong>으로 완화됐다.</li>
+  <li>의존성이 <strong>생성자 시그니처에 공개</strong>됐다 — 이 클래스를 쓰려면 무엇이 필요한지가 계약으로 드러난다.</li>
+  <li>"생성과 조립"이라는 관심사가 클래스 밖으로 분리됐다. 이렇게 <strong>제어(무엇을 쓸지의 결정권)가 사용자 쪽에서 조립자 쪽으로 넘어가는 것</strong>을 제어의 역전(IoC, Inversion of Control)이라 부르고, DI는 그 대표적인 구현 수단이다.</li>
+</ul>
+
+<h2>3. 주입 방식 — 생성자 주입 vs setter 주입</h2>
+<p>
+"밖에서 받는다"(2절)로 방향이 정해졌다면, 다음 질문은 <strong>어느 문으로 받을 것인가</strong>다. 문의 위치에 따라 객체의 불변성과 "불완전한 상태로 존재할 수 있는가"가 갈리고, 그 차이는 4절의 테스트 장면에서 그대로 되돌아온다.
+</p>
+<table>
+  <tr><th>방식</th><th>형태</th><th>장점</th><th>약점·용도</th></tr>
+  <tr>
+    <td><strong>생성자 주입</strong><br>(기본 권장)</td>
+    <td><code>public OrderService(NotificationSender s)</code></td>
+    <td>· 주입 없이는 객체 생성 자체가 불가 → <strong>불완전한 상태가 존재하지 않음</strong><br>· 필드를 <code>final</code>(불변)로 선언 가능<br>· 필수 의존성이 시그니처에 전부 노출</td>
+    <td>의존성이 아주 많아지면 생성자가 비대해짐 — 단, 이는 감춰야 할 불편이 아니라 <strong>클래스가 과로 중이라는 경고등</strong>이다</td>
+  </tr>
+  <tr>
+    <td><strong>setter 주입</strong></td>
+    <td><code>public void setSender(NotificationSender s)</code></td>
+    <td>· 생성 후 교체 가능<br>· 없어도 동작하는 <strong>선택적 의존성</strong> 표현에 적합</td>
+    <td>· 주입을 빼먹어도 객체가 만들어짐 → 실행 중 <code>null</code> 폭발 위험<br>· 언제든 바뀔 수 있어 불변성 상실</td>
+  </tr>
+  <tr>
+    <td><strong>필드 직접 주입</strong><br>(프레임워크 전용)</td>
+    <td>필드에 어노테이션만 붙여 컨테이너가 몰래 채움</td>
+    <td>코드가 짧아 보임</td>
+    <td>· 생성자도 setter도 없어 <strong>컨테이너 없이는(=순수 테스트에서는) 채울 방법이 없음</strong><br>· 의존성이 시그니처에서 사라져 은폐됨 → 지양</td>
+  </tr>
+</table>
+
+<blockquote class="ok">
+<p><strong>선택 기준 한 줄:</strong> "이것 없이 이 객체가 성립하는가?" — 성립하지 않으면(필수) <strong>생성자 주입</strong>, 없어도 기본 동작이 가능하면(선택) <strong>setter 주입</strong>. 필드 주입은 테스트에서 주입할 공식 통로가 없다는 이유 하나만으로도 피할 가치가 있다.</p>
+</blockquote>
+
+<h2>4. 테스트 용이성 — mock 대체가 열리는 순간</h2>
+<p>
+1절의 두 번째 고통 — 테스트를 돌리면 진짜 메일이 발송되는 문제 — 로 돌아가자. 2절이 만든 "갈아 끼울 수 있는 자리"와 3절이 권한 "생성자라는 문"이 갖춰졌으니, 이제 그 문으로 가짜를 들여보낼 수 있다. 이 자리의 최대 수혜자가 테스트다.
+운영에서는 진짜 구현체를 꽂지만, <strong>테스트에서는 가짜를 꽂는다</strong>.
+</p>
+<pre><code>// 테스트용 가짜 — 메일을 보내는 척만 하고, 호출 사실을 기록한다
+class FakeSender implements NotificationSender {
+    List&lt;String&gt; sentTo = new ArrayList&lt;&gt;();
+    public void send(String to, String message) {
+        sentTo.add(to);                    // 실제 발송 없음, 기록만
+    }
+}
+
+@Test
+void 주문_완료시_구매자에게_알림이_발송된다() {
+    FakeSender fake = new FakeSender();
+    OrderService service = new OrderService(fake);   // 가짜를 주입
+
+    service.completeOrder(order("buyer@example.com"));
+
+    assertEquals(List.of("buyer@example.com"), fake.sentTo);  // 상호작용을 검증
+}</code></pre>
+<p>
+이 테스트는 <strong>메일 서버 없이, 네트워크 없이, 밀리초 안에, 몇 번을 돌려도 같은 결과</strong>로 끝난다.
+검증 대상이 "메일이 진짜 가는가"(그건 <code>EmailSender</code> 자신의 테스트 몫)가 아니라 <strong>"주문 완료 로직이 알림을 요청하는가"</strong>로 정확히 좁혀졌기 때문이다.
+이런 대역을 통칭 <strong>테스트 더블(test double)</strong>이라 하며, 위처럼 손으로 만들 수도 있고 mock 라이브러리로 자동 생성할 수도 있다(★6.1).
+</p>
+
+<h3>4.1 왜 "테스트하기 어렵다"가 설계 냄새인가</h3>
+<p>
+DI 없는 1절의 코드로 같은 테스트를 시도해 보면, 가짜를 <em>끼워 넣을 자리 자체가 없다</em>는 벽에 부딪힌다.
+테스트가 어렵다는 것은 대개 다음 중 하나가 숨어 있다는 뜻이다:
+</p>
+<ul>
+  <li>내부 <code>new</code> — 협력자를 교체할 틈이 없음</li>
+  <li>전역/정적 접근 — 어디서 무엇을 읽는지 시그니처에 없음(숨은 의존성)</li>
+  <li>한 클래스가 너무 많은 협력자를 필요로 함 — 테스트 준비 코드가 산더미</li>
+</ul>
+<p>
+그래서 <strong>테스트 용이성은 결합도의 실측기</strong>다. "테스트를 위해 설계를 굽히는" 것이 아니라, 테스트가 어렵다는 신호를 통해 <strong>결합 문제를 조기에 발견</strong>하는 것이다 — <a href="I1 응집도와 결합도.html">I1</a>에서 본 "낮은 결합"이 지켜졌는지를 테스트가 매 순간 검사해 주는 셈이다.
+</p>
+
+<h2>5. DI 컨테이너 — 수동 조립의 자동화, 그 이상도 이하도 아니다</h2>
+<p>
+2절에서 "생성과 조립"을 클래스 밖으로 밀어냈지만, 그 노동이 사라진 것은 아니다 — 조립자의 손으로 이동했을 뿐이다. 객체가 수십 개로 늘면 <code>new A(new B(new C(...)))</code>식 수동 조립이 번거로워진다.
+<strong>DI 컨테이너(DI container)</strong>는 이 조립을 대신해 주는 도구다: 클래스들을 등록해 두면, 컨테이너가 생성자 시그니처를 보고 <strong>필요한 의존성을 찾아 자동으로 꽂아서</strong> 객체를 만들어 준다. Java 진영의 Spring이 대표적이다.
+</p>
+<blockquote class="info">
+<p><strong>순서를 바로잡자:</strong> "Spring을 쓰니까 DI를 한다"가 아니라, <strong>DI라는 설계 기법이 먼저 있고, 컨테이너는 그 조립 노동을 자동화하는 도구</strong>다. 컨테이너 없이 <code>main</code>에서 손으로 조립해도 완전한 DI이며, 반대로 Spring을 쓰면서도 클래스 내부에서 <code>new</code>를 남발하면 DI의 이점은 사라진다. 프레임워크는 기법을 대신 이해해 주지 않는다.</p>
+</blockquote>
+<p>
+프론트엔드에도 같은 구도가 있다. Vue3의 <code>provide</code>/<code>inject</code>는 조상 컴포넌트가 제공한 것을 후손이 주입받는 메커니즘이고, 더 근본적으로는 <strong>컴포넌트 props 자체가 "밖에서 받는" 구조</strong> — 즉 주입의 한 형태다. 컴포넌트가 데이터를 스스로 fetch하지 않고 props로 받도록 설계하면, 스토리북·테스트에서 가짜 데이터를 꽂기 쉬워지는 것 역시 정확히 같은 원리다.
+</p>
+
+<h2>6. 흔히 헷갈리는 지점</h2>
+<p>
+여기까지의 층위 — 기법(2절)·문(3절)·효용(4절)·도구(5절) — 마다 단골 오해가 하나씩 있다. ①은 5절의, ②는 2절의, ③은 4절의, ④는 3절의 그림자다.
+</p>
+<blockquote class="warn">
+<p><strong>① "DI = Spring(프레임워크)"?</strong> — 아니다. DI는 언어 불문의 설계 기법이고, 컨테이너는 편의 도구다. 이 구분이 무너지면 "프레임워크 없는 코드에서는 DI를 못 한다"는 이상한 결론에 도달한다. 함수 인자로 협력자를 받는 것조차 이미 DI다.</p>
+<p><strong>② "전부 인터페이스로 만들고 전부 주입해야 한다"?</strong> — 과잉이다. 갈아 끼울 이유(구현 교체 가능성, 테스트 대역 필요)가 있는 <strong>경계의 협력자</strong>(외부 통신, 저장소, 시간·난수 같은 비결정 요소)가 주 대상이다. 값 객체나 순수 계산 유틸까지 주입하면 조립 복잡도만 늘어난다 — 추상화는 공짜가 아니다.</p>
+<p><strong>③ "mock을 많이 쓸수록 좋은 테스트다"?</strong> — 역효과 구간이 있다. 내부 구현의 호출 순서·횟수까지 mock으로 촘촘히 검증하면, 테스트가 <em>동작</em>이 아니라 <em>구현 방식</em>에 결합된다 — 리팩토링만 해도 우수수 깨지는 취약한 테스트가 된다. mock은 경계(외부 세계)를 끊는 데 쓰고, 검증의 중심은 결과와 상태에 두는 것이 균형점이다.</p>
+<p><strong>④ "생성자 파라미터가 7개가 됐다. DI가 문제다"?</strong> — 반대다. DI는 문제를 <em>만든</em> 게 아니라 <em>보이게</em> 했다. 내부 <code>new</code> 7개는 조용히 숨지만, 생성자 파라미터 7개는 시끄럽게 드러난다 — 이 클래스의 책임이 너무 많다는(I1의 낮은 응집) 신호다. 처방은 주입을 숨기는 것이 아니라 클래스를 쪼개는 것이다.</p>
+</blockquote>
+
+<h2>★ 7. 언어별 대조</h2>
+<p>같은 원리지만, 언어마다 "의존성이 어디에 하드와이어링되기 쉬운가"(1절의 내부 <code>new</code>에 해당하는 지점)와 "대체를 가능하게 하는 관용 수단"(2~4절의 자리·문·가짜)이 다르다.</p>
+<table>
+  <tr><th>언어</th><th>결합이 박제되는 단골 지점</th><th>주입의 관용 형태</th><th>테스트 대체 수단</th></tr>
+  <tr>
+    <td>Java</td>
+    <td>클래스 내부 <code>new</code>, <code>static</code> 유틸 호출</td>
+    <td>인터페이스 + 생성자 주입, DI 컨테이너(Spring)</td>
+    <td>mock 라이브러리(Mockito 등), 손수 만든 fake</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>모듈 최상단 <code>import</code>한 구현을 직접 호출</td>
+    <td>함수 인자/팩토리로 전달, Vue <code>provide</code>/<code>inject</code>, props</td>
+    <td>테스트 러너의 모듈 mock, 주입 지점에 가짜 전달</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>모듈 전역에서 생성한 클라이언트 객체</td>
+    <td>기본값 있는 인자 주입(<code>def f(sender=real)</code>) — 덕 타이핑이라 인터페이스 선언 불필요</td>
+    <td>monkeypatch(런타임 치환), 인자로 가짜 전달</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td>멤버로 구체 타입을 값 소유, 전역 싱글턴</td>
+    <td>추상 클래스 포인터/참조 주입, 템플릿 파라미터(정적 주입)</td>
+    <td>가상 함수 기반 mock, 템플릿에 가짜 타입 대입</td>
+  </tr>
+</table>
+
+<h3>7.1 Java — 생성자 주입 + mock 라이브러리의 표준 흐름</h3>
+<p>
+현대 Java(Spring 계열)의 표준은 <strong>생성자 주입</strong>이다. 컨테이너가 생성자를 보고 자동으로 조립해 주므로, 코드는 프레임워크 어노테이션 유무와 무관하게 "그냥 생성자로 받는 평범한 클래스"로 유지된다 — 덕분에 <strong>단위 테스트에서는 컨테이너 없이</strong> <code>new OrderService(mock)</code>로 직접 조립하면 된다. 테스트가 컨테이너 기동을 기다릴 필요가 없다는 것은 테스트 속도와 독립성의 결정적 차이를 만든다.
+</p>
+<pre><code>@Test
+void 주문_완료시_알림_요청() {
+    NotificationSender mock = mock(NotificationSender.class); // 라이브러리가 가짜를 생성
+    OrderService service = new OrderService(mock);            // 컨테이너 없이 직접 주입
+
+    service.completeOrder(order("buyer@example.com"));
+
+    verify(mock).send(eq("buyer@example.com"), anyString());  // 상호작용 검증
+}</code></pre>
+<p>
+<code>Java 관점의 통찰: mock 라이브러리가 가짜를 "만들어 줄 수 있는" 전제 자체가 DI다 — 아무리 정교한 mock도 끼워 넣을 자리(주입 지점)가 없으면 무용지물이다. 반대로 static 메서드 직접 호출은 자리 자체가 없는 대표 사례라 테스트의 오랜 난적이었다. 도구로 우회하는 방법이 없지는 않으나, 우회 도구가 필요하다는 사실 자체를 "설계를 고치라"는 신호로 읽는 쪽이 건강하다.</code>
+</p>
+
+<h3>7.2 JS·TS — <code>import</code>가 곧 하드와이어링인 세계</h3>
+<p>
+JS·TS의 특수성은 <strong>모듈 시스템이 결합 지점</strong>이라는 데 있다. 파일 최상단에서 <code>import { sendEmail } from './emailApi'</code>로 가져와 직접 호출하는 순간, Java의 내부 <code>new</code>와 동일한 박제가 일어난다.
+테스트 러너의 모듈 mock 기능으로 통째로 치환하는 우회로가 있지만, 더 근본적인 처방은 역시 주입이다.
+</p>
+<pre><code>// 하드와이어링: 이 함수는 영원히 진짜 emailApi와만 일한다
+import { sendEmail } from './emailApi'
+export function completeOrder(order) { ...; sendEmail(order.email) }
+
+// 주입형: 협력자를 인자로 받는다 — 테스트에서는 가짜 함수를 전달
+export function completeOrder(order, sendFn = sendEmail) { ...; sendFn(order.email) }</code></pre>
+<p>
+Vue3에서는 이 원리가 두 층위로 나타난다: <strong>props</strong>(부모가 데이터·콜백을 주입 — 컴포넌트를 "받은 것만으로 렌더링하는" 순수한 단위로 유지)와 <strong>provide/inject</strong>(먼 조상이 서비스 객체를 제공 — props를 여러 단계 릴레이하는 대신 쓰는 컨테이너 유사 메커니즘). 컴포넌트 테스트 시 mount 옵션으로 props와 provide에 가짜를 꽂을 수 있게 설계하는 것이, 백엔드의 생성자 주입과 정확히 대응한다.
+</p>
+<p>
+<code>JS·TS 관점의 통찰: 함수형 스타일에서는 "클래스+인터페이스" 없이 함수 인자와 클로저·팩토리만으로 DI가 성립한다. 기본값 인자(sendFn = sendEmail) 패턴은 운영 호출부를 바꾸지 않으면서 테스트에만 틈을 여는 실용 기법 — 다만 기본값이 진짜 구현을 참조하므로 모듈 로드 시점 결합은 남는다는 한계도 함께 알아 두자.</code>
+</p>
+
+<h3>7.3 Python / C++ — 한 줄 요약</h3>
+<p>
+Python은 덕 타이핑 덕분에 인터페이스 선언 없이도 "같은 메서드를 가진 아무 객체"를 주입할 수 있어 DI의 형식 비용이 가장 낮고, 그마저 안 되어 있으면 monkeypatch로 런타임에 강제 치환하는 최후 수단이 있다 — 단, 패치 남용은 숨은 결합을 방치하는 진통제가 되기 쉽다.
+C++은 두 갈래가 있다: 가상 함수 기반 주입(런타임 다형성, mock 프레임워크와 호환)과 <strong>템플릿 파라미터 주입</strong>(컴파일 타임에 가짜 타입을 끼워 넣는 정적 DI — 가상 호출 비용이 없어 성능 민감 코드에서 선호). 어느 쪽이든 "소유를 값으로 박제하지 말고 추상으로 받는다"는 원리는 같다.
+</p>
+
+<h2>8. 함께 알면 좋은 것</h2>
+<p>본문 각 절을 한 걸음씩 확장하는 어휘들이다 — 첫째는 2절의 원리 층위, 둘째는 4절의 대역 어휘, 셋째는 5절의 조립 위치, 넷째는 6-②에서 스친 비결정 요소, 다섯째는 1절의 "숨은 의존성"을 반대편에서 비추는 상대역이다.</p>
+<ul>
+  <li><strong>의존성 역전 원칙(DIP, Dependency Inversion Principle)</strong> — "구체가 아니라 추상에 의존하라"는 <em>설계 원칙</em>. DI는 그 원칙을 실현하는 <em>기법</em>이다 — 이름이 비슷해 자주 혼동되는 짝.</li>
+  <li><strong>테스트 더블의 분류</strong> — 이 문서의 fake·mock 외에도 stub, spy 등 목적별 대역의 어휘가 있다. 대역을 "무엇을 검증하려고 쓰는가"로 구분하는 눈이 mock 남용(6-③)의 예방주사가 된다.</li>
+  <li><strong>합성 루트(composition root)</strong> — 조립 코드를 애플리케이션 진입점 한 곳에 모으는 패턴. "생성과 조립은 한 곳에, 사용은 어디서나"라는 DI 구조의 완성형.</li>
+  <li><strong>시간·난수의 주입</strong> — <code>now()</code>·랜덤을 직접 호출하는 코드는 비결정적이라 테스트가 흔들린다. 시계(clock)와 난수원을 주입 대상으로 삼는 것은 DI의 대표적 응용.</li>
+  <li><strong>서비스 로케이터(service locator)와의 대비</strong> — 필요한 것을 "전역 등록소에서 꺼내 쓰는" 방식은 DI와 비슷해 보이지만 의존성이 시그니처에서 사라진다(숨은 의존성). DI가 선호되는 이유를 대조로 이해하기 좋은 상대역.</li>
+</ul>
+
+<h2>9. 한 장 요약</h2>
+<ul>
+  <li>DI = <strong>만들지 말고 받아라</strong>. 내부 <code>new</code>는 구현체와의 영구 결합 선언이고, 주입은 갈아 끼울 수 있는 틈을 만든다.</li>
+  <li>그 틈으로 테스트가 들어온다: <strong>진짜 대신 가짜(mock/fake)를 주입</strong> → 외부 세계 없이, 빠르고 결정적으로, 내 로직만 검증.</li>
+  <li>방식은 <strong>필수 의존성 = 생성자 주입</strong>(불변·시그니처 공개·불완전 상태 원천 봉쇄), 선택적 의존성 = setter 주입. 필드 주입은 테스트 통로가 없어 지양.</li>
+  <li>DI는 기법, 컨테이너(Spring 등)는 조립 자동화 도구 — 순서를 뒤집지 말 것. 프론트의 props·provide/inject도 같은 원리의 다른 표현.</li>
+  <li>주입 대상은 <strong>경계의 협력자</strong>(외부 통신·저장소·시간·난수)부터. 전부 주입은 과잉, mock 과다는 구현 결합 테스트.</li>
+  <li><strong>테스트하기 어렵다 = 결합이 높다는 실측 신호.</strong> 생성자가 비대해지면 DI 탓이 아니라 책임 과다의 경고등으로 읽는다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="I1 응집도와 결합도.html">I1 응집도와 결합도.html</a> — DI가 낮추려는 대상인 결합도의 개념적 토대. 테스트 용이성이 결합도의 실측기라는 이 문서의 관점은 I1의 "낮은 결합" 원칙의 응용이다</li>
+</ul>
+
+</body>
+</html>

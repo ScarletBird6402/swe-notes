@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>E1 인덱스 원리와 복합 인덱스</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>E1 인덱스 원리와 복합 인덱스</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>인덱스(index)는 <strong>미리 정렬해 둔 별도의 자료구조</strong>다. "정렬돼 있으면 빨리 찾을 수 있다"는 단순한 원리를 디스크 환경에 맞게 구현한 것이 B-tree다.</li>
+  <li>인덱스의 효용은 <strong>seek(원하는 지점으로 점프)</strong>이 <strong>scan(전부 훑기)</strong>을 대체할 때 나온다. 인덱스가 있어도 scan이 선택되면 효과가 없다.</li>
+  <li>복합 인덱스(composite index)는 <strong>앞 컬럼부터 차례로 정렬</strong>된다. 따라서 선두 컬럼(leading column)을 조건에 쓰지 않으면 그 인덱스는 사실상 못 쓴다.</li>
+  <li>컬럼 순서의 황금률: <strong>등호(=) 조건 컬럼을 앞에, 범위(&lt;, &gt;, BETWEEN) 조건 컬럼을 뒤에</strong>. 범위 조건을 만나는 순간 그 뒤 컬럼들의 정렬은 활용이 끊긴다.</li>
+  <li>선택도(selectivity)가 높은(값이 다양해서 조건으로 걸렀을 때 소수만 남는) 컬럼일수록 인덱스 가치가 크다. 성별 같은 저선택도 컬럼 단독 인덱스는 거의 무용하다.</li>
+  <li>인덱스는 공짜가 아니다 — 쓰기(INSERT/UPDATE/DELETE)마다 인덱스도 갱신되므로, 읽기 속도를 쓰기 비용과 저장 공간으로 사는 거래다.</li>
+</ul>
+
+<h2>1. 인덱스가 없는 세계 — 전체 스캔</h2>
+<p>
+테이블은 기본적으로 "도착한 순서대로 쌓인 종이 더미"에 가깝다. 조건에 맞는 행을 찾으려면 처음부터 끝까지 모든 행을 확인하는 수밖에 없는데, 이것이 전체 테이블 스캔(full table scan)이다.
+행이 100만 개면 100만 번 확인한다 — 데이터가 늘수록 비용이 <strong>정비례로</strong> 늘어난다.
+</p>
+<p>
+책 뒤의 "찾아보기" 페이지가 해결책의 원형이다. 본문(테이블)은 그대로 두고, <strong>키워드를 가나다순으로 정렬한 별도 목록</strong>에 "이 단어는 몇 쪽"이라는 위치 정보를 달아 둔다.
+정렬돼 있으므로 이진 탐색이 가능해지고, 100만 항목도 약 20번의 비교로 찾는다. 데이터베이스 인덱스가 정확히 이 구조다: <strong>정렬된 (키 값 → 행 위치) 목록</strong>.
+</p>
+
+<h2>2. 왜 하필 B-tree인가</h2>
+<p>
+정렬된 목록이면 배열 + 이진 탐색으로도 충분해 보이지만, 데이터베이스에는 두 가지 제약이 있다: 데이터가 <strong>디스크</strong>에 있고, <strong>계속 삽입·삭제</strong>된다.
+</p>
+<ul>
+  <li>디스크는 한 바이트씩이 아니라 <strong>페이지(page)</strong>라는 블록 단위(보통 수 KB)로 읽는다. 읽기 횟수 = 디스크 접근 횟수이므로, "몇 번 비교하나"보다 <strong>"페이지를 몇 번 읽나"</strong>가 진짜 비용이다.</li>
+  <li>정렬된 배열은 중간 삽입 때 뒤 전체를 밀어야 해서 삽입이 계속되는 환경에 부적합하다.</li>
+</ul>
+<p>
+B-tree는 이 두 제약에 맞춘 답이다. 노드 하나를 디스크 페이지 하나에 맞추고, 노드마다 자식을 수백 개씩 두는(높은 fan-out — 한 노드에서 갈라지는 가지 수) 넓고 낮은 트리를 만든다.
+그러면 수천만 행도 트리 높이가 3~4 수준이라, <strong>디스크 읽기 서너 번</strong>으로 어떤 키든 도달한다. 삽입·삭제 시에는 노드를 쪼개거나 합치며 항상 균형을 유지한다.
+</p>
+<div class="flow">            [루트 노드]          ← 페이지 1회 읽기
+           /     |     \
+     [내부 노드] [내부 노드] ...   ← 페이지 1회 읽기
+      /  |  \
+[리프] [리프] [리프] ── 리프끼리 연결 ← 페이지 1회 읽기
+  │
+  └─ 리프에는 (키 값, 행 위치)가 정렬된 채 저장
+     → 리프 연결 덕분에 범위 검색은 "점프 후 옆으로 이동"</div>
+<p>
+리프 노드들이 옆으로 연결돼 있다는 점이 중요하다. <code>BETWEEN</code> 같은 범위 검색은 시작점까지 트리를 타고 내려간 뒤, 리프를 따라 옆으로 읽기만 하면 된다.
+값이 다르지만 같은 원리로, <code>ORDER BY</code>가 인덱스 정렬 순서와 일치하면 별도 정렬 작업 없이 리프를 순서대로 읽는 것으로 끝난다.
+</p>
+
+<h2>3. seek vs scan — 인덱스 효용의 실체</h2>
+<table>
+  <tr><th>동작</th><th>무엇을 하나</th><th>비용의 성격</th></tr>
+  <tr>
+    <td><strong>seek (탐색)</strong></td>
+    <td>트리를 타고 조건에 맞는 지점으로 <strong>점프</strong>한 뒤 필요한 만큼만 읽음</td>
+    <td>결과 행 수에 비례 (전체 크기와 거의 무관)</td>
+  </tr>
+  <tr>
+    <td><strong>scan (스캔)</strong></td>
+    <td>테이블 또는 인덱스 전체를 <strong>처음부터 끝까지</strong> 읽으며 조건 확인</td>
+    <td>전체 행 수에 비례</td>
+  </tr>
+</table>
+<p>
+핵심 오해 방지: <strong>인덱스가 "있다"고 seek이 "된다"는 보장이 없다.</strong> 쿼리 최적화기(optimizer)는 조건의 형태와 통계를 보고 seek이 이득인지 판단하며, 다음 경우 인덱스를 두고도 scan을 택하거나 seek이 불가능해진다:
+</p>
+<ul>
+  <li>인덱스 컬럼에 함수·연산을 씌운 경우 — <code>WHERE YEAR(created_at) = 2026</code>은 정렬된 원본 값이 아닌 <em>계산 결과</em>를 묻는 것이라 트리를 탈 수 없다. <code>created_at &gt;= '2026-01-01' AND created_at &lt; '2027-01-01'</code>처럼 범위로 바꾸면 seek이 된다.</li>
+  <li>앞쪽이 와일드카드인 패턴 — <code>LIKE '%김'</code>은 "끝이 김"이라 정렬 순서를 이용할 수 없다(<code>LIKE '김%'</code>은 가능).</li>
+  <li>조건이 걸러내는 비율이 낮아, 어차피 대부분의 행을 읽어야 하는 경우 — 이때는 scan이 오히려 빠르다(아래 선택도 참조).</li>
+</ul>
+
+<h2>4. 복합 인덱스 — 정렬의 사전 순서를 이해하면 전부 풀린다</h2>
+<p>
+복합 인덱스는 여러 컬럼을 묶어 하나의 인덱스로 만든 것이다. 핵심은 정렬 방식이다:
+<strong>첫 컬럼으로 먼저 정렬하고, 첫 컬럼이 같은 것끼리 두 번째 컬럼으로 정렬</strong>한다 — 성(姓)으로 먼저, 같은 성 안에서 이름으로 정렬된 전화번호부와 같다(사전식 정렬).
+</p>
+<div class="flow">INDEX (city, age) 의 리프 정렬 상태:
+
+(부산, 22) (부산, 31) (부산, 45) (서울, 19) (서울, 25) (서울, 25) (서울, 40)
+ └────── city가 같은 구간 안에서만 age가 정렬돼 있음 ──────┘</div>
+
+<h3>4.1 선두 컬럼 원칙</h3>
+<p>
+전화번호부에서 "이름이 '민수'인 사람"을 찾을 수 있을까? 성을 모르면 결국 전체를 훑어야 한다.
+마찬가지로 <code>INDEX (city, age)</code>에서 <code>WHERE age = 25</code>만 있는 쿼리는 이 인덱스로 seek할 수 없다 —
+<strong>age의 정렬은 city가 같은 구간 안에서만 유효</strong>하기 때문이다. 복합 인덱스는 선두 컬럼부터 연속으로 조건에 등장해야 힘을 쓴다.
+</p>
+
+<h3>4.2 등호 앞, 범위 뒤</h3>
+<p>
+컬럼 순서를 정할 때의 황금률이다. 이유를 위 그림으로 확인해 보자.
+</p>
+<ul>
+  <li><code>WHERE city = '서울' AND age &gt; 20</code> + <code>INDEX (city, age)</code> → city를 등호로 고정하면 "서울 구간"이라는 <strong>연속된 한 덩어리</strong>가 잡히고, 그 안에서 age는 완전히 정렬돼 있으므로 age 범위도 seek으로 처리된다. ✅</li>
+  <li>같은 쿼리 + <code>INDEX (age, city)</code> → age &gt; 20이라는 <strong>범위를 먼저</strong> 잡으면, 그 넓은 구간 안에서 city는 정렬돼 있지 않다(각 age 값 구간마다 따로 정렬). city 조건은 잡은 구간을 일일이 훑으며 걸러내야 한다. ⚠️</li>
+</ul>
+<blockquote class="info">
+<p><strong>일반화:</strong> 인덱스 탐색은 "등호로 고정 → 고정 → … → 마지막에 범위 하나"까지가 seek의 한계다. <strong>범위 조건을 만나는 순간, 그 뒤 컬럼들의 정렬은 탐색에 쓰지 못한다</strong>(정렬·필터에 부분적으로 활용될 수는 있으나 점프는 불가). 그래서 자주 쓰는 쿼리 패턴을 보고 "등호 컬럼들 → 범위 컬럼" 순으로 배치한다.</p>
+</blockquote>
+
+<h2>5. 선택도 — 어떤 컬럼이 인덱스 가치가 있는가</h2>
+<p>
+선택도는 조건이 <strong>얼마나 소수의 행만 남기는가</strong>를 나타낸다. 값의 종류가 많은 컬럼(주민 ID, 이메일, 주문번호)은 등호 조건 하나로 한두 행만 남으므로 선택도가 높고,
+값이 몇 가지뿐인 컬럼(성별, 활성 여부)은 절반씩만 걸러 선택도가 낮다.
+</p>
+<p>
+선택도가 낮으면 인덱스가 있어도 최적화기가 scan을 택하는 경우가 많다. seek은 "인덱스에서 위치를 찾고 → 테이블 본체로 건너가 행을 가져오는" 두 단계라, 가져올 행이 너무 많으면
+이 왕복 비용이 순차적으로 쭉 읽는 scan보다 비싸지기 때문이다. 대략 전체의 수 퍼센트를 넘게 읽는 조건이라면 인덱스 효용을 의심해야 한다.
+</p>
+<blockquote class="ok">
+<p><strong>복합 인덱스와의 연결:</strong> 저선택도 컬럼도 복합 인덱스의 <em>등호 선두 컬럼</em>으로는 가치가 있을 수 있다. <code>(활성여부, 가입일)</code>처럼 "활성 사용자 중 최근 가입자" 패턴이 잦다면, 활성여부가 구간을 반으로 줄이고 그 안에서 가입일 정렬을 쓰는 조합이 성립한다. 단독 인덱스의 가치와 복합 인덱스 내 역할은 별개로 판단한다.</p>
+</blockquote>
+
+<h2>6. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "인덱스는 많을수록 좋다"?</strong> — 모든 쓰기 작업은 걸려 있는 인덱스 전부를 함께 갱신한다. 인덱스 10개가 걸린 테이블의 INSERT는 사실상 11곳에 쓰는 셈이다. 읽기 패턴이 확인된 곳에만 만든다.</p>
+<p><strong>② "(a, b) 인덱스가 있으면 (a) 인덱스도 따로 필요하다"?</strong> — 아니다. 선두 컬럼 원칙에 의해 <code>(a, b)</code>는 a 단독 조건도 지원한다. 반대로 b 단독 조건은 지원하지 못한다 — 방향이 있는 포함 관계다.</p>
+<p><strong>③ 조용한 실패에 주의</strong> — 인덱스를 못 타는 쿼리는 오류를 내지 않는다. 데이터가 적을 때는 scan도 빨라서 문제가 숨어 있다가, 데이터가 쌓인 뒤에야 급격히 느려진다. "지금 빠르다"는 "인덱스를 탄다"의 증거가 아니며, 실행 계획으로 확인해야 한다.</p>
+<p><strong>④ 암묵적 형 변환의 함정</strong> — 문자열 컬럼을 숫자와 비교(<code>WHERE phone = 01012345678</code>)하면 컬럼 쪽에 변환 함수가 씌워진 것과 같아져 seek이 무효화될 수 있다. 함수를 "직접 안 썼어도" 생길 수 있는 문제다.</p>
+</blockquote>
+
+<h2>★ 7. 언어별 대조</h2>
+<p>
+"정렬된 구조는 범위 탐색이 되고, 해시 구조는 등호만 된다"는 인덱스의 근본 원리는 각 언어의 내장 자료구조에 그대로 나타난다.
+DB의 B-tree 인덱스 vs 해시 인덱스 구분과 정확히 평행하다.
+</p>
+<table>
+  <tr><th>언어</th><th>정렬 기반(≈ B-tree 인덱스)</th><th>해시 기반(≈ 해시 인덱스)</th><th>비고</th></tr>
+  <tr>
+    <td>Java</td>
+    <td><code>TreeMap</code> — 범위 검색(<code>subMap</code>), 정렬 순회 지원</td>
+    <td><code>HashMap</code> — 등호 조회만, 순서 없음</td>
+    <td>정렬 트리 vs 해시의 교과서적 대비</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>내장 정렬 맵 없음 — 정렬 배열 + 직접 이진 탐색</td>
+    <td><code>Map</code>, 객체 — 키 등호 조회</td>
+    <td>범위 검색이 필요하면 라이브러리나 수동 구현</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>정렬 리스트 + <code>bisect</code> 모듈</td>
+    <td><code>dict</code>, <code>set</code></td>
+    <td>아래 심화 참조</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td><code>std::map</code>(균형 이진 트리), <code>lower_bound</code></td>
+    <td><code>std::unordered_map</code></td>
+    <td>아래 심화 참조 — "왜 이진 트리가 아니라 B-tree인가"의 답이 여기 있다</td>
+  </tr>
+</table>
+
+<h3>7.1 C++ — std::map으로 seek을 손으로 재현하기</h3>
+<p>
+<code>std::map</code>은 균형 이진 탐색 트리(대개 red-black tree — 삽입·삭제 후에도 높이 균형을 자동 유지하는 이진 트리)로 구현되며, 키가 항상 정렬돼 있다.
+<code>lower_bound</code>는 "이 값 이상이 시작되는 지점"으로 점프하는 연산 — DB 인덱스 seek의 축소판이다.
+</p>
+<pre><code>std::map&lt;int, std::string&gt; users;  // 키(나이) 기준 항상 정렬 유지
+
+// seek: age >= 20 인 첫 지점으로 점프한 뒤, 옆으로 읽기 (범위 검색)
+for (auto it = users.lower_bound(20); it != users.end() &amp;&amp; it-&gt;first &lt; 30; ++it) {
+    // 20 <= age < 30 구간만 순회 — 전체를 훑지 않는다
+}
+
+// 대조: std::unordered_map(해시)은 == 조회만 가능, 범위·정렬 순회 불가</code></pre>
+<p>
+<code>메모리 관점의 통찰: std::map은 노드 하나에 원소 하나를 담아 포인터로 흩어 놓기 때문에, 순회할 때마다 메모리 여기저기로 점프해 캐시 미스가 잦다. DB가 이진 트리 대신 B-tree를 쓰는 이유가 바로 이것의 확장판이다 — 노드 하나를 페이지 크기로 키워 수백 개의 키를 붙여 놓으면, 접근 1회(디스크 읽기/캐시 라인 로드)당 얻는 정보가 극대화된다. 같은 이유로 인메모리에서도 노드가 뚱뚱한 B-tree 계열이 이진 트리보다 빠른 경우가 많다.</code>
+</p>
+
+<h3>7.2 Python — dict가 안 되는 것이 곧 해시 인덱스가 안 되는 것</h3>
+<p>
+<code>dict</code>는 해시 테이블이라 등호 조회는 평균 상수 시간이지만, "키가 20 이상인 항목"은 결국 전부 순회해야 한다 — 해시 인덱스가 범위 조건을 지원하지 못하는 것과 동일한 이유다(해시 함수가 정렬 순서를 파괴한다).
+범위가 필요하면 정렬 리스트 + <code>bisect</code>(이진 탐색으로 삽입/탐색 지점을 찾아 주는 표준 모듈)를 쓴다.
+</p>
+<pre><code>import bisect
+
+ages = [19, 22, 25, 25, 31, 40, 45]          # 정렬 상태 유지가 전제 (인덱스의 유지 비용에 해당)
+
+lo = bisect.bisect_left(ages, 20)              # seek: 20 이상 시작 지점으로 점프
+hi = bisect.bisect_left(ages, 30)
+result = ages[lo:hi]                           # 리프를 옆으로 읽듯 구간만 취함 → [22, 25, 25]
+
+# 복합 인덱스의 사전식 정렬도 튜플 비교로 재현된다
+rows = sorted(data)                            # [('부산',22), ('부산',31), ('서울',19), ...]
+# ('서울', 20) <= x < ('서울', 999) 구간 탐색 = "city 등호 + age 범위"와 같은 구조</code></pre>
+<p>
+<code>Python 관점의 통찰: 튜플 비교가 "첫 원소부터 차례로, 같으면 다음 원소로" 진행되는 사전식이라는 점은 복합 인덱스 정렬 규칙 그 자체다. ('서울', 25)를 찾을 수 있어도 "둘째 원소가 25인 것"은 이진 탐색으로 못 찾는다는 사실을 직접 확인해 보면, 선두 컬럼 원칙이 관례가 아니라 정렬의 수학적 성질임이 체감된다.</code>
+</p>
+
+<h3>7.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java의 <code>TreeMap.subMap(20, 30)</code>은 위 C++ 예제와 동일한 범위 seek이며, JPA 등 ORM을 쓰더라도 생성되는 SQL이 인덱스를 탈 수 있는 형태인지는 개발자 책임이다.
+JS·TS(프론트엔드)에서는 대량 데이터를 클라이언트에서 필터링하기 전에, 서버/DB가 인덱스로 걸러 보내는 것이 옳은 경계 설정임을 기억하면 된다.
+</p>
+
+<h2>8. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>실행 계획(execution plan)</strong> — 쿼리가 실제로 seek을 탔는지 scan을 했는지 확인하는 유일한 방법. <code>EXPLAIN</code>으로 조회하며, 인덱스 학습의 다음 단계다.</li>
+  <li><strong>커버링 인덱스(covering index)</strong> — 쿼리가 요구하는 컬럼이 전부 인덱스 안에 있으면 테이블 본체를 아예 안 읽는다. "인덱스에서 위치만 찾고 본체로 건너가는" 2단계 비용을 없애는 기법.</li>
+  <li><strong>클러스터드 인덱스(clustered index)</strong> — 테이블 본체 자체를 특정 키 순서로 정렬해 저장하는 방식(테이블당 하나). 나머지 보조 인덱스와의 관계가 스토리지 엔진 이해의 핵심이다.</li>
+  <li><strong>통계와 카디널리티(cardinality)</strong> — 최적화기는 컬럼 값 분포 통계로 선택도를 추정한다. 통계가 낡으면 좋은 인덱스를 두고도 엉뚱한 계획을 세운다.</li>
+  <li><strong>해시 인덱스 · 전문(full-text) 인덱스</strong> — B-tree가 만능이 아니다. 등호 전용 초고속(해시), 단어 검색(<code>LIKE '%..%'</code>의 올바른 대안, 전문 인덱스) 등 조건 형태별 전용 구조가 있다.</li>
+</ul>
+
+<h2>9. 한 장 요약</h2>
+<ul>
+  <li>인덱스 = 정렬된 (키 → 위치) 자료구조. B-tree는 이를 "페이지 단위 디스크 + 잦은 삽입" 환경에 맞게 넓고 낮게 만든 것.</li>
+  <li>효용의 실체는 seek(점프 후 필요한 만큼만) vs scan(전부 훑기). 컬럼에 함수·연산·앞 와일드카드가 붙으면 seek 불가.</li>
+  <li>복합 인덱스는 사전식 정렬 — 선두 컬럼 없이는 못 쓰고, <code>(a,b)</code>는 a 단독을 겸한다.</li>
+  <li>컬럼 배치는 "등호 앞, 범위 뒤". 범위를 만나는 순간 뒤 컬럼의 정렬은 탐색에 못 쓴다.</li>
+  <li>선택도 높은 조건일수록 인덱스 가치가 크고, 대량을 읽는 조건은 scan이 더 쌀 수 있다.</li>
+  <li>인덱스는 쓰기 비용·공간과의 거래이며, 실제로 타는지는 실행 계획으로만 확인된다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="E5 실행 계획 읽기.html">E5 실행 계획 읽기.html</a> — 인덱스를 실제로 탔는지 확인하는 방법(EXPLAIN 읽기)</li>
+  <li><a href="E4 격리 수준과 락.html">E4 격리 수준과 락.html</a> — 인덱스가 락 범위에 미치는 영향과 이어지는 동시성 주제</li>
+</ul>
+
+</body>
+</html>

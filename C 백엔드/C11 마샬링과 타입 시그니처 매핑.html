@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C11 마샬링과 타입 시그니처 매핑</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>C11 마샬링과 타입 시그니처 매핑</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>마샬링(marshalling)은 <strong>데이터를 경계(언어↔언어, 프로세스↔프로세스, 앱↔네트워크) 너머로 보낼 수 있는 형태로 꾸리는 일</strong>이다. 직렬화(<a href="C10 직렬화와 역직렬화.html">C10</a>)가 "바이트로 만드는 기술"이라면, 이 문서의 주제는 그 앞뒤 단계 — <strong>서로 다른 타입 체계 사이의 대응(mapping)</strong> — 다.</li>
+  <li>근본 문제: <strong>언어들의 타입 체계는 1:1로 포개지지 않는다.</strong> Java의 <code>long</code>/<code>int</code>/<code>BigDecimal</code> 구분은 JSON에 오면 전부 <code>number</code> 하나로 뭉개지고, 받은 쪽은 자기 언어의 기본 타입으로 <em>다시 추측</em>한다.</li>
+  <li>대표 함정(일반화 형태): <strong>JSON 역직렬화의 숫자 정규화로 인한 타입 정보 소실.</strong> ① 64비트 정수가 JS <code>number</code>(53비트 정밀도)를 넘어 <strong>끝자리가 조용히 바뀌고</strong>, ② <code>1.0</code>이 파서를 거치며 <code>1</code>이 되어 <strong>정수/실수 경계가 사라지며</strong>, ③ 라운드트립(직렬화→역직렬화) 후 원래 타입으로 돌아오지 않는다. 셋 다 <strong>에러 없이</strong> 일어난다.</li>
+  <li>컬렉션도 같은 운명이다: <code>Set</code>·<code>Date</code>·<code>Enum</code>은 JSON에 대응물이 없어 배열·문자열로 강등되고, <strong>맵의 키는 문자열만</strong> 허용되며, <code>null</code>/부재/JS의 <code>undefined</code> 3형제는 언어마다 다르게 해석된다.</li>
+  <li>처방의 원칙: <strong>경계의 타입 대응을 우연에 맡기지 말고 명시적으로 고정한다</strong> — DTO/스키마로 필드별 타입 선언, 정밀도가 중요한 큰 정수·금액은 <strong>문자열 또는 최소 단위 정수</strong>로, 날짜는 표준 문자열 형식으로 계약에 못박는다.</li>
+</ul>
+
+<h2>1. 마샬링 — 직렬화와 무엇이 다른가</h2>
+<p>
+<a href="C10 직렬화와 역직렬화.html">C10</a>은 "객체를 바이트열로, 바이트열을 객체로" 바꾸는 기술을 다뤘다. 그런데 실무 장애의 상당수는
+바이트 변환 자체가 아니라 그 <strong>앞뒤</strong>에서 난다: 내 언어의 타입을 전송 형식의 타입으로 <em>대응시키는</em> 순간(보낼 때), 그리고
+전송 형식의 타입을 상대 언어의 타입으로 <em>복원 추측하는</em> 순간(받을 때). 이 대응 작업 전체를 마샬링이라 부른다
+(용어 관행은 6절에서 정리한다 — 문맥에 따라 직렬화와 섞여 쓰인다).
+</p>
+<div class="flow">Java 서버                          전송 형식(JSON)                  JS 프론트(Vue)
+┌──────────────┐   매핑①          ┌─────────────┐    매핑②        ┌──────────────┐
+│ long id       │ ───────────▶    │ number       │ ───────────▶   │ number        │
+│ BigDecimal 금액│   (타입 뭉개짐)  │ number       │  (타입 재추측)   │ number        │
+│ LocalDate 날짜 │                 │ string       │                │ string        │
+└──────────────┘                  └─────────────┘                 └──────────────┘
+        C10의 관심사는 가운데 상자를 만드는 기술, C11의 관심사는 화살표 ①②의 정확성</div>
+<p>
+그림이 보여 주듯 문제의 뿌리는 화살표가 <strong>두 번</strong>이라는 데 있다 — 보내는 쪽에서 한 번 뭉개지고, 받는 쪽에서 한 번 추측된다.
+왜 뭉개질 수밖에 없는지부터 보자.
+</p>
+
+<h2>2. 근본 문제 — 타입 체계는 1:1로 포개지지 않는다</h2>
+<p>
+각 언어는 저마다의 역사와 목적으로 타입 체계를 설계했고, 전송 형식(특히 JSON)은 그중 <strong>최소 공통분모</strong>만 남겼다.
+숫자 하나만 나란히 놓아도 격차가 보인다.
+</p>
+<table>
+  <tr><th>개념</th><th>Java</th><th>JSON</th><th>JS·TS</th><th>Python</th><th>C++</th></tr>
+  <tr>
+    <td>정수(32비트)</td>
+    <td><code>int</code></td>
+    <td rowspan="4" style="vertical-align:middle"><strong><code>number</code> 단 하나</strong><br>(정수/실수/정밀도 구분 없음)</td>
+    <td rowspan="2" style="vertical-align:middle"><code>number</code><br>(64비트 부동소수점 — 정수는 <strong>2<sup>53</sup>까지만 정확</strong>)<br>큰 정수는 <code>BigInt</code>(별도 타입)</td>
+    <td rowspan="2" style="vertical-align:middle"><code>int</code><br>(크기 무제한)</td>
+    <td><code>int32_t</code></td>
+  </tr>
+  <tr>
+    <td>정수(64비트)</td>
+    <td><code>long</code></td>
+    <td><code>int64_t</code></td>
+  </tr>
+  <tr>
+    <td>실수</td>
+    <td><code>double</code>/<code>float</code></td>
+    <td><code>number</code></td>
+    <td><code>float</code></td>
+    <td><code>double</code>/<code>float</code></td>
+  </tr>
+  <tr>
+    <td>십진 정밀 수(금액)</td>
+    <td><code>BigDecimal</code></td>
+    <td>내장 없음(라이브러리)</td>
+    <td><code>decimal.Decimal</code></td>
+    <td>내장 없음(라이브러리)</td>
+  </tr>
+</table>
+<p>
+왼쪽의 풍부한 구분(크기·정수/실수·십진 정밀)이 가운데 기둥에서 <code>number</code> 하나로 합쳐진다.
+합쳐진 것은 <strong>되돌릴 수 없다</strong> — 받은 쪽은 "이 number가 원래 long이었는지 BigDecimal이었는지" 알 방법이 없고,
+자기 언어의 관습대로 추측할 뿐이다. 이 비가역성이 다음 절의 함정을 만든다.
+</p>
+
+<h2>3. 함정 해부 — 숫자 정규화와 타입 소실</h2>
+<p>
+2절의 "합쳐지면 못 되돌린다"가 실제 사고로 나타나는 세 형태다. 공통점은 <strong>예외도 경고도 없이, 값이 그럴듯한 채로 틀린다</strong>는 것 —
+"동작은 하는데 결과가 이상한" 문제의 전형이라 <a href="K5 조용한 실패(silent failure)와 오타.html">K5</a>의 계보에 속한다.
+</p>
+
+<h3>3.1 형태 ① — 큰 정수의 끝자리가 조용히 바뀐다</h3>
+<pre><code>// 서버(Java): long id = 9007199254740993  (2^53 + 1, 64비트 정수로는 평범한 값)
+// 응답 JSON:  {"id": 9007199254740993}
+
+// 프론트(JS):
+const obj = JSON.parse(response);
+console.log(obj.id);          // 9007199254740992  ← 끝자리가 3에서 2로. 에러 없음.</code></pre>
+<p>
+JS의 <code>number</code>는 64비트 부동소수점이라 <strong>정수를 2<sup>53</sup>(약 9천조)까지만 정확히</strong> 표현한다.
+그 너머의 정수는 파싱 순간 <em>가장 가까운 표현 가능한 값</em>으로 반올림된다. DB 시퀀스·스노플레이크형 ID처럼 64비트를 꽉 채우는 값에서
+"특정 데이터만 조회가 안 된다"(반올림된 ID로 재요청하므로) 같은 괴담형 버그가 여기서 나온다.
+</p>
+
+<h3>3.2 형태 ② — 정수/실수 경계가 사라진다</h3>
+<pre><code>// 보낼 때: 1.0 (실수라는 의도)
+JSON.stringify({ rate: 1.0 })   // '{"rate":1}'  ← 직렬화가 이미 .0을 지움
+
+// 받은 쪽(언어별로 다른 추측):
+// JS     : 1      (어차피 number 하나라 구분 개념 자체가 없음)
+// Python : 1 (int) ← 원래 float였다는 정보는 소실
+// Java   : 필드 타입이 double이면 1.0으로 복원되지만, Object/Map으로 받으면 Integer로
+</code></pre>
+<p>
+"1.0을 보냈는데 1이 왔다"는 값의 문제가 아니라(수학적으로 같다) <strong>타입의 문제</strong>다.
+받은 쪽이 <code>Map&lt;String, Object&gt;</code>·<code>dict</code>·동적 처리로 다루는 순간 "정수면 A 로직, 실수면 B 로직" 같은 분기,
+타입 검사, 재직렬화 결과가 원본과 달라진다. <strong>파서는 값을 자기 언어의 기본 타입으로 정규화할 뿐, 원래의 타입 의도를 운반해 주지 않는다.</strong>
+</p>
+
+<h3>3.3 형태 ③ — 라운드트립이 원형을 보존하지 않는다</h3>
+<div class="flow">Java 객체 ──직렬화──▶ JSON ──역직렬화──▶ JS 객체 ──직렬화──▶ JSON' ──역직렬화──▶ Java 객체'
+
+기대: 객체' == 객체         현실: long은 반올림(①), 1.0은 1(②), BigDecimal 정밀도는 double로 절삭,
+                                  Date는 문자열, Enum은 문자열, Set은 배열...
+</div>
+<p>
+①②의 귀결이다. 경계를 <em>왕복</em>하는 데이터 — 프론트에서 받아 저장했다가 다시 보내는 폼, 시스템 간 중계 —
+는 손상이 <strong>단계마다 누적</strong>된다. "원본과 재직렬화 결과의 diff가 0이어야 한다"는 라운드트립 테스트가 이 계열 함정의 유효한 검출기인 이유다.
+</p>
+<blockquote class="warn">
+<p><strong>세 형태의 공통 교훈:</strong> 손상은 역직렬화 "실패"가 아니라 역직렬화 "성공"의 얼굴로 온다. 그래서 이 함정은 예외 로그가 아니라 <strong>계약 설계</strong>(5절)로 막아야 한다.</p>
+</blockquote>
+
+<h2>4. 컬렉션·복합 타입 — 강등과 3형제</h2>
+<p>
+숫자에서 본 "최소 공통분모로의 강등"은 복합 타입에서 더 광범위하게 일어난다. JSON의 그릇은 배열과 객체 둘뿐이기 때문이다.
+</p>
+<table>
+  <tr><th>원 타입</th><th>JSON에서</th><th>받은 쪽에서 벌어지는 일</th></tr>
+  <tr><td>리스트/배열</td><td>배열</td><td>비교적 안전. 단 <em>원소 타입</em>은 2·3절의 문제를 그대로 상속</td></tr>
+  <tr><td>Set(집합)</td><td>배열로 강등</td><td>중복 불가·순서 없음이라는 <strong>성질이 소실</strong>. 되돌릴 때 중복 제거·순서를 누가 책임지는지 계약에 없으면 사고</td></tr>
+  <tr><td>Map(키가 숫자·객체)</td><td>객체 — <strong>키는 문자열만</strong></td><td><code>{1: 'a'}</code>가 <code>{"1": 'a'}</code>로. 받은 쪽에서 숫자 키로 조회하면 miss — 언어에 따라 조용히 undefined/None</td></tr>
+  <tr><td>Date/시각</td><td>대응물 없음 — 문자열 또는 epoch 숫자</td><td>형식(ISO 8601인지, 초인지 밀리초인지, 타임존 포함인지)이 계약에 없으면 양쪽이 다르게 해석</td></tr>
+  <tr><td>Enum</td><td>문자열(이름) 또는 숫자(서수)</td><td>서수로 보내면 enum 순서 변경이 곧 데이터 오염 — 이름 문자열이 안전한 쪽</td></tr>
+  <tr><td>null / 부재 / undefined</td><td><code>null</code>과 <strong>필드 부재</strong>는 JSON에서도 다른 것. JS의 <code>undefined</code>는 직렬화 시 <strong>필드째 증발</strong></td><td>"명시적으로 비움"(null)과 "언급 안 함"(부재)을 구분하는 API(부분 수정 등)에서 의미가 갈림 — 3형제를 계약에서 구분 정의해야 함</td></tr>
+</table>
+<blockquote class="info">
+<p><strong>관찰:</strong> 표의 모든 행이 같은 문장으로 요약된다 — "전송 형식에 없는 개념은 <em>표현</em>과 함께 <em>성질</em>도 잃는다." 잃은 성질을 복원하는 책임은 자동으로 생기지 않으므로, 누군가(5절의 변환 계층)에게 명시적으로 배정되어야 한다.</p>
+</blockquote>
+
+<h2>5. 처방 — 경계의 타입을 우연에 맡기지 않는다</h2>
+<p>
+3·4절의 함정은 전부 "타입 대응을 파서의 기본 동작에 맡긴" 결과였다. 처방은 그 반대 방향 — 대응을 <strong>명시적 계약과 변환 계층으로 고정</strong>하는 것 — 이며, 구체적으로 네 가지다.
+</p>
+<ul>
+  <li><strong>① 경계 전용 DTO/스키마를 둔다.</strong> 내부 도메인 객체를 그대로 직렬화하지 않고, 경계용 타입(DTO, TS 인터페이스, 스키마 정의)을 따로 두어 <strong>필드마다 전송 표현을 선언</strong>한다. "이 필드는 문자열로 나간다"가 코드에 적혀 있으면 파서의 추측이 끼어들 자리가 없다. 스키마를 문서·검증과 연결하는 방법은 <a href="D11 API 문서화와 스키마.html">D11</a>.</li>
+  <li><strong>② 정밀도가 중요한 수는 문자열로 보낸다.</strong> 64비트 ID·정밀 금액은 <code>"9007199254740993"</code>처럼 문자열로 — 3.1의 반올림이 원천 차단된다. 금액은 대안으로 <strong>최소 단위 정수</strong>(원·센트 단위 int)도 널리 쓰인다(53비트 안이면 안전). 어느 쪽이든 <strong>계약에 명시</strong>가 핵심.</li>
+  <li><strong>③ 날짜·시각은 표준 형식 문자열로 못박는다.</strong> 관례상 ISO 8601(예: <code>2026-07-16T09:00:00+09:00</code>) + 타임존 포함. "epoch 숫자, 단 밀리초" 같은 선택도 가능하나 무엇이든 <strong>한 형식으로 통일하고 문서화</strong>한다.</li>
+  <li><strong>④ 변환은 경계 한 곳에서만 한다.</strong> 문자열↔BigDecimal, ISO 문자열↔Date 변환 코드가 비즈니스 로직 곳곳에 흩어지면 한 곳의 누락이 곧 버그다. 경계 계층(컨트롤러/클라이언트 어댑터)에서 변환을 끝내고, 내부에서는 내부 타입만 흐르게 한다.</li>
+</ul>
+
+<h2>6. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "마샬링 = 직렬화 아닌가?"</strong> — 겹치는 용어가 맞고, 생태계마다 관행이 다르다(Go는 JSON 변환 함수 이름 자체가 Marshal이고, Java 전통에서는 원격 호출·XML 바인딩 문맥에서 마샬링을 썼다). 실무 요령은 용어 논쟁이 아니라 <strong>두 관심사의 구분</strong>이다 — 바이트로 만드는 기술(C10)과 타입을 대응시키는 규칙(이 문서). 어느 쪽 단어를 쓰든 후자를 잊는 것이 사고의 원인.</p>
+<p><strong>② "JSON은 타입이 있으니 타입이 보존된다"?</strong> — JSON의 타입은 6종(문자열·숫자·불리언·null·배열·객체)뿐이고 숫자에 정밀도 규정이 없다. "타입이 있다"와 "<em>내 언어의</em> 타입이 보존된다"는 전혀 다른 명제다(2절).</p>
+<p><strong>③ "TS 인터페이스로 받으니 안전하다"?</strong> — TS 타입은 컴파일 시점 표기일 뿐, <code>JSON.parse</code> 결과를 <strong>런타임에 검증하지 않는다</strong>. <code>as UserDto</code>는 확신의 표현이지 검사가 아니다. 런타임 검증은 스키마 검증 라이브러리 등 별도 장치의 몫.</p>
+<p><strong>④ "null이나 undefined나 없는 거나 그게 그거"?</strong> — 부분 수정 API에서 "null = 이 필드를 비워라, 부재 = 건드리지 마라"로 의미가 갈리는 순간 3형제 구분은 데이터 삭제 사고의 경계선이 된다(4절 표). JS의 undefined가 직렬화에서 필드째 사라진다는 사실은 이 구분을 프론트가 <em>의도치 않게</em> 조작할 수 있다는 뜻이다.</p>
+</blockquote>
+
+<h2>★ 7. 언어별 대조</h2>
+<p>
+같은 JSON 문서를 놓고 네 언어의 기본 파서가 각각 무엇으로 복원하는지가 이 주제의 가장 실증적인 비교다.
+3절의 함정이 "누구의 버그도 아닌, 추측 규칙의 차이"임이 드러난다.
+</p>
+<table>
+  <tr><th>입력 JSON</th><th>Java (Jackson, 동적 바인딩 시)</th><th>JS·TS (<code>JSON.parse</code>)</th><th>Python (<code>json.loads</code>)</th><th>C++ (대표 JSON 라이브러리)</th></tr>
+  <tr><td><code>42</code></td><td><code>Integer</code></td><td><code>number</code></td><td><code>int</code></td><td>정수 계열로 보관(조회 타입 지정)</td></tr>
+  <tr><td><code>9007199254740993</code></td><td><code>Long</code>(정확)</td><td><strong>반올림된 <code>number</code></strong></td><td><code>int</code>(정확 — 무제한 정수)</td><td><code>int64_t</code>(정확)</td></tr>
+  <tr><td><code>1.0</code></td><td><code>Double</code> 1.0</td><td><code>number</code> 1 (구분 없음)</td><td><code>float</code> 1.0 (<code>.0</code>이 남아 있으면)</td><td>실수로 보관</td></tr>
+  <tr><td><code>"2026-07-16"</code></td><td><code>String</code>(설정 없으면 날짜 아님)</td><td><code>string</code></td><td><code>str</code></td><td>문자열</td></tr>
+</table>
+<p>
+같은 문서, 네 가지 결과 — 특히 둘째 행에서 <strong>정확/부정확이 언어에 따라 갈린다</strong>는 점이 3.1 함정의 요약이다.
+</p>
+
+<h3>7.1 Java — 정적 바인딩은 강하고, 그래서 경계의 선언이 곧 방어다</h3>
+<pre><code>// 경계 DTO에서 전송 표현을 필드 단위로 고정 (Jackson 대표 예시)
+public class OrderDto {
+    @JsonSerialize(using = ToStringSerializer.class)
+    private Long id;                        // long이지만 JSON에는 "문자열"로 — 3.1 차단
+
+    private String amount;                  // BigDecimal을 경계에서는 문자열로 운반
+    public BigDecimal amountValue() { return new BigDecimal(amount); }  // 변환은 경계에서(5절 ④)
+}</code></pre>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> Jackson이 대상 필드 타입(long, BigDecimal)에 맞춰 복원해 주므로 Java끼리는 문제가 안 보인다 — 함정은 <strong>상대가 Java가 아닐 때</strong> 터진다. 서버가 정확히 만든 <code>number</code>가 프론트 JS에서 반올림되는 3.1이 전형으로, "우리 쪽 로그에는 값이 정상"이라 원인 추적이 길어진다. 방어(문자열화)는 받는 쪽이 아니라 <strong>보내는 쪽 계약에서</strong> 해야 한다는 교훈.</p>
+</blockquote>
+
+<h3>7.2 JS·TS — number 하나의 세계에서 사는 법</h3>
+<pre><code>Number.MAX_SAFE_INTEGER          // 9007199254740991 (2^53 - 1) — 정확성의 국경선
+Number.isSafeInteger(value)      // 국경 안인지 런타임 검사
+
+// 큰 정수를 문자열 계약으로 받았을 때
+const id: string = order.id;                 // 그대로 문자열로 다루는 것이 기본
+const big = BigInt(order.id);                // 산술이 필요하면 BigInt로
+// 주의: JSON.stringify는 BigInt를 만나면 TypeError — BigInt는 JSON을 "통과"하지 못한다.
+//       경계에서는 결국 문자열로 오가야 한다는 사실의 언어 차원 확인.</code></pre>
+<blockquote class="info">
+<p><strong>JS 관점의 통찰:</strong> JS에 <code>BigInt</code>가 있어도 <code>JSON.parse</code>의 기본 동작은 여전히 number 반올림이다 — 파싱이 끝난 뒤에는 이미 늦으므로, <strong>해결의 자리는 파서 옵션이나 코드가 아니라 계약(문자열로 보내라)</strong>이라는 5절의 결론이 여기서 재확인된다.</p>
+</blockquote>
+
+<h3>7.3 Python / C++ — 한 줄 요약</h3>
+<p>
+Python은 무제한 정수 덕에 3.1에서 가장 안전한 수신자지만, <code>1.0</code>→<code>float</code>/<code>1</code>→<code>int</code> 판정이 <em>텍스트 표기</em>에 달려 있어 3.2(보내는 쪽이 <code>.0</code>을 지우면 int가 됨)에는 똑같이 노출된다.
+C++ JSON 라이브러리들은 저장 타입과 조회 타입을 개발자가 지정하게 하므로, "복원은 추측이 아니라 선언"이라는 이 문서의 처방을 언어가 강제하는 형태다.
+</p>
+
+<h2>8. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>스키마 우선 전송 형식</strong> — 필드 타입을 스키마 파일(IDL)로 먼저 선언하고 각 언어 코드를 생성하는 계열(gRPC의 proto 등). 타입 대응을 사람의 규율이 아니라 <strong>도구가 보장</strong>하게 하는 접근으로, JSON 대비 트레이드오프는 <a href="D3 REST vs GraphQL vs gRPC.html">D3</a> 참조.</li>
+  <li><strong>JSON Schema와 런타임 검증</strong> — JSON을 유지하면서 계약을 기계 검증 가능하게 만드는 중간 지대. 문서화와의 연결은 <a href="D11 API 문서화와 스키마.html">D11</a>.</li>
+  <li><strong>문자 인코딩</strong> — 이 문서가 다룬 "타입의 대응" 아래층에는 "바이트와 문자의 대응"이 또 있다. 경계에서 깨지는 방식이 유사하다.</li>
+  <li><strong>라운드트립 테스트</strong> — 대표 페이로드에 대해 직렬화→역직렬화→재직렬화 결과의 동일성을 검사하는 테스트. 3.3 계열 회귀의 저비용 검출기.</li>
+  <li><strong>DB 드라이버의 타입 매핑</strong> — 같은 문제의 또 다른 경계: DECIMAL·BIGINT·타임스탬프가 언어 타입으로 올 때도 동일한 대응 규칙 문제가 있다. "경계마다 매핑 표를 확인한다"는 습관은 전송 형식에 국한되지 않는다.</li>
+</ul>
+
+<h2>9. 한 장 요약</h2>
+<ul>
+  <li>마샬링 = 경계를 건너기 위한 타입 대응. C10(바이트 변환 기술)의 앞뒤 단계이며, 사고는 주로 이 대응에서 난다.</li>
+  <li>타입 체계는 1:1이 아니다 — JSON number 하나로 뭉개진 정보(크기·정수/실수·정밀도)는 받은 쪽에서 복원 불가, 파서는 자기 언어 기본 타입으로 추측할 뿐.</li>
+  <li>3대 함정: 2<sup>53</sup> 초과 정수의 조용한 반올림 / 1.0→1 정수·실수 경계 소실 / 라운드트립 비보존 — 모두 에러 없이 성공의 얼굴로 온다.</li>
+  <li>컬렉션은 성질째 강등된다(Set→배열, 맵 키→문자열, Date·Enum→문자열) — null/부재/undefined 3형제 구분까지 계약에서 정의할 것.</li>
+  <li>처방: 경계 DTO/스키마로 필드별 표현 고정, 큰 정수·금액은 문자열(또는 최소 단위 정수), 날짜는 표준 형식 통일, 변환은 경계 한 곳에서만.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="C10 직렬화와 역직렬화.html">C10 직렬화와 역직렬화.html</a> — 이 문서의 짝: 경계를 건너는 바이트 변환의 기술과 스키마 진화(선수)</li>
+  <li><a href="D11 API 문서화와 스키마.html">D11 API 문서화와 스키마.html</a> — 5절의 "계약에 명시"를 문서·검증 도구로 실현하는 방법</li>
+  <li><a href="D3 REST vs GraphQL vs gRPC.html">D3 REST vs GraphQL vs gRPC.html</a> — 타입 대응을 도구가 보장하는 스키마 우선 프로토콜과의 비교</li>
+  <li><a href="K5 조용한 실패(silent failure)와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a> — "성공의 얼굴로 오는 손상"이라는 문제 유형의 일반론</li>
+</ul>
+
+</body>
+</html>
