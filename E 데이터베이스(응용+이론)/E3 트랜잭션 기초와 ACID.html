@@ -62,7 +62,7 @@
     border: 1px solid #d0d7de;
     border-radius: 6px;
     padding: 14px;
-    text-align: left;
+    text-align: center;
     font-family: Consolas, "D2Coding", monospace;
     margin: 16px 0;
     white-space: pre;
@@ -208,65 +208,89 @@ COMMIT</div>
     <td>Java</td>
     <td>Spring <code>@Transactional</code> — 메서드 전체가 하나의 트랜잭션</td>
     <td><strong>낮음</strong>(선언적 — 프록시가 대신 BEGIN/COMMIT)</td>
-    <td>아래 심화 참조</td>
+    <td>표 + 6.3 요약</td>
   </tr>
   <tr>
     <td>JS·TS</td>
     <td>드라이버 수동(<code>BEGIN</code>/<code>COMMIT</code> 쿼리) 또는 ORM 콜백(예: <code>prisma.$transaction(async tx =&gt; {...})</code>)</td>
     <td>높음(콜백 블록 = 경계)</td>
-    <td>아래 심화 참조 — 커넥션과 트랜잭션의 결합이 관건</td>
+    <td>표 + 6.3 요약</td>
   </tr>
   <tr>
     <td>Python</td>
     <td>컨텍스트 매니저 — <code>with session.begin():</code> 블록</td>
     <td>높음(들여쓰기 블록 = 경계, 예외 시 자동 롤백)</td>
-    <td>언어의 <code>with</code> 문이 "시작-끝-예외 처리" 삼위일체를 문법으로 제공</td>
+    <td><strong>아래 심화 참조</strong></td>
   </tr>
   <tr>
     <td>C++</td>
     <td>SQL 직접 전송 또는 RAII 가드 객체(소멸자에서 미커밋 시 롤백)</td>
     <td>수동(규율 의존)</td>
-    <td>RAII 패턴이 Python의 <code>with</code>와 같은 역할 — "잊어도 롤백"을 언어 장치로</td>
+    <td><strong>아래 심화 참조</strong></td>
   </tr>
 </table>
 
-<h3>6.1 Java — 선언적 경계의 편리함과 그 대가</h3>
-<pre><code>@Service
-public class TransferService {
+<h3>6.1 C++ — 롤백을 "잊을 수 없게" 만드는 장치, RAII</h3>
+<p>
+트랜잭션의 최대 실수는 예외가 튀어 롤백도 커밋도 못 한 채 함수를 빠져나가는 것이다. C++의 표준 해법은
+<strong>RAII</strong>(resource acquisition is initialization, 자원 획득이 곧 초기화) — 자원의 수명을 객체의 수명에 묶어,
+<strong>스코프를 벗어날 때 소멸자가 반드시 뒷정리를 하게</strong> 만드는 기법이다.
+</p>
+<pre><code>class TxGuard {
+    Connection&amp; conn_;
+    bool committed_ = false;
+public:
+    explicit TxGuard(Connection&amp; c) : conn_(c) { conn_.exec("BEGIN"); }
 
-    @Transactional                       // 이 메서드 전체 = 하나의 트랜잭션
-    public void transfer(Long from, Long to, long amount) {
-        accountRepo.withdraw(from, amount);
-        accountRepo.deposit(to, amount);
-        // 정상 반환 → 커밋 / RuntimeException → 롤백 (프록시가 처리)
+    void commit() { conn_.exec("COMMIT"); committed_ = true; }
+
+    ~TxGuard() {                       // 스코프를 어떻게 벗어나든 반드시 실행된다
+        if (!committed_) {             // 정상 반환·예외·중간 return 전부 포함
+            try { conn_.exec("ROLLBACK"); } catch (...) {}   // 소멸자에서 예외를 밖으로 내보내지 않는다
+        }
     }
-}</code></pre>
-<blockquote class="warn">
-<p><strong>Java 관점의 함정:</strong> <code>@Transactional</code>은 마법이 아니라 <strong>프록시</strong>다 — 스프링이 객체를 감싼 대리인이 메서드 호출 전후로 BEGIN/COMMIT을 넣는다. 따라서 ① <em>같은 클래스 안에서 자기 메서드 호출</em>(self-invocation)은 프록시를 안 거치므로 애너테이션이 무시되고, ② 기본 설정은 체크 예외(checked exception)에는 롤백하지 않는다. "붙였는데 트랜잭션이 안 걸려 있었다"는 사고의 두 단골 원인이며, 경계가 안 보이는 선언적 방식의 대가다.</p>
-</blockquote>
+};
 
-<h3>6.2 JS·TS — 트랜잭션은 커넥션에 붙어 있다</h3>
-<pre><code>// node-postgres 수동 트랜잭션의 정석 형태
-const client = await pool.connect();     // 반드시 "같은 커넥션"을 잡아서
-try {
-  await client.query('BEGIN');
-  await client.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [amt, from]);
-  await client.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [amt, to]);
-  await client.query('COMMIT');
-} catch (e) {
-  await client.query('ROLLBACK');        // 실패 시 명시적 롤백
-  throw e;
-} finally {
-  client.release();                      // 풀에 반납 — 누락 시 커넥션 고갈
+void transfer(Connection&amp; c, int from, int to, long amount) {
+    TxGuard tx(c);                     // 여기서 BEGIN
+    withdraw(c, from, amount);         // 이 중 어디서 예외가 나도
+    deposit(c, to, amount);            // 소멸자가 ROLLBACK을 보장
+    tx.commit();                       // 여기까지 왔을 때만 확정
 }</code></pre>
 <blockquote class="info">
-<p><strong>JS 관점의 통찰:</strong> 트랜잭션 상태는 <strong>커넥션에 귀속</strong>된다. 풀에서 매 쿼리마다 커넥션을 새로 받으면 BEGIN과 UPDATE가 <em>서로 다른 커넥션</em>에서 실행되어 묶이지 않는다 — "트랜잭션을 걸었는데 안 묶인다"의 단골 원인. Prisma의 <code>$transaction(async tx =&gt; ...)</code>처럼 콜백에 전달되는 <code>tx</code> 객체만 쓰게 강제하는 API는 이 실수를 타입 수준에서 막으려는 설계다.</p>
+<p><strong>C++ 관점의 통찰(수명·예외 안전성):</strong> 이 패턴의 핵심은 <strong>"기본값이 롤백"</strong>이라는 설계다. 커밋은 명시적으로 요청해야만 일어나고, 그 외의 모든 경로(예외, 이른 return, 개발자의 망각)는 자동으로 안전한 쪽으로 떨어진다 — E3 2절의 "커밋 전 변경은 제안일 뿐"이라는 원칙을 언어 장치로 못박은 형태다.<br>소멸자 안에서 예외를 삼키는 <code>catch (...)</code>도 우연이 아니다: 스택 되감기 도중 소멸자가 또 예외를 던지면 프로그램이 즉시 종료되기 때문으로, <strong>"뒷정리 코드는 실패해도 조용해야 한다"</strong>는 규율이 여기서 나온다. 다른 언어의 <code>finally</code>·<code>with</code>·<code>try-with-resources</code>가 모두 같은 문제("정리를 잊으면 안 된다")에 대한 각자의 답이라는 점을 알면, 트랜잭션 경계 코드가 왜 언어마다 그런 모양인지 한 번에 정리된다.</p>
 </blockquote>
 
-<h3>6.3 Python / C++ — 한 줄 요약</h3>
+<h3>6.2 Python — <code>with</code> 블록이 곧 트랜잭션 경계</h3>
 <p>
-Python의 <code>with session.begin():</code>은 블록 이탈 방식(정상/예외)에 따라 커밋/롤백을 자동 분기한다 — 6.2절 try/catch/finally 정석 형태의 문법 내장판이다.
-C++의 RAII 가드(스코프를 벗어날 때 소멸자가 미커밋 트랜잭션을 롤백)는 같은 발상을 소멸자로 구현한 것으로, "롤백을 잊을 수 없게 만든다"가 언어를 관통하는 공통 목표임을 보여 준다.
+Python은 같은 문제를 <strong>컨텍스트 매니저</strong>로 해결한다. <code>with</code> 블록에 들어갈 때 <code>__enter__</code>가,
+빠져나올 때 <code>__exit__</code>가 반드시 호출되며, <code>__exit__</code>는 <em>예외가 있었는지 여부</em>를 인자로 받아 커밋/롤백을 분기한다.
+경계가 <strong>들여쓰기로 눈에 보인다</strong>는 것이 이 방식의 큰 장점이다.
+</p>
+<pre><code>from sqlalchemy.orm import Session
+
+with Session(engine) as session:
+    with session.begin():              # ← BEGIN
+        session.execute(withdraw_stmt)
+        session.execute(deposit_stmt)
+    # 블록을 정상적으로 벗어나면 COMMIT, 예외로 벗어나면 ROLLBACK — 자동 분기
+
+# 직접 만들어 보면 규칙이 그대로 드러난다
+class TxGuard:
+    def __init__(self, conn): self.conn = conn
+    def __enter__(self):
+        self.conn.execute("BEGIN"); return self
+    def __exit__(self, exc_type, exc, tb):
+        self.conn.execute("ROLLBACK" if exc_type else "COMMIT")
+        return False                   # False = 예외를 삼키지 않고 그대로 전파</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> <code>__exit__</code>의 반환값이 이 패턴의 미묘한 지점이다 — <code>True</code>를 돌려주면 <strong>예외가 여기서 삼켜져</strong> 호출자에게 전달되지 않는다. 트랜잭션 가드가 롤백을 해 놓고 예외를 삼키면, 호출한 쪽은 <em>작업이 성공한 줄 알고</em> 다음 단계로 진행한다 — 데이터는 롤백됐는데 애플리케이션은 성공 경로를 타는, <a href="K5 조용한 실패와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a>의 전형적 사례다. "정리는 하되 실패는 감추지 않는다"가 6.1절 C++ 소멸자 규율과 정확히 같은 결론에 도달한다.<br>또 하나: <code>with</code> 두 겹(<code>Session</code>과 <code>begin()</code>)이 각각 <strong>커넥션의 수명</strong>과 <strong>트랜잭션의 경계</strong>를 나눠 맡는 구조에 주목할 만하다. 둘이 다른 층위라는 사실이 6.3절 JS의 함정으로 이어진다.</p>
+</blockquote>
+
+<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java의 <code>@Transactional</code>은 경계를 <strong>선언으로</strong> 숨겨 주는 대신 함정이 따라온다 — 프록시 기반이라 같은 클래스 안에서의 자기 호출은 애너테이션이 무시되고, 기본 설정은 체크 예외에 롤백하지 않는다("붙였는데 트랜잭션이 안 걸려 있었다"의 두 단골 원인).
+JS·TS에서는 트랜잭션 상태가 <strong>커넥션에 귀속</strong>된다는 점이 관건으로, 풀에서 쿼리마다 다른 커넥션을 받으면 <code>BEGIN</code>과 <code>UPDATE</code>가 서로 다른 커넥션에서 실행되어 아예 묶이지 않는다 — 그래서 콜백에 전달된 트랜잭션 객체만 쓰도록 강제하는 API(<code>prisma.$transaction(async tx =&gt; ...)</code> 등)가 표준 형태로 자리 잡았다.
 </p>
 
 <h2>7. 함께 알면 좋은 것</h2>

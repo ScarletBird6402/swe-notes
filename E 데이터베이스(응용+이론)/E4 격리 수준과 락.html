@@ -62,7 +62,7 @@
     border: 1px solid #d0d7de;
     border-radius: 6px;
     padding: 14px;
-    text-align: left;
+    text-align: center;
     font-family: Consolas, "D2Coding", monospace;
     margin: 16px 0;
     white-space: pre;
@@ -221,63 +221,81 @@ T2: UPDATE items SET stock = 9 WHERE id = 7; COMMIT;   -- 자기가 읽은 10 �
     <td>Java</td>
     <td><code>@Transactional(isolation = Isolation.REPEATABLE_READ)</code></td>
     <td>JPA <code>@Version</code>(낙관적) · <code>@Lock(PESSIMISTIC_WRITE)</code>(비관적)</td>
-    <td>아래 심화 참조</td>
+    <td>표 + 8.3 요약</td>
   </tr>
   <tr>
     <td>JS·TS</td>
     <td>ORM 옵션(예: Prisma <code>$transaction(..., { isolationLevel })</code>) 또는 <code>SET TRANSACTION</code> 직접 실행</td>
     <td>ORM의 버전 필드 패턴 또는 <code>UPDATE ... WHERE version = ?</code> 수동 구현</td>
-    <td>아래 심화 참조 — 격리는 커넥션·트랜잭션 단위 속성</td>
+    <td>표 + 8.3 요약</td>
   </tr>
   <tr>
     <td>Python</td>
     <td>SQLAlchemy <code>engine.execution_options(isolation_level=...)</code></td>
     <td><code>with_for_update()</code>(비관적) · 버전 컬럼 매핑(낙관적)</td>
-    <td>ORM 계층의 어휘가 Java JPA와 거의 1:1</td>
+    <td><strong>아래 심화 참조</strong></td>
   </tr>
   <tr>
     <td>C++</td>
     <td><code>SET TRANSACTION ISOLATION LEVEL ...</code> SQL 직접</td>
     <td><code>SELECT ... FOR UPDATE</code>·버전 WHERE 절 수동</td>
-    <td>추상화가 없어 SQL 표준 어휘가 그대로 코드에 노출</td>
+    <td><strong>아래 심화 참조</strong></td>
   </tr>
 </table>
 
-<h3>8.1 Java — 낙관적 락이 프레임워크 관용구로 정착한 세계</h3>
-<pre><code>@Entity
-public class Item {
-    @Id private Long id;
-    private int stock;
+<h3>8.1 C++ — 같은 문제, 같은 해법: 락 순서와 데드락</h3>
+<p>
+4.1절의 데드락은 DB만의 현상이 아니다. 여러 자원을 <strong>서로 다른 순서로</strong> 잠그면 어떤 세계에서든 발생하며,
+C++의 <code>std::mutex</code>(상호 배제 장치)에서도 형태가 똑같다. 다만 여기서는 DB처럼 감지해 주는 심판이 없어 <strong>프로그램이 그냥 멈춘다</strong>.
+</p>
+<pre><code>std::mutex mA, mB;
 
-    @Version                 // JPA가 UPDATE 시 자동으로 WHERE version = ? 를 붙이고
-    private long version;    // 0건 갱신이면 OptimisticLockException을 던진다
-}
+// 위험: 두 스레드가 반대 순서로 잠그면 서로를 영원히 기다린다
+void thread1() { std::lock_guard&lt;std::mutex&gt; a(mA); std::lock_guard&lt;std::mutex&gt; b(mB); }
+void thread2() { std::lock_guard&lt;std::mutex&gt; b(mB); std::lock_guard&lt;std::mutex&gt; a(mA); }
 
-// 호출 측: 예외를 잡아 재시도하는 것까지가 낙관적 락의 완성
-try {
-    orderService.decreaseStock(itemId);
-} catch (OptimisticLockException e) {
-    // 재조회 후 재시도 (횟수 제한과 함께)
+// 해법 ①: 항상 같은 순서로 잠근다  (DB에서 "작은 id부터 잠금"과 동일한 규율)
+// 해법 ②: 여러 락을 한 번에 획득 — 교착 회피 알고리즘이 내장된 도구를 쓴다
+void safe() {
+    std::scoped_lock lock(mA, mB);   // 순서에 무관하게 안전하게 둘 다 확보
 }</code></pre>
 <blockquote class="info">
-<p><strong>Java 관점의 통찰:</strong> <code>@Version</code>은 6.1절의 "버전 컬럼 + WHERE 검사 + 0건이면 충돌"을 통째로 자동화한다. 놓치기 쉬운 것은 <strong>재시도가 프레임워크 밖의 책임</strong>이라는 점 — 예외를 그대로 500으로 흘리면 낙관적 락은 "가끔 실패하는 기능"으로 보인다. 충돌 감지(프레임워크)와 충돌 해소(내 코드)의 분업을 이해해야 완성된다.</p>
+<p><strong>C++ 관점의 통찰(수명·소유권):</strong> <code>lock_guard</code>·<code>scoped_lock</code>은 <strong>락의 수명을 스코프에 묶는</strong> 장치다 — 예외가 나든 중간에 반환하든 소멸자가 반드시 잠금을 푼다. DB 트랜잭션의 락이 "커밋/롤백까지" 유지되는 것과 정확히 같은 발상으로, <strong>해제 시점을 사람의 기억이 아니라 구조에 맡긴다</strong>는 원칙이다.<br>결정적 차이도 하나 있다: DB는 데드락을 <em>감지해서</em> 한쪽을 희생시키지만(4.1절), <code>std::mutex</code>에는 그런 심판이 없어 프로세스가 조용히 정지한다. "데드락 에러가 로그에 찍히는 것은 그나마 다행"이라는 4.1절의 태도 전환이 이 대조에서 설득력을 얻는다 — 감지 가능한 실패가 감지 불가능한 정지보다 낫다.</p>
 </blockquote>
 
-<h3>8.2 JS·TS — 격리는 "그 커넥션의, 그 트랜잭션의" 속성이다</h3>
-<pre><code>// Prisma: 트랜잭션 단위로 격리 수준을 지정
-await prisma.$transaction(async (tx) =&gt; {
-  const item = await tx.item.findUnique({ where: { id: 7 } });
-  if (item.stock &lt;= 0) throw new Error('sold out');
-  await tx.item.update({ where: { id: 7 }, data: { stock: { decrement: 1 } } });
-}, { isolationLevel: 'Serializable' });   // 이 트랜잭션에만 적용</code></pre>
-<blockquote class="info">
-<p><strong>JS 관점의 통찰:</strong> E3 6.2절의 "트랜잭션은 커넥션에 귀속된다"가 격리 수준에도 그대로 적용된다 — <code>SET TRANSACTION ...</code>을 풀에서 받은 아무 커넥션에 실행하면 <em>엉뚱한 커넥션의 다음 트랜잭션</em>에 적용될 수 있다. 트랜잭션 콜백의 옵션으로 지정하는 API가 안전한 이유다. 또한 위 예시의 <code>decrement</code>는 6.1절 "한 문장 UPDATE" 전략의 ORM 표현이다.</p>
-</blockquote>
-
-<h3>8.3 Python / C++ — 한 줄 요약</h3>
+<h3>8.2 Python — GIL이 있어도 경쟁 조건은 사라지지 않는다</h3>
 <p>
-Python SQLAlchemy의 <code>with_for_update()</code>·버전 컬럼은 Java JPA 관용구의 평행 번역이라, 한쪽을 알면 다른 쪽은 어휘 교체로 충분하다.
-C++처럼 추상화 없이 SQL을 직접 다루는 환경은 오히려 교육적이다 — <code>FOR UPDATE</code>와 버전 WHERE 절을 손으로 써 보면 ORM 애너테이션들이 무엇의 포장이었는지 명확해진다.
+Python에는 GIL(global interpreter lock, 전역 인터프리터 락 — 한 번에 하나의 스레드만 바이트코드를 실행하게 하는 잠금)이 있어
+"동시 실행이 없으니 안전하지 않나" 오해하기 쉽다. 그러나 GIL은 <strong>바이트코드 단위</strong>로만 배타적일 뿐,
+6.1절의 갱신 유실 — <em>읽고-계산하고-쓰기</em> 사이에 남이 끼어드는 문제 — 는 그대로 일어난다.
+</p>
+<pre><code>import threading
+
+counter = 0
+def worker():
+    global counter
+    for _ in range(100_000):
+        counter += 1      # 읽기 → +1 → 쓰기: 세 단계 사이에 다른 스레드가 끼어들 수 있다
+
+threads = [threading.Thread(target=worker) for _ in range(4)]
+[t.start() for t in threads]; [t.join() for t in threads]
+print(counter)            # 400000이 아닌 값이 나온다 — DB의 갱신 유실과 정확히 동형
+
+# 해법도 평행하다: 잠그거나(비관적), 원자적 연산 하나로 만들거나
+lock = threading.Lock()
+with lock:
+    counter += 1          # ≒ SELECT ... FOR UPDATE
+
+# DB 쪽 관용구 (SQLAlchemy)
+item = session.query(Item).with_for_update().get(7)   # 비관적 락</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> <code>counter += 1</code>이 한 줄인데도 안전하지 않다는 사실이 이 문서 전체의 요약이다 — <strong>원자적으로 보이는 것과 원자적인 것은 다르다.</strong> 6.1절에서 "읽고-쓰기를 <code>UPDATE items SET stock = stock - 1</code> 한 문장으로 만들라"고 한 처방이, 여기서는 "락으로 감싸라" 또는 "원자적 연산을 쓰라"로 번역된다. 문제도 해법도 층위만 다를 뿐 같은 계보라는 것이 <a href="G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a>과 이 문서를 겹쳐 읽는 이유다.<br>참고로 최근 Python에는 GIL을 제거한 실험적 빌드가 도입 단계에 있는데, 그 경우 위 코드의 결과는 <em>더</em> 어긋난다 — GIL이 우연히 제공하던 보호막마저 사라지기 때문이다. "언어가 보장해 주는 줄 알았던 것"에 기대는 코드가 왜 위험한지 보여 주는 사례다.</p>
+</blockquote>
+
+<h3>8.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java는 낙관적 락이 프레임워크 관용구로 정착한 대표 사례로, JPA의 <code>@Version</code> 필드 하나면 UPDATE에 <code>WHERE version = ?</code>가 자동으로 붙고 0건 갱신 시 예외가 발생한다 — 다만 <strong>재시도는 프레임워크 밖의 책임</strong>이라, 예외를 그대로 흘리면 낙관적 락은 "가끔 실패하는 기능"으로 보인다(충돌 감지는 프레임워크, 충돌 해소는 내 코드).
+JS·TS에서는 격리 수준이 <strong>커넥션·트랜잭션 단위 속성</strong>이라는 점이 관건으로, 풀에서 받은 임의의 커넥션에 <code>SET TRANSACTION ...</code>을 실행하면 엉뚱한 트랜잭션에 적용될 수 있어 트랜잭션 콜백의 옵션으로 지정하는 API가 안전하다.
 </p>
 
 <h2>9. 함께 알면 좋은 것</h2>

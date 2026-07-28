@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A13 센티널 레코드와 계층 표현</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 2px solid #d0d7de; padding-bottom: .4em; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: .3em; margin-top: 2.2em; }
+  h3 { margin-top: 1.6em; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: .15em .4em;
+    border-radius: 4px;
+    font-size: .92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 1em;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 1em 0; }
+  th, td { border: 1px solid #d0d7de; padding: .5em .8em; text-align: left; vertical-align: top; }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 1em 0;
+    padding: .8em 1em;
+    border-left: 4px solid #d0d7de;
+    border-radius: 4px;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: .3em 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 1em;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    white-space: pre;
+    overflow-x: auto;
+    line-height: 1.9;
+  }
+  ul li, ol li { margin: .35em 0; }
+</style>
+</head>
+<body>
+
+<h1>A13 센티널 레코드와 계층 표현</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>그룹핑된 데이터를 리스트 UI에 그리는 실전적 방법 하나는, 중첩 구조 대신 <b>평탄한 동종 리스트에 이종 마커(그룹 헤더)를 끼워 넣는 것</b>이다. 이 끼워 넣는 특수 레코드가 센티널(sentinel)이다.</li>
+  <li>센티널과 실제 데이터는 <b>판별자(discriminator)</b> 필드 하나로 구분하고, 렌더링은 그 필드로 분기한다 — 언어에 따라 이 분기를 컴파일러가 검사해 줄 수 있다.</li>
+  <li>센티널의 대표 부작용은 <b>집계 오염</b>이다: 리스트에 섞인 헤더 행이 count·sum·평균에 조용히 포함되어 수치를 틀리게 만든다. 에러가 나지 않기 때문에 발견이 늦다.</li>
+  <li>방어는 두 가지 규율로 — 집계는 항상 <b>센티널 제거 필터를 통과한 뒤에</b>, 그리고 센티널은 <b>표시 계층의 마지막 파생 단계에서만</b> 만들어 원본과 중간 데이터에 절대 섞지 않는다.</li>
+  <li>리스트 key 같은 식별자가 필요할 때는 실제 값과 대체명을 병용하는 <b>다형 키</b>(예: <code>raw ?? 대체명</code>)로 센티널과 데이터 행의 충돌을 막는다.</li>
+</ul>
+
+<h2>1. 문제 제기 — 그룹핑 결과는 어떻게 화면 리스트가 되는가</h2>
+
+<p><a href="A12 파생 상태 계산 파이프라인.html">A12</a>의 파이프라인은 group 단계에서 "날짜 → 주문 배열"의 맵을 산출했다. 그런데 화면의 리스트 컴포넌트는 대개 <b>하나의 평평한 배열</b>을 순회하며 행을 그린다. 맵이라는 중첩 구조와, 배열이라는 평탄 구조 사이의 간극을 어떻게 메울 것인가.</p>
+
+<p>정직한 방법은 중첩 그대로 그리는 것이다 — 바깥 반복문이 그룹을, 안쪽 반복문이 그룹 내 행을 그린다. 단순한 화면에서는 이걸로 충분하다. 하지만 리스트가 길어져 가상 스크롤(전체를 그리지 않고 보이는 행만 그리는 기법)을 쓰거나, 행 단위 선택·키보드 탐색·드래그처럼 <b>"몇 번째 행인가"가 의미를 갖는 상호작용</b>이 들어오면 사정이 달라진다. 이런 기능들은 행들이 단일 배열 위에 인덱스로 존재하기를 요구한다. 중첩 구조는 "전체에서 n번째 행"이라는 개념 자체가 없기 때문이다.</p>
+
+<p>그래서 실전 리스트 UI에서 널리 쓰이는 형태가 나온다: 그룹 구조를 <b>평탄한 배열로 다시 펼치되, 그룹의 경계에 "여기부터 새 그룹"을 알리는 특수 행을 끼워 넣는 것</b>. 화면에 보이는 그대로의 순서를 배열이 갖게 하는 방식이다.</p>
+
+<div class="flow">group 산출물(맵)                 평탄화 + 센티널 삽입
+──────────────────              ─────────────────────────
+7/21 → [주문A, 주문B]            [ {type:'header', date:7/21},
+7/20 → [주문C]          ──▶       {type:'row', ...주문A},
+                                  {type:'row', ...주문B},
+                                  {type:'header', date:7/20},
+                                  {type:'row', ...주문C} ]</div>
+
+<p>이 끼워 넣은 특수 행을 무엇이라 부르고, 어떻게 안전하게 다루는가 — 그것이 이 문서의 주제다.</p>
+
+<h2>2. 센티널 레코드 — 데이터 흐름에 끼워 넣는 표식</h2>
+
+<p>센티널(sentinel)은 원래 "보초"라는 뜻으로, 프로그래밍에서는 <b>정상 데이터의 흐름 속에 끼워 넣어 특별한 의미(경계·종료·부재)를 알리는 특수 값</b>을 가리키는 오래된 용어다. C 문자열 끝의 널 문자, 파일 읽기의 EOF, 연결 리스트 구현에서 경계 조건을 없애려 머리에 두는 더미 노드가 모두 센티널이다. 공통 구조는 하나다 — <b>데이터와 같은 자리에 놓이지만, 데이터가 아닌 것.</b></p>
+
+<p>1절의 그룹 헤더 행은 이 개념의 레코드판이다. 주문 행들과 같은 배열에 놓이지만 주문이 아니고, "여기서 그룹이 바뀐다"는 구조 정보를 나른다. 그래서 이 패턴을 <b>동종 리스트 + 이종 마커</b>라고 요약할 수 있다: 배열의 원소들은 렌더링 관점에서는 동종(전부 "행")이지만, 의미 관점에서는 이종(데이터 행 vs 구조 마커)이다.</p>
+
+<blockquote class="info">
+<p><b>흔히 헷갈리는 지점 — 센티널 vs 널 객체(null object):</b> 널 객체 패턴은 "없음"을 표현하되 <b>데이터인 척 안전하게 행동하는</b> 객체다(빈 문자열을 돌려주는 이름 없는 고객 등). 센티널은 반대로 <b>데이터가 아님이 드러나야</b> 한다 — 구분되지 않으면 존재 이유가 없다. 겉모양이 비슷해 혼동하기 쉽지만 설계 목표가 정반대다.</p>
+</blockquote>
+
+<p>"드러나야 한다"는 요구는 곧 실무적 질문이 된다: 배열을 순회하는 코드가 각 원소를 볼 때, 이것이 데이터인지 마커인지 <b>무엇으로 판별하는가?</b></p>
+
+<h2>3. 판별자와 분기 렌더링</h2>
+
+<h3>3.1 판별자 필드</h3>
+
+<p>판별은 관례가 아니라 명시적 필드로 한다. 모든 원소에 판별자(discriminator — 여러 형태 중 어느 것인지를 알려주는 태그 필드)를 두는 것이다:</p>
+
+<pre><code>type ListItem =
+  | { type: 'header'; date: string }
+  | { type: 'row';    order: Order }</code></pre>
+
+<p>TS의 이 형태를 판별 합집합(discriminated union)이라 부른다. <code>item.type === 'header'</code>를 확인한 분기 안에서는 컴파일러가 <code>item.date</code>의 존재를 보증한다("좁히기"). "헤더인 줄 알았는데 order 필드를 읽었다" 같은 실수가 타입 오류로 잡히는 것이다. 판별자 없이 "date 필드가 있으면 헤더겠지"처럼 <b>필드 존재 여부로 추측하는 방식은 금물</b>이다 — 데이터 행에 우연히 같은 이름의 필드가 생기는 순간 조용히 무너진다.</p>
+
+<h3>3.2 분기 렌더링</h3>
+
+<p>렌더링은 판별자로 분기한다. Vue라면 단일 <code>v-for</code> 안의 <code>v-if</code> 분기가 된다:</p>
+
+<pre><code>&lt;template v-for="item in flatList" :key="itemKey(item)"&gt;
+  &lt;GroupHeader v-if="item.type === 'header'" :date="item.date" /&gt;
+  &lt;OrderRow    v-else                        :order="item.order" /&gt;
+&lt;/template&gt;</code></pre>
+
+<h3>3.3 키 설계 — 다형 키</h3>
+
+<p>위 코드의 <code>:key</code>에 함정이 하나 있다. 데이터 행의 키로 흔히 <code>order.id</code>를 쓰는데, 센티널에는 <code>order</code>가 없다. 그렇다고 인덱스를 키로 쓰면 리스트 재정렬 시 상태가 엉킨다. 해법은 원소의 형태에 따라 <b>실제 값과 대체명을 병용하는 다형 키</b>다:</p>
+
+<pre><code>const itemKey = (item) =&gt;
+  item.type === 'row'
+    ? item.order.id                 // 실제(raw) 식별자
+    : `header:${item.date}`        // 대체명 — 접두사로 데이터 키와의 충돌 차단</code></pre>
+
+<p><code>raw 값 ?? 대체명</code>의 꼴이다. 대체명에 접두사(<code>header:</code>)를 붙이는 것이 요점인데, 우연히 어떤 주문의 id가 날짜 문자열과 같더라도 키 공간이 겹치지 않게 하기 위해서다. 키가 겹치면 프레임워크는 두 행을 같은 것으로 착각하고, DOM 재사용이 꼬여 엉뚱한 행에 상태가 남는 — 재현이 어려운 버그가 된다.</p>
+
+<p>여기까지로 센티널은 화면에 무사히 그려진다. 그런데 센티널이 배열에 <b>존재한다는 사실 자체</b>가, 렌더링 바깥의 코드에 시한폭탄을 심는다. 다음 절이 이 문서에서 가장 중요한 부분이다.</p>
+
+<h2>4. 집계 오염 — 센티널의 조용한 부작용</h2>
+
+<h3>4.1 증상</h3>
+
+<p>요약 카드에 "총 3건"을 띄우려고 누군가 이렇게 쓴다:</p>
+
+<pre><code>const totalCount = computed(() =&gt; flatList.value.length)          // 5가 나온다 (헤더 2개 포함)
+const totalAmount = computed(() =&gt;
+  flatList.value.reduce((s, it) =&gt; s + (it.order?.amount ?? 0), 0))  // 합계는 우연히 맞는다</code></pre>
+
+<p>건수는 틀리고, 합계는 옵셔널 체이닝 덕에 <b>우연히</b> 맞는다. 이것이 집계 오염의 전형적 모습이다 — 센티널이 count·sum·평균 같은 집계에 섞여 들어가는데, <b>어떤 집계는 틀리고 어떤 집계는 우연히 맞아서</b> 전체가 그럴듯해 보인다. 평균이 특히 악질이다: 분자(합)는 맞는데 분모(개수)에 센티널이 들어가 값이 미묘하게 작아지고, "미묘하게 이상한 수치"는 코드 버그가 아니라 데이터 탓으로 오인되기 쉽다. 예외가 없으니 로그도 없다 — 전형적인 조용한 실패다.</p>
+
+<h3>4.2 방어 규율 1 — 집계는 필터 뒤에서, 필터는 한 곳에서</h3>
+
+<p>집계 코드마다 <code>item.type === 'row'</code> 검사를 넣는 것은 임시방편이다 — 새 집계를 추가하는 사람이 한 번만 잊으면 오염이 재발한다. 올바른 형태는 <b>"데이터 행만 있는 파생"을 이름 붙여 한 곳에 두고, 모든 집계가 그것만 입력으로 받게</b> 하는 것이다:</p>
+
+<pre><code>const dataRows = computed(() =&gt;
+  flatList.value.filter(it =&gt; it.type === 'row').map(it =&gt; it.order))
+
+const totalCount  = computed(() =&gt; dataRows.value.length)                    // 3 ✓
+const totalAmount = computed(() =&gt; dataRows.value.reduce((s, o) =&gt; s + o.amount, 0))</code></pre>
+
+<p>필터 규율이 한 파생에 응집되어, 이후 어떤 집계를 추가해도 오염이 원천 차단된다.</p>
+
+<h3>4.3 방어 규율 2 — 센티널의 유입 경계</h3>
+
+<p>더 근본적인 방어는 애초에 센티널이 돌아다닐 수 있는 영역을 제한하는 것이다. A12의 파이프라인 언어로 말하면: <b>센티널 삽입은 표시 직전의 마지막 파생 단계</b>여야 한다.</p>
+
+<div class="flow">원본 ─▶ filter ─▶ sort ─▶ group ─▶ [flatten+센티널 삽입] ─▶ 렌더 전용
+        ◀────── 집계·검색·저장은 이 구간에서만 ──────▶     (이 뒤로는 화면만)</div>
+
+<p>이 경계가 지켜지면 집계·검색·서버 전송 같은 로직은 센티널의 존재를 알 필요조차 없다. 경계가 무너지는 전형적 경로는 "펼쳐진 리스트가 이미 있으니 그걸 재활용하자"는 유혹이다 — 렌더용 배열을 집계에도, 선택 항목 저장에도 돌려쓰기 시작하면 4.1의 오염이 각처에서 재발한다. 원본·중간 단계로 센티널이 역류하는 것(예: 센티널 섞인 배열을 다시 store에 저장)은 더 나쁘다. 그 순간부터 모든 소비자가 판별 부담을 진다.</p>
+
+<blockquote class="warn">
+<p><b>규율 요약:</b> 센티널은 <b>표시 계층의 산출물</b>이지 데이터가 아니다. ① 삽입은 파이프라인 최말단에서만, ② 집계는 센티널 제거 파생(<code>dataRows</code>)을 통해서만, ③ 센티널 섞인 배열을 저장·전송하지 않는다.</p>
+</blockquote>
+
+<h2>★ 5. 언어별 대조 — "한 자리에 놓인 서로 다른 형태"를 다루는 법</h2>
+
+<p>센티널 패턴의 기술적 핵심은 결국 "하나의 컬렉션에 서로 다른 형태가 공존하고, 소비자가 형태별로 분기한다"는 것이다. 이 문제를 각 언어는 다른 강도의 안전장치로 다룬다.</p>
+
+<table>
+  <tr><th>언어</th><th>이종 공존의 표현</th><th>분기</th><th>누락 검사</th></tr>
+  <tr><td>Java</td><td><code>sealed interface</code> + <code>record</code> 구현들</td><td><code>switch</code> 패턴 매칭</td><td>sealed면 누락 분기 컴파일 오류</td></tr>
+  <tr><td>JS·TS</td><td>판별 합집합(TS) / 태그 필드 관례(JS)</td><td><code>if</code>·<code>switch</code> + 좁히기</td><td>TS는 검사 구성 가능, JS는 관례뿐</td></tr>
+  <tr><td>Python</td><td>태그 달린 dataclass·Enum 판별자</td><td><code>match</code> 문(3.10+)</td><td>정적 검사기 선택 시에만</td></tr>
+  <tr><td>C++</td><td><code>std::variant</code></td><td><code>std::visit</code></td><td>미처리 형태는 컴파일 오류</td></tr>
+</table>
+
+<p>Java는 2020년대 들어 <code>sealed</code>(하위 형태의 전수를 봉인) + record + switch 패턴 매칭 조합으로 이 패턴을 언어 차원에서 지원하게 됐고, TS의 판별 합집합은 3.1절에서 봤다. 타깃 언어 둘을 깊이 본다.</p>
+
+<h3>5.1 Python — 태그 dataclass와 match, 그리고 자유의 대가</h3>
+
+<p>Python은 동적 타입이라 리스트에 아무거나 섞을 수 있다 — 센티널 패턴이 가장 쉽게 시작되는 언어이자, 가장 쉽게 오염되는 언어다. 규율 있는 형태는 명시적 판별자를 가진 dataclass들이다:</p>
+
+<pre><code>from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class Header:
+    kind = "header"          # 판별자
+    date: str
+
+@dataclass(frozen=True)
+class Row:
+    kind = "row"
+    order: "Order"
+
+def render(item):
+    match item:              # 구조적 패턴 매칭 (3.10+)
+        case Header(date=d):  return f"== {d} =="
+        case Row(order=o):    return f"{o.id}  {o.amount}"
+        case _:               raise TypeError(item)   # 방어적 기본 분기
+
+rows = [it.order for it in flat_list if isinstance(it, Row)]   # 집계 전 필터 규율
+total = sum(o.amount for o in rows)</code></pre>
+
+<p><code>match</code>는 분기를 선언적으로 만들어 주지만, C++·Java와 달리 <b>누락된 형태를 컴파일 시점에 잡아주지 않는다</b> — 새 센티널 종류를 추가하고 분기 하나를 빠뜨리면 런타임에야 (그것도 그 형태가 실제로 지나갈 때에야) 드러난다. 그래서 방어적 <code>case _</code>로 즉시 실패하게 만들거나, 정적 검사기의 전수 검사(exhaustiveness check — 모든 형태가 처리됐는지의 검사)를 빌리는 것이 Python식 규율이다.</p>
+
+<blockquote class="info">
+<p><code>Python 통찰:</code> Python의 관용적 센티널로 <code>None</code>이나 모듈 수준 <code>_MISSING = object()</code>(유일 객체를 만들어 <code>is</code> 비교) 같은 <b>값 센티널</b>이 널리 쓰인다. 이 문서의 레코드 센티널은 그 확장이다 — 값 하나가 아니라 구조를 나르는 센티널. 어느 쪽이든 "정상 데이터와 절대 충돌하지 않는 표식"이라는 요건은 같고, <code>object()</code>의 유일성이나 접두사 키(3.3절)는 그 요건을 지키는 같은 기법의 다른 얼굴이다.</p>
+</blockquote>
+
+<h3>5.2 C++ — variant와 visit, 분기 누락이 불가능한 세계</h3>
+
+<p>C++은 이종 공존 자체가 타입 시스템과 충돌하는 언어다 — <code>std::vector</code>는 단일 타입만 담는다. 그래서 "여러 형태 중 하나"를 담는 타입을 명시적으로 만든다: <code>std::variant</code>(대수적 합 타입 — 나열된 타입들 중 정확히 하나의 값을 담는 컨테이너)다.</p>
+
+<pre><code>#include &lt;variant&gt;
+#include &lt;vector&gt;
+
+struct Header { std::string date; };
+struct Row    { Order order; };
+using ListItem = std::variant&lt;Header, Row&gt;;
+
+std::vector&lt;ListItem&gt; flat_list = build_flat_list();
+
+// 분기: visit는 variant가 담을 수 있는 "모든" 타입의 처리를 요구한다
+for (const auto&amp; item : flat_list) {
+    std::visit([](const auto&amp; v) {
+        using T = std::decay_t&lt;decltype(v)&gt;;
+        if constexpr (std::is_same_v&lt;T, Header&gt;)  render_header(v.date);
+        else                                       render_row(v.order);
+    }, item);
+}
+
+// 집계 전 필터 규율 — 판별은 holds_alternative로
+long total = 0;
+for (const auto&amp; item : flat_list)
+    if (auto* r = std::get_if&lt;Row&gt;(&amp;item))    // Row일 때만 포인터 반환
+        total += r-&gt;order.amount;</code></pre>
+
+<p>핵심 성질은 <code>std::visit</code>이 <b>미처리 형태를 컴파일 오류로 만든다</b>는 것이다. variant에 세 번째 형태(예: 그룹 소계 행)를 추가하는 순간, 그것을 처리하지 않는 모든 visit 지점이 빌드를 깨뜨린다 — 4.1절의 "조용한" 오염과 정반대의 세계다. 추가로 variant는 값 의미론이라 원소들이 메모리에 연속 배치되고, 크기는 가장 큰 형태 기준으로 통일된다(작은 Header도 Row 크기의 슬롯을 차지한다). 판별자 저장 공간도 variant가 내부 인덱스로 자동 관리한다 — 3.1절에서 손으로 두던 <code>type</code> 필드가 언어 기능으로 흡수된 형태다.</p>
+
+<blockquote class="info">
+<p><code>C++ 통찰:</code> "센티널 값" 자체는 C의 유산이다 — 널 종단 문자열, <code>-1</code>을 돌려주는 검색 실패, <code>nullptr</code>. 이들의 공통 약점은 센티널이 <b>정상 값 공간과 같은 타입</b>이라 컴파일러가 구분을 못 한다는 것이었고(<code>-1</code>을 인덱스로 그냥 쓰면 그대로 통과), <code>std::variant</code>·<code>std::optional</code>은 그 구분을 타입으로 끌어올린 진화다. 이 문서의 판별자 필드도 같은 진화의 응용 계층 버전이라 볼 수 있다.</p>
+</blockquote>
+
+<h2>함께 알면 좋은 것</h2>
+<ul>
+  <li><b>태그 합집합(tagged union) 이론</b> — 판별 합집합·sealed·variant·match의 공통 조상 개념. "합 타입 + 전수 검사"라는 렌즈로 보면 5절의 네 언어가 같은 것의 방언임이 보인다.</li>
+  <li><b>SQL의 집계행</b> — GROUP BY 확장(ROLLUP 등)은 결과 집합에 소계·총계 행을 섞어 돌려준다. 데이터 행과 집계 행을 판별하는 함수가 따로 제공되는데, 이것이 정확히 "결과 집합 속 센티널 + 판별자" 구조다. 화면 쪽 발명이 아니라 데이터 세계의 오랜 패턴임을 보여주는 사례.</li>
+  <li><b>가상 스크롤</b> — 1절에서 평탄화의 동기가 된 기법. 평탄 리스트 위에서 고정/가변 행높이, 헤더 고정(sticky) 처리와 센티널이 어떻게 상호작용하는지가 실전 리스트 구현의 다음 단계다.</li>
+  <li><b>널 객체 패턴</b> — 2절에서 대조한, "구분되지 않으려는" 반대 방향 설계. 어느 쪽을 쓸지는 소비자가 부재를 알아야 하는가로 갈린다.</li>
+  <li><b>전수 검사 활용</b> — TS의 <code>never</code> 소진 검사, Python 정적 검사기의 전수 검사, Java sealed switch. 센티널 종류가 둘을 넘어가기 시작하면 이 장치들이 분기 누락의 안전망이 된다.</li>
+</ul>
+
+<h2>한 장 요약</h2>
+<ul>
+  <li>그룹 구조를 리스트 UI로 그릴 때는 평탄 배열 + 그룹 헤더 센티널이 실전형이다 — 행 인덱스가 의미를 갖는 기능(가상 스크롤·선택)과 궁합이 좋다.</li>
+  <li>센티널은 명시적 판별자 필드로 구분하고, 필드 존재 추측으로 판별하지 않는다. 언어 지원(판별 합집합·sealed·variant·match)이 있으면 분기 누락을 기계 검사로 바꾼다.</li>
+  <li>리스트 key는 다형 키로 — 데이터 행은 실제 식별자, 센티널은 접두사 붙인 대체명(<code>raw ?? 대체명</code> 꼴)으로 키 공간 충돌을 차단한다.</li>
+  <li>최대 함정은 집계 오염: 센티널이 count·평균에 섞여도 예외가 없어 조용히 틀린다. 집계는 "센티널 제거 파생"을 유일한 입력으로.</li>
+  <li>센티널은 표시 직전 마지막 파생 단계에서만 생성하고, 원본·store로 역류시키지 않는다 — 유입 경계가 지켜지면 나머지 코드는 센티널의 존재를 몰라도 된다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인</a> — 이 문서의 평탄화·센티널 삽입이 놓이는 파이프라인 전체 구조</li>
+  <li><a href="E17 계층형 트리 탐색의 조회 단위 설계.html">E17 계층형 트리 탐색의 조회 단위 설계</a> — 같은 계층 표현 문제의 데이터 조회(서버·DB) 쪽 각도</li>
+</ul>
+
+</body>
+</html>

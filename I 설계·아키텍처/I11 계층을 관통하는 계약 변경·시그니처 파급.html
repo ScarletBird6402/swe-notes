@@ -283,44 +283,45 @@ OrderResult createOrder(CreateOrderRequest request);  // 시그니처 불변</co
   </tr>
 </table>
 
-<h3>6.1 Java — 컴파일러가 파급의 전체 지도를 그려주는 언어</h3>
+<h3>6.1 C++ — 계약이 소스와 바이너리, 두 겹인 언어</h3>
 <p>
-Java에서는 시그니처 변경의 파급이 <strong>컴파일 에러 목록</strong>으로 즉시 전모를 드러낸다. 이는 축복이자(놓치는 곳이 없다) 비용이다(전부 고치기 전엔 빌드가 안 된다).
-전통적 완충 기법은 <strong>오버로딩으로 구 계약을 살려두는 것</strong>이다.
+C++의 시그니처 변경은 다른 언어보다 한 겹 더 깊이 파급된다. 첫 겹은 소스 계약이다: 헤더에 선언된 시그니처·구조체가 바뀌면 그 헤더를 포함하는 모든 번역 단위가 재컴파일 대상이 된다 — 파급이 "고칠 파일 수"만이 아니라 <strong>빌드 시간</strong>으로도 청구되는 언어다.
+둘째 겹이 ABI(Application Binary Interface — 컴파일이 끝난 바이너리끼리 함수를 찾고 인자를 주고받는 방식의 약속)다. 소스 수준에서는 하위 호환인 변경(구조체 끝에 필드 추가)조차 구조체의 크기와 메모리 배치를 바꾸므로, <em>재컴파일되지 않은</em> 바이너리(공유 라이브러리·플러그인)와의 경계에서는 계약 위반이 된다.
 </p>
-<pre><code>// 구 시그니처를 유지하며 새 계약으로 위임 — 호출부는 각자의 속도로 이전
-public OrderResult createOrder(CreateOrderRequest req) { /* 새 표준 */ }
+<pre><code>// 경계 헤더 — 이 구조체가 곧 계약이다
+struct CreateOrderRequest {
+    long userId;
+    int  itemCount;
+    // char deliveryMemo[128];   // ← 필드 추가: "형태의 파급"이라 소스는 호환이지만
+};                               //    sizeof와 배치가 바뀌어 ABI 계약은 깨진다
 
-@Deprecated  // 이전 완료 후 제거 예정임을 계약으로 명시
-public OrderResult createOrder(Long userId, List&lt;Long&gt; itemIds, String address) {
-    return createOrder(CreateOrderRequest.of(userId, itemIds, address));
-}</code></pre>
+OrderResult createOrder(const CreateOrderRequest&amp; req);
+// 재컴파일된 쪽은 새 배치로, 안 된 쪽은 옛 배치로 메모리를 해석
+// → 컴파일·링크는 통과하고 런타임에 조용히 어긋난다: 가장 위험한 파급 형태</code></pre>
 <p>
-<code>Java 관점의 통찰: 파라미터 나열형 시그니처의 극단이 "점층적 생성자(telescoping constructor)" 안티패턴 — 인자 수만 다른 생성자가 층층이 쌓이는 것 — 이며, 빌더 패턴과 record가 그 처방으로 자리 잡았다. 한편 컴파일 타임 안전은 JSON 직렬화 경계에서 끝난다는 점에 주의: DTO 필드명을 리팩토링 도구로 바꾸면 Java 코드는 전부 따라오지만, 그 이름을 키로 쓰던 프론트는 아무 경고 없이 깨진다. 이 경계가 C11(마샬링)에서 다루는 타입·이름 매핑 문제와 만나는 지점이다.</code>
-</p>
-
-<h3>6.2 JS·TS — 선택 필드와 객체 인자가 기본기인 생태계</h3>
-<p>
-Vue/TS 프론트에서 백엔드 응답의 필드 추가는, 응답 타입을 <strong>선택 필드(<code>?</code>)</strong>로 선언해 두면 무파급으로 흡수된다.
-반대로 모든 필드를 필수로 선언한 타입은 백엔드보다 프론트가 먼저 배포될 수 없는 <strong>배포 순서 결합</strong>까지 만든다.
-</p>
-<pre><code>// 응답 타입 — 추가 필드는 optional로 받는다
-interface OrderResponse {
-  orderId: number;
-  address: string;
-  deliveryMemo?: string;   // 구버전 백엔드 응답에도 안전
-}
-
-// 함수 인자 — 객체 인자(named parameter 흉내)로 시그니처 안정화
-function createOrder({ userId, itemIds, address, deliveryMemo }: CreateOrderParams) { ... }</code></pre>
-<p>
-<code>JS·TS 관점의 통찰: TS의 타입은 컴파일 시점에 지워지는 "믿음"이므로, 백엔드가 계약을 어기면 타입이 맞다고 선언된 자리에 undefined가 흘러든다. 그래서 프론트 실무에서는 API 경계 한 곳에서 런타임 스키마 검증을 수행해 "타입 선언과 실제 데이터의 계약"을 강제하는 패턴이 쓰인다 — 정적 계약이 끊기는 지점에 동적 검문소를 세우는 것이다.</code>
+<code>C++ 관점의 통찰: 그래서 C++의 파급 방어는 "경계 뒤로 숨기기"로 수렴한다 — Pimpl 관용구(구현 멤버들을 불투명 포인터 하나 뒤로 옮겨 헤더의 구조체 배치를 고정하는 기법)는 경계 DTO(4.2)의 "충격 흡수대"를 바이너리 수준에서 구현한 것이고, 배포 경계를 넘는 구조체에 버전·크기 필드를 두는 관례는 4.3의 하위 호환 진화를 메모리 배치의 세계로 옮긴 것이다.</code>
 </p>
 
-<h3>6.3 Python / C++ — 한 줄 요약</h3>
+<h3>6.2 Python — 파급이 "즉시 파손"이 아니라 "지연 발각"인 언어</h3>
 <p>
-Python은 키워드 인자와 기본값 덕에 "인자 추가"가 부드럽지만, 그만큼 계약 위반이 런타임까지 숨는다 — 키워드 전용 인자(<code>*</code>)로 위치 인자 순서 결합부터 끊는 것이 기본기다.
-C++은 시그니처가 <strong>바이너리 호환성(ABI, Application Binary Interface)</strong>이라는 한 겹의 계약을 더 가진다: 소스는 그대로여도 구조체 크기·가상 함수 배치가 바뀌면, 재컴파일하지 않은 바이너리와의 경계에서 깨진다. 파급이 소스 코드를 넘어 배포 산출물 단위까지 확장되는 언어다.
+Python에는 컴파일 타임 시그니처 검사가 없으므로, 파급은 존재하지 않는 것이 아니라 <strong>실행될 때까지 숨는다</strong>. 특히 위치 인자는 가장 취약한 계약이다 — 파라미터를 중간에 추가하거나 순서를 바꾸면, 호출부는 에러 없이 <em>값을 엉뚱한 자리에 전달</em>하게 될 수 있다.
+해법은 시그니처 문법에 내장돼 있다: 키워드 전용 인자(함수 정의에서 <code>*</code> 뒤에 오는 인자 — 호출 시 반드시 이름을 붙여야 함)와 기본값이다.
+</p>
+<pre><code># 위치 인자 계약: 추가·순서 변경이 호출부를 조용히 어긋나게 한다
+def create_order(user_id, item_ids, address): ...
+create_order(1001, addr, items)      # 순서 실수 — 에러 없이 잘못 전달될 수 있다
+
+# 키워드 전용(*) + 기본값: 하위 호환 진화가 내장된 시그니처
+def create_order(*, user_id, item_ids, address, delivery_memo=None): ...
+create_order(user_id=1001, item_ids=items, address=addr)   # 기존 호출부 무변경</code></pre>
+<p>
+<code>Python 관점의 통찰: dataclass(필드 선언만으로 생성자·비교 메서드 등을 만들어 주는 표준 데코레이터)가 파라미터 객체(4.1)의 파이썬 관용형이고, 기본값 있는 필드 추가는 하위 호환 변경(4.3)과 정확히 같은 문법이 된다. 다만 검사자가 없으므로 온화하다던 "형태의 파급"조차 테스트가 그 경로를 실행해야만 발각된다 — 타입 힌트에 정적 검사기를 붙이는 것은 이 지연 발각을 컴파일 타임 쪽으로 되돌리려는 노력이다.</code>
+</p>
+
+<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java는 파급의 전모가 컴파일 에러 목록으로 즉시 드러나는 언어다 — 놓치는 곳이 없다는 축복과 전부 고치기 전엔 빌드가 안 된다는 비용이 공존하며, 완충 기법은 구 시그니처를 오버로딩으로 살려 새 계약에 위임시키고 <code>@Deprecated</code>로 단계적 제거를 예고하는 것이다. 단 이 보호는 JSON 직렬화 경계에서 끝난다 — DTO 필드명 리팩토링에 Java 코드는 전부 따라오지만, 그 이름을 키로 쓰던 프론트는 경고 없이 깨진다(C11의 주제와 만나는 지점).
+JS·TS의 기본기는 응답 타입의 선택 필드(<code>?</code>)와 객체 인자다 — 전자는 제공자의 필드 추가를 무파급으로 흡수하고(반대로 전 필드 필수 선언은 배포 순서 결합까지 만든다), 후자는 시그니처를 안정화한다. 다만 TS 타입은 컴파일 시 지워지는 "믿음"이므로 백엔드가 계약을 어기면 타입이 맞다고 선언된 자리로 <code>undefined</code>가 흘러들며, API 경계 한 곳의 런타임 스키마 검증이 그 검문소다.
 </p>
 
 <h2>7. 함께 알면 좋은 것</h2>
@@ -347,6 +348,7 @@ C++은 시그니처가 <strong>바이너리 호환성(ABI, Application Binary In
 <ul>
   <li><a href="I1 응집도와 결합도.html">I1 응집도와 결합도.html</a> — 계약 결합은 결합도의 한 형태이며, "함께 변하는 것/따로 변하는 것"의 경계 원칙이 이 문서의 토대다</li>
   <li><a href="C11 마샬링과 타입 시그니처 매핑.html">C11 마샬링과 타입 시그니처 매핑.html</a> — 계약이 언어·프로세스 경계를 넘을 때의 타입 대응과 시그니처 매핑 문제</li>
+  <li><a href="C21 원격·리플렉션 경계의 메서드 오버로딩.html">C21 원격·리플렉션 경계의 메서드 오버로딩.html</a> — 6.1에서 다룬 "컴파일 타임 안전은 직렬화 경계에서 끝난다"는 관찰의 심화 사례: 오버로딩된 시그니처가 원격·리플렉션 경계를 넘을 때 이름+인자 수 기반 디스패치로 소실되는 문제</li>
 </ul>
 
 </body>

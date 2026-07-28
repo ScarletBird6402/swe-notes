@@ -62,7 +62,7 @@
     border: 1px solid #d0d7de;
     border-radius: 6px;
     padding: 14px;
-    text-align: left;
+    text-align: center;
     font-family: Consolas, "D2Coding", monospace;
     margin: 16px 0;
     white-space: pre;
@@ -239,58 +239,69 @@ Index Scan using idx_orders_user on orders
     <td>Java</td>
     <td>JPA/Hibernate SQL 로깅 + 바인딩 파라미터 로깅</td>
     <td>로그의 SQL에 실제 값 대입 → EXPLAIN</td>
-    <td>아래 심화 참조 — N+1과 실행 계획의 관계</td>
+    <td>표 + 8.3 요약</td>
   </tr>
   <tr>
     <td>JS·TS</td>
     <td>Prisma/TypeORM 쿼리 로깅 옵션</td>
     <td>로깅된 SQL → EXPLAIN. ORM에 raw 쿼리로 EXPLAIN 직접 실행도 가능</td>
-    <td>아래 심화 참조</td>
+    <td>표 + 8.3 요약</td>
   </tr>
   <tr>
     <td>Python</td>
     <td>SQLAlchemy <code>echo=True</code>·로거로 SQL 노출</td>
     <td>동일 — 로그 SQL을 EXPLAIN에</td>
-    <td><code>print(query)</code>로 컴파일된 SQL을 바로 볼 수 있는 점이 편리</td>
+    <td><strong>아래 심화 참조</strong></td>
   </tr>
   <tr>
     <td>C++</td>
     <td>SQL을 직접 쓰므로 이미 손에 있음</td>
     <td>그대로 EXPLAIN</td>
-    <td>"꺼내는" 문제가 없다 — ORM 편의의 대가가 무엇이었는지 보여 주는 대조군</td>
+    <td><strong>아래 심화 참조</strong></td>
   </tr>
 </table>
 
-<h3>8.1 Java — 계획을 보기 전에, 쿼리가 몇 번 나가는지부터</h3>
-<pre><code># application.yml — 생성 SQL과 바인딩 값을 보이게
-spring.jpa.properties.hibernate.format_sql: true
-logging.level.org.hibernate.SQL: debug
-logging.level.org.hibernate.orm.jdbc.bind: trace   # 바인딩 파라미터
-
-# 로그에서 발견되는 전형적 N+1:
-# select * from orders where user_id=?        ← 1번
-# select * from order_items where order_id=?  ← 주문 수만큼 반복 (100번)</code></pre>
-<blockquote class="info">
-<p><strong>Java 관점의 통찰:</strong> ORM 환경의 성능 문제는 "쿼리 한 개가 느림"(실행 계획의 영역)과 "빠른 쿼리가 100번 나감"(N+1 — 페치 전략의 영역)의 두 종류가 있고, <strong>EXPLAIN은 앞의 것만 잡는다</strong>. 개별 쿼리의 계획이 전부 <code>const</code>로 완벽해도 100번의 왕복이면 느리다. 그래서 Java의 진단 루틴 ①은 "느린 SQL 찾기" 전에 "SQL이 <em>몇 번</em> 나가는지 세기"가 먼저다.</p>
-</blockquote>
-
-<h3>8.2 JS·TS — 로깅을 켜야 보이는 것, 켜도 안 보이는 것</h3>
-<pre><code>// Prisma: 쿼리 로깅 + 소요 시간
-const prisma = new PrismaClient({ log: [{ emit: 'event', level: 'query' }] });
-prisma.$on('query', (e) =&gt; console.log(e.query, e.params, `${e.duration}ms`));
-
-// 잡아낸 SQL을 그대로 계획 확인에 (raw 쿼리로 EXPLAIN 직접 실행)
-const plan = await prisma.$queryRawUnsafe(
-  `EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id = $1`, 42
-);</code></pre>
-<blockquote class="info">
-<p><strong>JS 관점의 통찰:</strong> 로깅에서 특히 볼 것은 <code>params</code>다 — 4절 ②(타입 불일치)는 SQL 문자열이 아니라 <strong>바인딩된 값의 타입</strong>에서 발생하므로, "SQL은 똑같은데 DB 콘솔에서는 빠르고 앱에서는 느린" 미스터리의 단골 정체가 바인딩 타입이다. SQL만 복사해 EXPLAIN하면 재현이 안 되는 이유이기도 하다.</p>
-</blockquote>
-
-<h3>8.3 Python / C++ — 한 줄 요약</h3>
+<h3>8.1 C++ — 바인딩 타입이 계획을 바꾼다</h3>
 <p>
-Python은 <code>echo=True</code> 한 줄로 전체 SQL이 흐르는 것을 볼 수 있어 학습 단계에서 "ORM이 뭘 만드는지" 감각을 기르기에 가장 좋다.
-C++처럼 SQL을 직접 쓰는 환경은 "꺼내기" 단계가 없다는 것이 역설적 장점 — ORM 스택에서 진단 루틴의 절반이 왜 로깅 설정인지 대조로 알 수 있다.
+C++처럼 SQL을 직접 쓰는 환경에는 "생성된 SQL을 꺼내는" 단계가 없다. 대신 4절 ②(타입 불일치)가
+<strong>가장 날것으로 드러나는</strong> 자리가 된다 — 준비된 문(prepared statement)에 값을 바인딩할 때 어떤 타입으로 넘기는지가 코드에 그대로 적혀 있기 때문이다.
+</p>
+<pre><code>// 컬럼 phone이 VARCHAR인 테이블에 대해
+
+// ① 숫자로 바인딩 — DB가 컬럼 쪽을 형변환하게 되어 인덱스를 못 탄다
+sqlite3_bind_int64(stmt, 1, 1012345678);        // WHERE phone = 1012345678
+
+// ② 문자열로 바인딩 — 컬럼 타입과 일치, 인덱스 정상 사용
+sqlite3_bind_text(stmt, 1, "01012345678", -1, SQLITE_STATIC);
+//                                            ↑ 문자열 수명 관리 방식을 명시해야 한다</code></pre>
+<blockquote class="info">
+<p><strong>C++ 관점의 통찰(메모리·수명):</strong> 마지막 인자에 주목할 만하다 — <code>SQLITE_STATIC</code>은 "이 문자열은 내가 살려 둘 테니 복사하지 말라"는 약속이고, <code>SQLITE_TRANSIENT</code>는 "복사해 두라"는 뜻이다. 지역 버퍼를 넘기면서 전자를 쓰면 <strong>실행 시점에 이미 해제된 메모리를 읽는다</strong> — 고수준 언어에서는 존재하지 않는 종류의 버그다.<br>개념적 소득은 이것이다: <strong>바인딩은 "값을 전달하는 일"이 아니라 "값과 타입과 수명을 함께 전달하는 일"</strong>이다. 고수준 스택에서 <code>?</code> 자리에 변수를 넣는 순간 라이브러리가 대신 결정해 주던 타입이, 여기서는 함수 이름(<code>bind_int64</code> vs <code>bind_text</code>)으로 노출된다. 8.3절에서 "SQL은 같은데 앱에서만 느리다"는 미스터리가 왜 생기는지, 그 결정이 어디서 일어나는지가 이 대조로 분명해진다.</p>
+</blockquote>
+
+<h3>8.2 Python — ORM이 무엇을 만드는지 눈으로 보기</h3>
+<p>
+진단 루틴 ①("실제로 느린 그 쿼리와 실제 바인딩 값 확보")의 도구가 언어마다 다른데,
+Python은 설정 한 줄로 전체 SQL이 흐르는 것을 볼 수 있어 ORM이 생성하는 SQL의 감각을 기르기에 좋다.
+</p>
+<pre><code>from sqlalchemy import create_engine, text
+engine = create_engine(url, echo=True)      # 실행되는 모든 SQL과 파라미터를 출력
+
+# 컴파일된 SQL을 실행 없이 확인
+print(query.statement.compile(engine, compile_kwargs={"literal_binds": True}))
+
+# 실행 계획을 직접 조회 (PostgreSQL 예)
+with engine.connect() as conn:
+    for row in conn.execute(text("EXPLAIN ANALYZE SELECT * FROM orders WHERE user_id = :uid"),
+                            {"uid": 42}):
+        print(row[0])</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> <code>echo=True</code>로 로그를 켜 보면 대개 두 가지를 동시에 발견한다 — 개별 쿼리가 느린 문제와, <strong>빠른 쿼리가 수백 번 반복되는 문제</strong>(N+1). 실행 계획은 앞의 것만 진단하므로, ORM 스택에서는 "쿼리가 <em>몇 번</em> 나가는가"를 세는 일이 "각 쿼리의 계획을 읽는 일"보다 먼저다.<br>또 하나 유의할 점: 파라미터를 문자열로 이어 붙여 확인하는 <code>literal_binds</code>는 <strong>계획 확인용</strong>일 뿐, 실제 실행에 이 방식을 쓰면 SQL 주입(injection)에 노출된다. 진단 편의와 실행 안전성을 분리해 다뤄야 한다.</p>
+</blockquote>
+
+<h3>8.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java(JPA/Hibernate)는 SQL 로깅과 바인딩 파라미터 로깅을 함께 켜야 진단 루틴 ①이 성립하며, 여기서도 개별 쿼리의 계획보다 <strong>N+1 여부를 먼저 세는</strong> 것이 순서다 — 각 쿼리의 계획이 완벽해도 100번의 왕복이면 느리다.
+JS·TS의 ORM 로깅에서는 SQL 문자열만이 아니라 <strong>바인딩된 값의 타입</strong>(<code>params</code>)을 함께 보는 것이 핵심으로, "DB 콘솔에서는 빠른데 앱에서만 느린" 현상의 단골 원인이 8.1절에서 본 타입 불일치이기 때문이다.
 </p>
 
 <h2>9. 함께 알면 좋은 것</h2>

@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>O2 정적 파일 서빙 모델</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>O2 정적 파일 서빙 모델</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>정적 파일 서빙의 본질은 <strong>URL 경로 → 파일 시스템 경로의 번역</strong>이다. 이 번역 규칙(서빙 루트 + 매핑)이 서버 설정 어딘가에 반드시 존재하며, 서빙 문제의 대부분은 이 번역이 어긋난 것이다.</li>
+  <li>정적 파일은 "요청마다 계산하지 않고, 디스크에 있는 그대로 돌려주는" 응답이다 — 계산이 필요 없다는 성질이 웹서버/앱서버 <strong>역할 분담</strong>의 근거가 된다.</li>
+  <li>웹서버는 파일 전송에 최적화된 전문가, 앱서버는 로직 실행 전문가다. 앞단의 웹서버(리버스 프록시)가 정적 요청을 직접 처리하고 동적 요청만 뒤로 넘기는 구조가 표준이다.</li>
+  <li>브라우저가 요청하는 것은 빌드 <strong>산출물</strong>이지 소스가 아니다 — "산출물이 어디에 생성되고, 서빙 루트가 어디를 가리키는가"의 두 좌표가 일치해야 화면이 뜬다.</li>
+  <li>경로가 어긋날 때의 증상은 404만이 아니다: 흰 화면, 옛 버전 서빙, "JS를 요청했는데 HTML이 왔다"는 MIME 오류처럼 <strong>더 헷갈리는 형태</strong>로 나타난다.</li>
+  <li>개발 서버는 이 전체 구조를 메모리 안에서 대신해 주는 <em>모사품</em>이다 — 개발에서 되던 것이 배포에서 깨지는 전형적 이유.</li>
+</ul>
+
+<h2>1. 정적 파일이란 무엇인가 — "계산하지 않는 응답"</h2>
+<p>
+웹 서버가 돌려주는 응답은 두 부류다. 요청이 올 때마다 로직을 실행해 <em>만들어내는</em> 응답(로그인 처리 결과, 사용자별 데이터가 담긴 JSON)과, 누가 언제 요청하든 <em>디스크에 있는 파일 그대로</em>인 응답 — JS 번들, CSS, 이미지, 폰트.
+후자가 정적 파일이며, "정적"의 의미는 파일 형식이 아니라 <strong>요청 시점에 계산이 개입하지 않는다</strong>는 성질이다. 같은 <code>.html</code>이라도 템플릿 엔진이 매번 채워 내보내면 동적이고, 빌드가 완성해 둔 파일을 그대로 내보내면 정적이다.
+</p>
+<p>
+계산이 없다는 성질은 강력한 귀결을 낳는다: 정적 파일은 <strong>미리 준비할 수 있고, 복사할 수 있고, 캐시할 수 있다</strong>. 애플리케이션을 한 줄도 실행하지 않고 파일 전송만 잘하는 소프트웨어에게 통째로 맡길 수 있다는 뜻이다. 그렇다면 실제로 누가 이 일을 맡는가 — 여기서 역할 분담 구조가 등장한다.
+</p>
+
+<h2>2. 웹서버 vs 앱서버 — 왜 나누는가</h2>
+<p>
+용어부터 구분하면, <strong>웹서버</strong>는 HTTP 요청을 받아 파일을 돌려주거나 다른 곳으로 중계하는 데 특화된 소프트웨어(예: Nginx, Apache httpd)이고, <strong>앱서버</strong>는 애플리케이션 코드를 실행해 동적 응답을 만드는 실행 환경(예: 서블릿 컨테이너, WAS, Node 프로세스)이다.
+표준 배치는 웹서버를 앞단에 세우는 것이다:
+</p>
+<div class="flow">                      ┌── /assets/*, /img/* ──→ [웹서버가 디스크에서 직접 서빙]
+[브라우저] → [웹서버(리버스 프록시)]
+                      └── /api/* ────────────→ [앱서버로 중계(proxy)] → 로직 실행</div>
+<p>
+나누는 이유는 두 자원의 성격이 다르기 때문이다. 정적 파일 서빙은 파일 I/O와 네트워크 전송이 전부라, 웹서버는 OS의 저수준 전송 최적화를 활용해 애플리케이션 스레드 없이 대량의 파일 요청을 처리한다.
+반면 앱서버의 요청 처리 슬롯(스레드·워커)은 비싸고 수가 제한된 자원이다 — 그 귀한 슬롯이 이미지 파일이나 나르고 있다면, 정작 로직이 필요한 요청이 줄을 서게 된다.
+분담의 원칙은 그래서 "<strong>계산이 필요한 요청만 앱서버에 도달하게 하라</strong>"로 요약된다.
+</p>
+<blockquote class="info">
+<p>앱서버도 정적 파일을 서빙<em>할 수는</em> 있다 — 대부분의 프레임워크가 정적 리소스 기능을 내장한다. 소규모에서는 그걸로 충분하며, 분담은 성능·규모 요구가 생길 때 도입하는 구조적 선택이다. 중요한 것은 "누가 서빙하는가"에 따라 <strong>설정을 고칠 위치</strong>(캐시 헤더, 경로 규칙)가 달라진다는 점이다 — 웹서버가 서빙 중인데 앱서버 설정을 붙잡고 있으면 아무 일도 일어나지 않는다.</p>
+</blockquote>
+
+<h2>3. 빌드 산출물과 서빙 루트 — 두 좌표의 일치</h2>
+<p>
+누가 서빙하든, 서빙이라는 행위의 핵심은 같다: 요청의 URL 경로를 파일 시스템 경로로 <strong>번역</strong>하는 것이다.
+번역 규칙은 대개 "서빙 루트(root) 디렉터리 + URL 경로를 그 아래에 이어붙임"이다. 예컨대 루트가 <code>/var/www/app</code>이면 <code>GET /assets/main.js</code>는 <code>/var/www/app/assets/main.js</code>를 찾는다.
+</p>
+<p>
+그런데 현대 프론트엔드에서 브라우저가 요청하는 파일은 소스가 아니라 <strong>빌드 산출물</strong>이다. 빌드 도구가 소스를 변환·번들해 산출 디렉터리(관례적으로 <code>dist</code>, <code>build</code> 등)에 떨군다.
+따라서 배포란 결국 두 좌표를 일치시키는 일이다:
+</p>
+<div class="flow">[소스] ──빌드──→ [산출 디렉터리 dist/]  ──복사/배포──→ [서빙 루트 /var/www/app/]
+                                                        ↑
+                            웹서버 설정의 root가 가리키는 곳과 같아야 함
+
++ 셋째 좌표: HTML이 참조하는 자산 경로의 기준(base path)
+  /myapp/ 아래에 배포하면 → 빌드에도 base=/myapp/ 를 알려야
+  산출물 내부 참조가 /myapp/assets/... 로 생성됨</div>
+<p>
+셋째 좌표인 base path는 자주 잊힌다. 산출물 안의 <code>index.html</code>은 자기 JS·CSS를 절대 경로로 참조하는데, 이 경로의 접두가 실제 배포 위치와 다르면 — 루트에 배포될 걸로 빌드했는데 하위 경로에 배포하면 — HTML은 열리지만 그 안의 모든 자산 요청이 어긋난다.
+경로 번역은 이렇게 <strong>서버 설정(루트)과 빌드 설정(base)의 합작</strong>이며, 한쪽만 봐서는 완성되지 않는다.
+</p>
+
+<h2>4. 경로가 어긋날 때의 증상 — 404보다 헷갈린 것들</h2>
+<p>
+번역이 어긋나면 404가 뜰 것 같지만, 실제 증상은 더 다양하고 더 오해하기 좋다. 어긋남의 <em>방식</em>에 따라 증상이 갈리기 때문이다.
+</p>
+<table>
+  <tr><th>어긋남의 방식</th><th>증상</th><th>왜 헷갈리는가</th></tr>
+  <tr><td>루트가 파일 없는 곳을 가리킴</td><td>404, 흰 화면</td><td>그나마 정직한 경우</td></tr>
+  <tr><td>루트가 <strong>옛 산출물</strong>을 가리킴 (빌드는 새로 했는데 복사를 안 함 / 다른 디렉터리에 복사)</td><td>페이지는 뜨는데 수정사항이 없음</td><td>"코드를 고쳤는데 반영이 안 된다" — 코드 문제로 보이지만 배치 문제</td></tr>
+  <tr><td>SPA fallback이 자산 요청까지 삼킴 (없는 파일 요청에 <code>index.html</code>을 반환)</td><td>콘솔에 MIME 타입 오류: "JS를 기대했는데 <code>text/html</code>이 왔다"</td><td>404가 아니라 <strong>200이 뜬다</strong> — 성공처럼 보이는 실패</td></tr>
+  <tr><td>base path 불일치</td><td>HTML만 뜨고 흰 화면, 자산 요청이 전부 엉뚱한 경로로</td><td>서버 설정은 멀쩡해서 서버만 뒤지게 됨</td></tr>
+</table>
+<blockquote class="warn">
+<p><strong>흔히 헷갈리는 지점 — "200 OK인데 깨진다"는 fallback의 그림자다.</strong> SPA 라우팅을 위해 "없는 경로는 <code>index.html</code>로"라는 규칙을 걸면, 오타난 자산 경로 요청도 404 대신 HTML을 200으로 받는다. 브라우저는 JS 자리에 온 HTML을 실행할 수 없어 MIME 오류를 뱉는다. 상태 코드가 아니라 <strong>응답의 내용물</strong>을 확인해야 정체가 보이는 대표 사례다.</p>
+</blockquote>
+<p>
+이 표의 공통점을 보자: 증상은 브라우저에서 보이지만, 원인은 소스도 브라우저도 아닌 <strong>중간 계층</strong>(산출물·배치·서버 규칙)에 있다. 즉 정적 서빙 문제의 진단은 "소스부터 브라우저까지의 파이프라인에서 어느 관문이 어긋났는가"를 계층별로 끊어 확인하는 문제가 된다 — 이 진단 방법론 자체가 관련 문서 O3의 주제다.
+</p>
+
+<h2>5. 흔히 헷갈리는 지점 (종합)</h2>
+<ul>
+  <li><strong>개발 서버는 서빙 모델의 모사품이다.</strong> 개발 서버는 빌드 산출물을 디스크에 만들지 않고 메모리에서 변환·서빙하며, fallback·프록시 규칙도 자체 설정으로 흉내 낸다. "개발에서는 됐는데 배포하니 깨진다"의 상당수는 코드가 아니라, 개발 서버가 대신해 주던 번역 규칙을 실제 서버에 옮겨 적지 않은 것이다.</li>
+  <li><strong>URL 경로와 파일 경로는 다른 세계다.</strong> URL은 서버가 해석하는 약속일 뿐, 파일 시스템 구조와 필연적 관계가 없다. 같은 파일이 다른 URL로, 같은 URL이 설정에 따라 다른 파일로 이어질 수 있다 — "URL에 보이는 경로"로 서버 디렉터리 구조를 추측하는 습관이 진단을 오도한다.</li>
+  <li><strong>디렉터리 목록·숨김 파일의 노출.</strong> 서빙 루트 아래 놓인 것은 규칙상 <em>전부</em> 공개 대상이다. 산출물 디렉터리에 소스맵·백업 파일·환경 파일이 섞여 들어가면 그대로 노출된다. 루트에는 서빙할 것만 둔다는 규율이 필요하다.</li>
+  <li><strong>대소문자 구분의 환경 차이.</strong> 어떤 파일 시스템은 대소문자를 구분하지 않고 어떤 것은 구분한다 — 로컬(비구분)에서 되던 <code>Logo.png</code> 참조가 서버(구분)에서 404가 되는, 환경을 옮겨야 드러나는 함정이다.</li>
+</ul>
+
+<h2>★ 6. 언어별 대조</h2>
+<p>
+"URL→파일 번역 + 역할 분담"이라는 모델은 공통이지만, 각 생태계는 앱서버가 정적 서빙을 어디까지 떠안을지에 대한 기본 입장이 다르다.
+</p>
+<table>
+  <tr><th>언어/스택</th><th>앱 내 정적 서빙</th><th>생태계의 기본 입장</th></tr>
+  <tr><td>Java</td><td>서블릿 컨테이너·프레임워크의 정적 리소스 규약(클래스패스의 지정 위치를 자동 서빙)</td><td>앱 내 서빙이 자연스러움 — 산출물을 아카이브에 <em>포장해 넣는</em> 배포 모델</td></tr>
+  <tr><td>JS·TS</td><td>미들웨어 한 줄(<code>express.static</code> 류)로 디렉터리 공개</td><td>소규모는 앱이, 규모가 커지면 앞단 웹서버/CDN으로</td></tr>
+  <tr><td>Python</td><td>WSGI/ASGI 앱의 정적 서빙은 개발용 — 운영은 웹서버·전용 미들웨어에 위임 권장</td><td>분담을 가장 명시적으로 권고하는 문화</td></tr>
+  <tr><td>C++</td><td>프레임워크 드묾 — 웹서버 자체가 C/C++ 산출물</td><td>"웹서버는 왜 빠른가"를 구현 쪽에서 보는 관점</td></tr>
+</table>
+
+<h3>6.1 Python — "앱은 정적을 나르지 말라"가 명문화된 생태계</h3>
+<p>
+Python 웹 표준(WSGI)의 세계에서는 프레임워크 문서들이 공통으로 "운영에서 정적 파일은 앱이 아니라 웹서버가"를 명시한다. 이유는 2절의 원리 그대로다:
+WSGI 앱의 워커는 수가 적고 요청 하나를 통째로 붙잡는 실행 모델이라, 파일 전송처럼 계산 없는 일에 워커를 소모하는 것이 최악의 자원 배치이기 때문이다.
+다만 "웹서버 한 대를 따로 두기엔 과한" 중간 지대를 위해, 앱 프로세스 안에서 정적 서빙을 <em>효율적으로</em> 대행하는 미들웨어를 끼우는 절충도 널리 쓰인다:
+</p>
+<pre><code># WSGI 앱을 정적 서빙 미들웨어로 감싸는 절충 패턴 (whitenoise 류)
+from whitenoise import WhiteNoise
+
+app = create_app()                      # 원래의 WSGI 앱 (동적 담당)
+app = WhiteNoise(app, root="dist/")     # 감싸기: 정적 요청을 가로챔
+
+# 동작: 요청 경로가 dist/ 안 파일과 일치 → 미들웨어가 파일 응답으로 종결
+#       일치하지 않음 → 안쪽 앱으로 통과 (동적 처리)
+# = "앞단 웹서버의 역할 분담"을 프로세스 안에서 축소 재현한 구조</code></pre>
+<p>
+<code>Python 관점의 통찰: 이 미들웨어 패턴이 흥미로운 이유는 역할 분담이 물리 배치(서버 두 대)가 아니라 논리 구조(요청 처리 사슬의 앞뒤)의 문제임을 보여주기 때문이다 — "정적 요청은 로직에 도달하기 전에 걸러진다"는 불변식만 지켜지면, 그 관문이 별도 프로세스든 같은 프로세스의 바깥 껍질이든 모델은 동일하다.</code>
+</p>
+
+<h3>6.2 C++ — 웹서버는 왜 빠른가: 커널에 일을 떠넘기는 전송</h3>
+<p>
+주요 웹서버들이 C/C++로 짜여 있으므로, C++ 관점은 "정적 서빙을 쓰는 쪽"이 아니라 "정적 서빙이 왜 빠른지 구현으로 보는 쪽"이 된다.
+소박한 구현은 파일을 <code>read</code>로 사용자 공간 버퍼에 읽고 다시 <code>write</code>로 소켓에 쓴다 — 데이터가 커널→사용자→커널로 두 번 국경을 넘고 그만큼 복사된다.
+전송 전용 시스템 콜은 이 왕복을 없앤다(제로카피, zero-copy: 데이터를 사용자 공간에 복사하지 않고 커널 안에서 파일→소켓으로 직결하는 기법):
+</p>
+<pre><code>#include &lt;sys/sendfile.h&gt;
+#include &lt;fcntl.h&gt;
+
+// 소박한 서빙: read()로 버퍼에 → write()로 소켓에  (복사 2회 + 왕복)
+// 전송 전용 콜: 커널 내부에서 파일→소켓 직결        (사용자 공간 복사 0회)
+void serve_file(int client_sock, const char* path, off_t size) {
+    int fd = open(path, O_RDONLY);
+    off_t offset = 0;
+    sendfile(client_sock, fd, &amp;offset, size);   // 커널에 전송을 위임
+    close(fd);
+}</code></pre>
+<p>
+<code>C++ 관점의 통찰: "웹서버가 정적 파일에 더 빠르다"는 말은 마법이 아니라 실행 경로의 차이다 — 앱서버 경로는 요청이 런타임·프레임워크·애플리케이션 계층을 통과한 뒤에야 파일에 닿지만, 웹서버 경로는 커널의 전송 기능까지 최단 거리다. 계산이 없는 작업일수록 계층을 걷어낸 쪽이 이긴다는, 역할 분담 원칙의 저수준 근거다.</code>
+</p>
+
+<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java 생태계는 산출물을 배포 아카이브 안에 포장하는 전통(서블릿 규약의 정적 리소스 위치, Spring의 <code>static</code> 클래스패스 규약) 덕에 앱 내 서빙이 자연스럽고, 그래서 역으로 "프론트 빌드 산출물을 <em>어느 시점에 어디로</em> 복사해 넣는가"가 이 스택 특유의 경로 좌표 문제가 된다.
+JS·TS는 <code>express.static("dist")</code> 한 줄로 서빙 루트를 선언하는 가장 직관적인 형태이며, fallback 규칙(4절의 200-OK 함정)도 미들웨어 순서로 명시된다 — 미들웨어 <strong>배치 순서가 곧 번역 규칙의 우선순위</strong>다.
+</p>
+
+<h2>7. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>콘텐츠 해시와 불변 캐시</strong> — 산출물 파일명에 내용 해시를 넣고(<code>main.3f29c1.js</code>) 장기 캐시를 거는 현행 표준 패턴. 내용이 바뀌면 파일명이 바뀌므로 "옛 파일 서빙" 문제의 절반을 구조적으로 없앤다. 상세는 관련 문서 M4.</li>
+  <li><strong>CDN</strong> — "미리 준비된 파일은 복사할 수 있다"는 성질의 극한: 산출물을 지리적으로 분산된 캐시에 복제해 사용자 가까이에서 서빙. 역할 분담의 셋째 층이다.</li>
+  <li><strong>MIME 타입과 <code>Content-Type</code></strong> — 서버는 확장자→타입 매핑으로 응답 타입을 선언하고 브라우저는 이를 신뢰해 처리한다. 4절의 "JS 자리에 HTML" 오류를 읽는 데 필요한 배경.</li>
+  <li><strong>압축 서빙</strong> — 텍스트 자산의 압축 전송(사전 압축 산출물을 만들어 두는 방식 포함). 웹서버 계층에서 처리하는 것이 관례다.</li>
+  <li><strong>SPA 히스토리 fallback의 올바른 범위</strong> — fallback은 "자산 확장자가 아닌 경로"로 한정하는 것이 정석. 라우팅 편의와 4절 함정 사이의 균형점.</li>
+</ul>
+
+<h2>8. 한 장 요약</h2>
+<ul>
+  <li>정적 파일 = 요청 시 계산이 없는 응답 → 미리 준비·복사·캐시 가능 → 전송 전문가에게 위임 가능.</li>
+  <li>역할 분담: 계산이 필요한 요청만 앱서버로. 누가 서빙 중인지에 따라 설정을 고칠 위치가 달라진다.</li>
+  <li>서빙 = URL→파일 번역. 좌표는 셋: 산출 디렉터리, 서빙 루트, base path — 서버 설정과 빌드 설정의 합작.</li>
+  <li>어긋남의 증상은 404보다 교묘하다: 옛 산출물 서빙, fallback의 200 OK + MIME 오류, base 불일치의 흰 화면.</li>
+  <li>개발 서버는 이 구조의 메모리 내 모사품 — 배포 시 번역 규칙을 실제 서버에 옮겨 적는 일이 남는다.</li>
+  <li>증상은 브라우저에, 원인은 중간 계층에 — 계층별 진단은 O3로 이어진다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="O3 정적 상태 vs 동적 상태 디버깅.html">O3 정적 상태 vs 동적 상태 디버깅.html</a> — 소스→빌드→서빙→포트→브라우저 관문을 하나씩 끊는 진단 방법론</li>
+  <li><a href="M4 정적 자산 캐싱과 무효화.html">M4 정적 자산 캐싱과 무효화.html</a> — 콘텐츠 해시 지문·Cache-Control: 서빙 위의 캐시 계층</li>
+</ul>
+
+</body>
+</html>

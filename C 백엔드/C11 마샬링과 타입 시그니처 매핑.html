@@ -62,7 +62,7 @@
     border: 1px solid #d0d7de;
     border-radius: 6px;
     padding: 14px;
-    text-align: left;
+    text-align: center;
     font-family: Consolas, "D2Coding", monospace;
     margin: 16px 0;
     white-space: pre;
@@ -146,7 +146,7 @@
 <h2>3. 함정 해부 — 숫자 정규화와 타입 소실</h2>
 <p>
 2절의 "합쳐지면 못 되돌린다"가 실제 사고로 나타나는 세 형태다. 공통점은 <strong>예외도 경고도 없이, 값이 그럴듯한 채로 틀린다</strong>는 것 —
-"동작은 하는데 결과가 이상한" 문제의 전형이라 <a href="K5 조용한 실패(silent failure)와 오타.html">K5</a>의 계보에 속한다.
+"동작은 하는데 결과가 이상한" 문제의 전형이라 <a href="K5 조용한 실패와 오타.html">K5</a>의 계보에 속한다.
 </p>
 
 <h3>3.1 형태 ① — 큰 정수의 끝자리가 조용히 바뀐다</h3>
@@ -243,36 +243,57 @@ JSON.stringify({ rate: 1.0 })   // '{"rate":1}'  ← 직렬화가 이미 .0을 �
 같은 문서, 네 가지 결과 — 특히 둘째 행에서 <strong>정확/부정확이 언어에 따라 갈린다</strong>는 점이 3.1 함정의 요약이다.
 </p>
 
-<h3>7.1 Java — 정적 바인딩은 강하고, 그래서 경계의 선언이 곧 방어다</h3>
-<pre><code>// 경계 DTO에서 전송 표현을 필드 단위로 고정 (Jackson 대표 예시)
-public class OrderDto {
-    @JsonSerialize(using = ToStringSerializer.class)
-    private Long id;                        // long이지만 JSON에는 "문자열"로 — 3.1 차단
-
-    private String amount;                  // BigDecimal을 경계에서는 문자열로 운반
-    public BigDecimal amountValue() { return new BigDecimal(amount); }  // 변환은 경계에서(5절 ④)
-}</code></pre>
-<blockquote class="info">
-<p><strong>Java 관점의 통찰:</strong> Jackson이 대상 필드 타입(long, BigDecimal)에 맞춰 복원해 주므로 Java끼리는 문제가 안 보인다 — 함정은 <strong>상대가 Java가 아닐 때</strong> 터진다. 서버가 정확히 만든 <code>number</code>가 프론트 JS에서 반올림되는 3.1이 전형으로, "우리 쪽 로그에는 값이 정상"이라 원인 추적이 길어진다. 방어(문자열화)는 받는 쪽이 아니라 <strong>보내는 쪽 계약에서</strong> 해야 한다는 교훈.</p>
-</blockquote>
-
-<h3>7.2 JS·TS — number 하나의 세계에서 사는 법</h3>
-<pre><code>Number.MAX_SAFE_INTEGER          // 9007199254740991 (2^53 - 1) — 정확성의 국경선
-Number.isSafeInteger(value)      // 국경 안인지 런타임 검사
-
-// 큰 정수를 문자열 계약으로 받았을 때
-const id: string = order.id;                 // 그대로 문자열로 다루는 것이 기본
-const big = BigInt(order.id);                // 산술이 필요하면 BigInt로
-// 주의: JSON.stringify는 BigInt를 만나면 TypeError — BigInt는 JSON을 "통과"하지 못한다.
-//       경계에서는 결국 문자열로 오가야 한다는 사실의 언어 차원 확인.</code></pre>
-<blockquote class="info">
-<p><strong>JS 관점의 통찰:</strong> JS에 <code>BigInt</code>가 있어도 <code>JSON.parse</code>의 기본 동작은 여전히 number 반올림이다 — 파싱이 끝난 뒤에는 이미 늦으므로, <strong>해결의 자리는 파서 옵션이나 코드가 아니라 계약(문자열로 보내라)</strong>이라는 5절의 결론이 여기서 재확인된다.</p>
-</blockquote>
-
-<h3>7.3 Python / C++ — 한 줄 요약</h3>
+<h3>7.1 C++ — 복원은 추측이 아니라 선언이다</h3>
 <p>
-Python은 무제한 정수 덕에 3.1에서 가장 안전한 수신자지만, <code>1.0</code>→<code>float</code>/<code>1</code>→<code>int</code> 판정이 <em>텍스트 표기</em>에 달려 있어 3.2(보내는 쪽이 <code>.0</code>을 지우면 int가 됨)에는 똑같이 노출된다.
-C++ JSON 라이브러리들은 저장 타입과 조회 타입을 개발자가 지정하게 하므로, "복원은 추측이 아니라 선언"이라는 이 문서의 처방을 언어가 강제하는 형태다.
+2절에서 본 "받은 쪽이 자기 언어의 관습대로 추측한다"는 문제를, C++ JSON 라이브러리들은 구조적으로 회피한다 —
+<strong>꺼낼 때 타입을 개발자가 지정</strong>하게 만들기 때문이다. 추측할 여지 자체가 없어지는 대신, 지정을 틀리면 그 자리에서 드러난다.
+</p>
+<pre><code>// nlohmann/json 계열의 전형적 사용 (대표 예시)
+auto j = json::parse(R"({"id": 9007199254740993, "rate": 1.0})");
+
+auto id   = j["id"].get&lt;int64_t&gt;();     // ← "이것을 64비트 정수로 읽겠다"고 선언
+auto rate = j["rate"].get&lt;double&gt;();    // ← "이것을 실수로 읽겠다"
+
+// 선언을 틀리면 조용히 넘어가지 않는다
+auto bad  = j["id"].get&lt;int32_t&gt;();     // 범위 초과 — 라이브러리에 따라 예외 또는 정의되지 않은 절삭
+
+// 문자열 계약(5절 ②)을 쓰는 경우: 파싱도 명시적으로
+auto id_str = j["id"].get&lt;std::string&gt;();
+int64_t id2 = std::stoll(id_str);       // 실패 시 예외 — 조용한 손상이 없다</code></pre>
+<blockquote class="info">
+<p><strong>C++ 관점의 통찰(메모리·수명·컴파일 타임):</strong> <code>get&lt;T&gt;()</code>는 템플릿이라 <strong>어떤 타입으로 읽을지가 컴파일 시점에 확정</strong>된다 — 3.2절의 "받은 쪽이 정수인지 실수인지 판정한다"는 상황 자체가 성립하지 않는다. 타입 정보를 <em>데이터</em>에서 복원하는 대신 <em>코드</em>에 적어 두는 방식이며, 이것이 5절 ①(경계 DTO로 필드별 표현을 선언)의 처방과 정확히 같은 발상임에 주목할 만하다. C++은 언어가 그 규율을 강제할 뿐이다.<br>수명 쪽 함정도 하나 있다: 파싱 결과에서 문자열을 참조로 꺼내 두고 원본 <code>json</code> 객체가 먼저 소멸하면 허상 참조가 된다. "경계를 건너온 데이터의 <strong>소유권을 누가 갖는가</strong>"라는 질문이 여기서는 명시적 선택이 되는데, GC 언어에서는 이 질문이 감춰져 있을 뿐 사라진 것은 아니다 — 캐시에 넣어 둔 역직렬화 결과를 다른 곳에서 변형해 오염시키는 문제가 같은 질문의 다른 얼굴이다.</p>
+</blockquote>
+
+<h3>7.2 Python — 정규화 규칙에 직접 개입하기</h3>
+<p>
+Python은 3절의 함정을 <strong>가장 잘 보여 주면서 동시에 가장 깔끔한 탈출구</strong>를 가진 언어다.
+무제한 정수 덕에 3.1(큰 정수 반올림)은 겪지 않지만 3.2(정수/실수 경계)에는 그대로 노출되며,
+표준 라이브러리가 <strong>파서의 숫자 변환 규칙을 교체할 수 있는 훅</strong>을 제공한다.
+</p>
+<pre><code>import json
+from decimal import Decimal
+
+s = '{"id": 9007199254740993, "price": 19.99}'
+
+# 기본 동작: price는 float가 되어 십진 정밀도가 사라진다
+d1 = json.loads(s)
+print(type(d1["id"]), d1["id"])        # &lt;class 'int'&gt; 9007199254740993  ← 정확(무제한 정수)
+print(repr(d1["price"]))               # 19.99 → 내부적으로는 이진 부동소수점 근사값
+
+# 훅으로 정규화 규칙을 바꾼다: 실수를 Decimal로 받아 십진 정밀도 보존
+d2 = json.loads(s, parse_float=Decimal)
+print(repr(d2["price"]))               # Decimal('19.99')  ← 원문 표기 그대로 보존
+
+# 내보낼 때도 대칭이 필요하다 (Decimal은 기본 인코더가 모른다)
+json.dumps({"price": Decimal("19.99")}, default=str)   # {"price": "19.99"}</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> <code>parse_float=Decimal</code> 한 줄이 이 문서의 처방을 요약한다 — <strong>파서의 기본 정규화는 "선택"이지 "사실"이 아니다.</strong> 금액을 <code>float</code>로 받으면 <code>0.1 + 0.2</code>가 정확히 <code>0.3</code>이 아닌 세계로 들어가고, 그 오차는 합산·비교를 거치며 누적된다. 정밀도가 중요한 값에 대해 "십진 표기를 그대로 들고 다니는 타입"으로 받는 것은, 5절 ②의 문자열 계약과 동일한 목적(원문 보존)을 언어 도구로 달성하는 방법이다.<br>대칭성에도 주의할 만하다: 들어올 때 <code>Decimal</code>로 받아도 <strong>나갈 때 규칙을 맞추지 않으면</strong> 인코더가 처리하지 못하거나 다시 <code>float</code>로 떨어진다. 3.3절의 라운드트립 문제는 입력·출력 <em>양쪽</em>의 규칙이 짝을 이룰 때만 해결된다.</p>
+</blockquote>
+
+<h3>7.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java는 대상 필드 타입(<code>long</code>, <code>BigDecimal</code>)에 맞춰 복원되므로 Java끼리는 문제가 드러나지 않는다 — 함정은 <strong>상대가 Java가 아닐 때</strong> 터지며, 서버가 정확히 만든 숫자가 프론트에서 반올림되는 3.1이 전형이다(방어는 받는 쪽이 아니라 <strong>보내는 쪽 계약</strong>에서 문자열화로).
+JS·TS에는 <code>BigInt</code>가 있지만 <code>JSON.parse</code>의 기본 동작은 여전히 반올림이고 <code>JSON.stringify</code>는 <code>BigInt</code>를 직렬화하지 못한다 — 즉 <strong>해결의 자리는 코드가 아니라 계약</strong>이라는 5절의 결론이 언어 차원에서 재확인된다.
 </p>
 
 <h2>8. 함께 알면 좋은 것</h2>
@@ -298,7 +319,7 @@ C++ JSON 라이브러리들은 저장 타입과 조회 타입을 개발자가 �
   <li><a href="C10 직렬화와 역직렬화.html">C10 직렬화와 역직렬화.html</a> — 이 문서의 짝: 경계를 건너는 바이트 변환의 기술과 스키마 진화(선수)</li>
   <li><a href="D11 API 문서화와 스키마.html">D11 API 문서화와 스키마.html</a> — 5절의 "계약에 명시"를 문서·검증 도구로 실현하는 방법</li>
   <li><a href="D3 REST vs GraphQL vs gRPC.html">D3 REST vs GraphQL vs gRPC.html</a> — 타입 대응을 도구가 보장하는 스키마 우선 프로토콜과의 비교</li>
-  <li><a href="K5 조용한 실패(silent failure)와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a> — "성공의 얼굴로 오는 손상"이라는 문제 유형의 일반론</li>
+  <li><a href="K5 조용한 실패와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a> — "성공의 얼굴로 오는 손상"이라는 문제 유형의 일반론</li>
 </ul>
 
 </body>

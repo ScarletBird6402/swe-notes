@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>S2 토큰 기반 인증 — JWT vs 세션</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; }
+  th, td { border: 1px solid #d0d7de; padding: 8px 12px; text-align: left; vertical-align: top; }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote { margin: 16px 0; padding: 12px 16px; border-radius: 6px; border-left: 4px solid; }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px;
+    padding: 14px; text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0; white-space: pre; overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>S2 토큰 기반 인증 — JWT vs 세션</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>HTTP는 요청 사이에 기억을 남기지 않는다. 그래서 로그인한 사용자는 <strong>매 요청마다 자신을 다시 증명</strong>해야 하고, 이 증명을 어떻게 나르는지가 인증 설계의 전부다.</li>
+  <li>갈림길은 하나다 — <strong>인증 상태를 서버가 기억하는가(세션), 아니면 증명서가 스스로를 증명하는가(토큰)</strong>. 이 한 선택이 검증 방식·폐기 난이도·보관 위치·공격면을 연쇄적으로 결정한다.</li>
+  <li>JWT의 페이로드는 <strong>인코딩일 뿐 암호화가 아니다</strong> — 누구나 읽는다. 비밀을 담는 곳이 아니라 <em>서명으로 위조를 막는</em> 구조다.</li>
+  <li>따라서 모든 것이 <strong>서명 검증</strong>이라는 한 점에 걸려 있다. 그 전제를 무너뜨리는 고전적 함정이 <strong>알고리즘 혼동</strong>(algorithm confusion) — 서버가 토큰이 스스로 신고한 <code>alg</code>를 믿는 순간 방어가 사라진다. 서버는 <strong>기대 알고리즘을 자기가 고정</strong>해야 한다.</li>
+  <li>무상태(stateless)의 대가는 <strong>폐기</strong>다. 서버가 기억하지 않으므로 취소할 대상도 없다 — 로그아웃·탈취 대응을 위해 상태를 다시 도입하면(차단 목록·갱신 토큰 저장소) 무상태의 이점을 그만큼 반납한다.</li>
+  <li>보관 위치는 <a href="S1 프론트엔드 보안 기초.html">S1</a>과 직결된다 — <strong>XSS가 성공했을 때 가져가는 물건이 바로 이 토큰·세션 ID</strong>다. <code>localStorage</code>는 스크립트가 읽을 수 있어 XSS 한 건이 계정 탈취가 되고, <code>HttpOnly</code> 쿠키는 그 경로를 막는 대신 자동 전송이라는 다른 표면을 연다.</li>
+  <li>"JWT가 세션보다 우월하다"는 비교는 성립하지 않는다. <strong>서로 다른 비용을 내는 두 설계</strong>이며, 무엇을 지불할 수 있는지가 선택 기준이다.</li>
+</ul>
+
+<h2>1. 문제의 출발 — HTTP는 기억하지 않는다</h2>
+<p>
+로그인을 구현해 본 사람이면 한 번쯤 의아해한다. 로그인 요청은 성공했는데, <strong>바로 다음 요청에서 서버는 내가 누군지 다시 모른다</strong>. 버그가 아니다 — HTTP가 무상태(stateless) 프로토콜이기 때문이다. 각 요청은 독립적이며, 이전 요청에서 무슨 일이 있었는지에 대한 기억을 프로토콜 차원에서 갖지 않는다.
+</p>
+<p>
+그러므로 인증의 실제 과제는 "로그인 처리"가 아니다. <strong>한 번 확인한 신원을 이후 모든 요청에서 어떻게 다시 증명하느냐</strong>가 과제다. 매 요청에 비밀번호를 다시 보내는 것은 답이 될 수 없으므로(노출 표면이 요청 수만큼 늘어난다), 로그인 시점에 <strong>증명 수단</strong>을 하나 발급해 그것을 계속 제시하는 구조를 쓴다.
+</p>
+<div class="flow">로그인 1회  →  [증명 수단 발급]  →  이후 매 요청에 그것을 첨부  →  서버가 확인</div>
+<p>
+여기서 설계가 갈린다. 발급하는 증명 수단이 <strong>무엇인지</strong>에 따라 두 갈래다.
+</p>
+<ul>
+  <li><strong>참조를 준다</strong> — 의미 없는 식별자를 주고, 진짜 정보는 서버가 보관한다. → 세션 방식(2절)</li>
+  <li><strong>내용을 준다</strong> — 신원 정보를 담은 문서를 주고, 위조를 막는 장치를 붙인다. → 토큰 방식(3절)</li>
+</ul>
+<p>
+즉 갈림길의 정체는 <strong>"인증 상태를 어디에 두는가"</strong>다. 이 질문 하나가 이 문서 전체를 관통한다 — 검증 방식(4절), 폐기 난이도(5절), 보관 위치와 공격면(6절)이 모두 이 선택에서 파생된다.
+</p>
+
+<h2>2. 갈래 1: 세션 — 서버가 기억한다</h2>
+<p>
+세션 방식에서 서버는 로그인 성공 시 <strong>추측할 수 없는 무작위 문자열</strong>(세션 ID)을 만들어 클라이언트에 주고, "이 ID는 사용자 A다"라는 대응 관계를 <strong>자기 쪽 저장소</strong>에 기록한다. 클라이언트가 가진 것은 <em>영수증 번호</em>일 뿐 — 그 자체에는 아무 의미도 담기지 않는다.
+</p>
+<div class="flow">클라이언트:  세션 ID = "a3f9c1..."       ← 의미 없는 참조
+서버 저장소: "a3f9c1..." → { 사용자 A, 권한, 로그인 시각 }
+매 요청:     ID 제시 → 서버가 저장소를 조회 → 신원 확정</div>
+<p>이 구조에서 나오는 성질들이 그대로 장단점이 된다.</p>
+<ul>
+  <li><strong>내용이 새지 않는다.</strong> ID에는 정보가 없으니 탈취되어도 <em>읽을</em> 것이 없다(다만 <em>사용</em>될 수는 있다 — 6절).</li>
+  <li><strong>폐기가 즉각적이다.</strong> 저장소에서 해당 항목을 지우면 그 ID는 그 순간 무효다. 로그아웃·강제 차단·권한 변경이 즉시 반영된다.</li>
+  <li><strong>매 요청이 조회를 부른다.</strong> 신원 확인이 곧 저장소 접근이다. 이 비용은 작지만 <strong>0은 아니다</strong>.</li>
+  <li><strong>서버가 상태를 진다.</strong> 서버 인스턴스를 여러 대로 늘리면, 세션 저장소를 <strong>공유</strong>하지 않는 한 A 서버에서 로그인한 사용자가 B 서버에서는 미인증으로 보인다.</li>
+</ul>
+<p>
+마지막 두 성질이 남기는 질문이 다음 절의 출발점이다 — <strong>서버가 기억하지 않아도 되는 방법이 있다면 어떨까?</strong> 조회 비용과 상태 공유 문제를 동시에 없애려면, 증명 수단이 <em>스스로</em> 신원을 증명해야 한다.
+</p>
+
+<h2>3. 갈래 2: 토큰 — 증명서가 스스로 증명한다</h2>
+<p>
+토큰 방식은 참조 대신 <strong>내용</strong>을 준다. 신원 정보를 문서에 적어 클라이언트에게 넘기고, 서버는 그것을 기억하지 않는다. 대표 형식이 JWT(JSON Web Token)이며, 점으로 구분된 세 부분으로 이루어진다.
+</p>
+<div class="flow">eyJhbGciOi...  .  eyJzdWIiOi...  .  SflKxwRJSM...
+   헤더(header)      페이로드(payload)     서명(signature)
+   어떤 알고리즘으로   누구이고 언제까지     위 두 부분이 위조되지
+   서명했는지         유효한지(주장)        않았다는 증거</div>
+<p>
+헤더와 페이로드는 JSON을 <strong>base64url로 인코딩</strong>한 것이다. 그리고 여기서 이 방식의 가장 흔한 오해가 나온다.
+</p>
+<blockquote class="warn">
+<p><strong>인코딩은 암호화가 아니다.</strong> base64url은 사람이 읽기 어려울 뿐 <strong>누구나 즉시 되돌릴 수 있다</strong> — 열쇠도 필요 없다. 토큰을 가진 사람은 페이로드를 <em>전부 읽는다</em>. 따라서 JWT 페이로드에 비밀번호·주민번호·내부 식별자 같은 것을 담으면 그것은 곧 공개다. JWT가 보장하는 것은 기밀성(confidentiality)이 아니라 <strong>무결성</strong>(integrity) — "내용이 바뀌지 않았음"이다.</p>
+</blockquote>
+<p>
+그 무결성을 담당하는 것이 세 번째 부분, 서명(signature)이다. 서버는 <em>자기만 아는 비밀</em>로 헤더와 페이로드를 계산해 서명을 만들고, 검증할 때 같은 계산을 다시 해 값이 일치하는지 본다. 공격자가 페이로드의 <code>"role": "user"</code>를 <code>"admin"</code>으로 고치면, 서명이 맞지 않아 즉시 걸러진다 — <strong>비밀을 모르면 유효한 서명을 새로 만들 수 없기 때문</strong>이다.
+</p>
+<p>
+그래서 이 방식은 세션의 두 부담을 덜어낸다. 서버는 저장소를 조회하지 않고 <strong>서명만 확인</strong>하면 신원을 알 수 있고, 기억할 상태가 없으니 서버를 여러 대로 늘려도 공유할 것이 없다. 서명 검증에 필요한 것은 비밀(또는 공개 키)뿐이다.
+</p>
+<p>
+그런데 방금 그 문장에 이 설계의 급소가 들어 있다. <strong>모든 신뢰가 "서명 검증"이라는 단 하나의 관문에 걸려 있다.</strong> 세션 방식에서는 저장소 조회가 실패하면 그냥 인증 실패지만, 토큰 방식에서 검증이 무력화되면 <strong>공격자가 원하는 내용을 스스로 적어 넣을 수 있다</strong>. 그 관문이 어떻게 뚫리는지가 다음 절이다.
+</p>
+
+<h2>4. 서명 검증 — 전제가 무너지는 지점</h2>
+<p>
+서명 검증은 개념상 단순하다. 문제는 <strong>"어떤 알고리즘으로 검증할지"를 누가 정하는가</strong>에 있다. JWT는 그 정보를 헤더의 <code>alg</code> 필드에 담는데 — 그 헤더는 <em>토큰의 일부</em>이고, 토큰은 <em>공격자가 보낸 것</em>이다.
+</p>
+<p>
+서버가 "토큰이 <code>alg</code>에 적어 온 대로 검증하자"고 구현하면, <strong>공격자가 검증 방식을 스스로 지정</strong>하게 된다. 이 구조적 실수에서 파생되는 함정들이 알고리즘 혼동(algorithm confusion)이라 불리는 계열이다.
+</p>
+<table>
+  <tr><th>함정</th><th>공격자가 하는 일</th><th>왜 통하는가</th></tr>
+  <tr><td><strong>서명 없음 주장</strong></td><td><code>alg</code>를 "서명 없음"을 뜻하는 값으로 바꾸고 서명 부분을 비워 보냄</td><td>서버가 그 선언을 그대로 따르면 <strong>검증 단계 자체를 건너뛴다</strong> → 페이로드를 자유롭게 위조</td></tr>
+  <tr><td><strong>알고리즘 강등</strong></td><td>비대칭 방식(개인 키로 서명, 공개 키로 검증)을 대칭 방식(같은 비밀로 서명·검증)으로 바꿔 보냄</td><td>서버가 "검증 키"로 쥔 <strong>공개 키를 대칭 비밀로 착각</strong>해 검증한다. 공개 키는 공개되어 있으므로 공격자도 그것으로 유효한 서명을 만들 수 있다</td></tr>
+  <tr><td><strong>검증 없는 해독</strong></td><td>—</td><td>라이브러리에 <em>서명을 확인하지 않고 내용만 꺼내는</em> 함수와 <em>검증하는</em> 함수가 따로 있는데, 이름이 비슷해 전자를 인증에 쓰는 실수. 서명이 아예 확인되지 않는다</td></tr>
+  <tr><td><strong>대상·발급자 미확인</strong></td><td>다른 서비스용으로 정당하게 발급된 토큰을 그대로 제시</td><td>서명은 진짜로 유효하다. 그러나 <strong>"이 토큰이 우리를 향한 것인가"</strong>(<code>aud</code>)와 <strong>"우리가 신뢰하는 발급자인가"</strong>(<code>iss</code>)를 보지 않으면 통과한다</td></tr>
+</table>
+<p>방어는 함정 목록을 외우는 것이 아니라 <strong>판단 주체를 서버로 되돌리는 것</strong>이다.</p>
+<ul>
+  <li><strong>기대 알고리즘을 서버가 고정한다.</strong> 검증 호출 시 허용 알고리즘을 <em>명시</em>하고, 토큰의 <code>alg</code>는 참고 정보로도 신뢰하지 않는다. 이것이 위 두 함정을 동시에 닫는다.</li>
+  <li><strong>검증 API를 쓴다.</strong> 내용만 꺼내는 함수는 디버깅용이다. 인증 경로에서는 반드시 검증 함수를 호출한다.</li>
+  <li><strong>서명 외 필수 항목도 검증한다.</strong> 만료(<code>exp</code>), 대상(<code>aud</code>), 발급자(<code>iss</code>)까지 확인해야 "유효한 서명"이 "우리에게 유효함"이 된다.</li>
+  <li><strong>직접 구현하지 않는다.</strong> 검증된 라이브러리를 쓰고, 알고리즘·키 관리 옵션을 명시적으로 설정한다.</li>
+</ul>
+<blockquote class="info">
+<p><strong>왜 이 계열이 유독 반복되나.</strong> 원인은 <strong>기본값이 관대한 쪽으로 설계된 역사</strong>에 있다. 유연성을 위해 "토큰이 알고리즘을 선언한다"는 구조를 택했고, 초기 라이브러리들이 그 선언을 신뢰하는 방식으로 구현했다. 지금은 대부분 알고리즘 명시를 <strong>필수로 요구</strong>하는 방향으로 바뀌었지만(8.1절), 옛 예제 코드와 옛 라이브러리 버전이 여전히 유통된다. <a href="S3 인젝션 방어.html">S3</a>에서 본 것과 같은 구도다 — <em>안전한 API가 존재하는데, 검색에 걸리는 예제는 위험한 쪽</em>인 상황.</p>
+</blockquote>
+<p>
+서명 검증을 제대로 세웠다고 하자. 그러면 안전한가? 아직 하나가 남는다 — <strong>서명이 완벽하게 유효한 토큰을, 더 이상 유효하지 않게 만들어야 할 때</strong>가 온다.
+</p>
+
+<h2>5. 만료와 폐기 — 무상태가 청구하는 비용</h2>
+<p>
+사용자가 로그아웃했다. 또는 토큰이 탈취된 것을 알아챘다. 또는 권한이 강등됐다. 이때 이미 발급된 토큰을 무효화해야 하는데, 여기서 <strong>무상태의 대가</strong>가 청구된다.
+</p>
+<p>
+세션 방식은 간단하다 — 서버 저장소에서 해당 항목을 지우면 끝이다. <strong>서버가 기억하고 있었기 때문에 잊을 수도 있다.</strong> 반면 토큰 방식에서 서버는 아무것도 기억하지 않는다. 발급된 토큰은 <em>서버의 손을 떠나 독립적으로 유효</em>하며, <strong>취소할 대상 자체가 없다</strong>. 서명은 여전히 맞고 만료도 아직 안 됐으니, 서버는 그것을 거절할 근거가 없다.
+</p>
+<table>
+  <tr><th></th><th>세션</th><th>토큰(JWT)</th></tr>
+  <tr><td>신원 확인</td><td>저장소 조회</td><td>서명 검증(조회 없음)</td></tr>
+  <tr><td>서버 상태</td><td>있음(공유 필요)</td><td>없음</td></tr>
+  <tr><td>즉시 폐기</td><td><strong>쉬움</strong> — 항목 삭제</td><td><strong>어려움</strong> — 취소 대상이 없음</td></tr>
+  <tr><td>탈취 시 노출</td><td>ID만(내용 없음)</td><td>페이로드 전체가 읽힘</td></tr>
+  <tr><td>확장</td><td>저장소 공유 설계 필요</td><td>서버 증설이 자유로움</td></tr>
+</table>
+<p>실무의 해법은 <strong>수명을 짧게 하고, 갱신을 분리하는 것</strong>이다.</p>
+<ul>
+  <li><strong>접근 토큰은 짧게.</strong> 폐기할 수 없다면 <em>스스로 빨리 죽게</em> 만든다. 유효 기간을 분 단위로 두면, 탈취되어도 악용 창이 짧다. 폐기 불가 문제를 <strong>만료로 치환</strong>하는 셈이다.</li>
+  <li><strong>갱신 토큰을 따로 둔다.</strong> 사용자가 몇 분마다 로그인하지 않도록, 수명이 긴 갱신 토큰으로 새 접근 토큰을 받는다. 대신 이 갱신 토큰은 <strong>서버가 기록·관리</strong>한다 — 즉 폐기 가능한 상태를 <em>여기에만</em> 되돌려 놓는다.</li>
+  <li><strong>갱신 토큰 회전과 재사용 감지.</strong> 갱신할 때마다 새 갱신 토큰을 발급하고 이전 것을 무효화한다. 이미 쓰인 갱신 토큰이 다시 등장하면 탈취 신호로 보고 <strong>해당 계열 전체를 무효화</strong>한다.</li>
+  <li><strong>즉시 폐기가 꼭 필요하면 상태를 도입한다.</strong> 토큰 식별자(<code>jti</code>) 차단 목록을 두고 매 요청에 확인하는 방식이다 — 다만 이때 <strong>"조회 없는 검증"이라는 장점을 반납</strong>한다는 점을 인식해야 한다.</li>
+</ul>
+<blockquote class="info">
+<p><strong>여기서 트레이드오프의 진짜 모양이 보인다.</strong> 폐기를 위해 상태를 도입하면 토큰 방식은 세션 방식에 가까워지고, 상태를 끝까지 피하면 즉시 폐기를 포기해야 한다. <strong>"무상태"와 "즉시 폐기"는 같은 축의 양 끝</strong>이며, 어느 지점에 설지가 설계 결정이다. 그래서 "JWT가 세션보다 우월하다"는 문장은 성립하지 않는다 — <em>다른 비용을 내는 다른 설계</em>일 뿐이다.</p>
+</blockquote>
+<p>
+그런데 지금까지의 논의에는 조용한 전제가 하나 깔려 있었다 — <strong>증명 수단이 클라이언트에서 안전하게 보관된다</strong>는 전제다. 그것이 깨지면 서명 검증도, 짧은 만료도, 회전도 의미가 크게 줄어든다. 그 전제를 정면으로 다루는 것이 다음 절이다.
+</p>
+
+<h2>6. 보관 위치 — XSS가 노리는 물건이 바로 이것이다</h2>
+<p>
+<a href="S1 프론트엔드 보안 기초.html">S1</a>에서 XSS를 배울 때 자연스럽게 떠오르는 질문이 있다 — <strong>공격자가 우리 페이지에서 스크립트를 실행하는 데 성공하면, 그래서 무엇을 하는가?</strong> 화면을 어지럽히는 것이 목적일 리는 없다. 가장 값나가는 전리품은 <strong>인증 증명 수단</strong>이다. 세션 ID든 토큰이든, 그것을 가져가면 <em>비밀번호를 몰라도 그 사용자가 된다</em>.
+</p>
+<p>
+그래서 <a href="S1 프론트엔드 보안 기초.html">S1</a>과 이 문서는 한 사건의 양면이다. S1이 "스크립트가 실행되지 않게" 막는 쪽이면, 이 절은 <strong>"실행되더라도 증명 수단에는 손이 닿지 않게"</strong> 하는 쪽 — 심층 방어(defense in depth)의 두 번째 층이다. 그 관점에서 보관 위치를 비교하면 판단 기준이 분명해진다.
+</p>
+<table>
+  <tr><th>보관 위치</th><th>스크립트가 읽을 수 있나</th><th>강점</th><th>비용·위험</th></tr>
+  <tr><td><code>localStorage</code>·<code>sessionStorage</code></td><td><strong>읽힌다</strong></td><td>구현이 가장 쉽고 새로고침에도 유지</td><td><strong>XSS 한 건이 계정 탈취</strong>가 된다. 스크립트 접근을 막는 수단이 존재하지 않는다</td></tr>
+  <tr><td><code>HttpOnly</code> 쿠키</td><td><strong>읽히지 않는다</strong></td><td>브라우저가 스크립트의 접근을 차단 → XSS 내성이 크게 높다</td><td>같은 출처로 <strong>자동 전송</strong>되므로, 사용자가 모르는 사이 요청이 대신 보내지는 표면이 생긴다(CSRF — S4 소관)</td></tr>
+  <tr><td>메모리(변수)</td><td>같은 페이지 문맥에서만</td><td>저장소에 남지 않아 지속 노출이 최소</td><td>새로고침·탭 이동에 사라진다 → 갱신 흐름이 필수(사용성 비용)</td></tr>
+</table>
+<p>
+표를 읽는 순서가 중요하다. <strong>"어느 것이 안전한가"가 아니라 "어떤 공격을 어떤 비용으로 막는가"</strong>다. <code>localStorage</code>는 XSS에 정면으로 노출되고, 쿠키는 그 문제를 닫는 대신 자동 전송이라는 다른 문을 연다 — 그 문은 별도의 대책(전송 범위 제한 속성, 검증 토큰)으로 닫아야 하며 그 자체가 <strong>S4의 주제</strong>다. 메모리는 노출을 가장 줄이지만 사용성을 지불한다.
+</p>
+<blockquote class="warn">
+<p><strong>"쿠키를 안 쓰면 CSRF가 없으니 <code>localStorage</code>가 더 안전하다" — 위험 비교가 어긋난 판단.</strong> 두 위험의 <em>결과</em>가 대칭이 아니다. CSRF는 공격자가 사용자 권한으로 <strong>요청을 대신 보내는</strong> 것이고, 저장소에서 토큰이 유출되면 공격자가 그 토큰을 들고 <strong>어디서든 그 사용자가 된다</strong>(지속적·이동 가능한 탈취). 게다가 CSRF에는 확립된 방어 수단이 있는 반면, <code>localStorage</code>에는 스크립트 접근을 차단할 방법이 아예 없다. "CSRF를 피했다"가 "더 안전하다"를 뜻하지 않는다.</p>
+</blockquote>
+<blockquote class="ok">
+<p><strong>최근 동향(2020년대 중반 기준).</strong> 위의 트레이드오프 구조는 안정 원리이고, 그 위에서 <strong>권고의 무게중심이 옮겨 왔다</strong>.</p>
+<p>① <strong>접근 토큰은 메모리, 갱신 토큰은 <code>HttpOnly</code>·<code>Secure</code>·전송 범위 제한 속성을 갖춘 쿠키</strong>로 나누는 구성이 현재 가장 널리 권고되는 조합이다. 여기에 <strong>갱신 토큰 회전 + 재사용 감지</strong>(5절)를 결합하는 것까지가 한 묶음으로 제시된다.</p>
+<p>② <strong>브라우저에 토큰을 아예 두지 않는 구성</strong>(자체 서버가 토큰을 보관하고 브라우저에는 일반 세션 쿠키만 내려 주는 방식)이 특히 단일 페이지 애플리케이션에서 권장되는 선택지로 자리 잡았다 — 흥미롭게도 <strong>세션 방식으로의 부분적 회귀</strong>다.</p>
+<p>③ <strong>과거 통념 중 폐기된 것</strong>: "<code>localStorage</code>가 표준 관행"이라는 인식은 더 이상 유효하지 않다. 또한 인증 위임 표준 계열에서는 접근 토큰을 화면 주소에 실어 내려 주던 옛 방식이 <strong>공식적으로 폐기(deprecated)</strong>되었고(2025년 발행된 보안 모범 사례 문서 기준), 코드 교환 방식 + 검증기(verifier) 결합이 모든 클라이언트 유형의 기본으로 요구된다. 이 갈래의 자세한 흐름은 <a href="S7 OAuth2·OIDC 위임 인가.html">S7</a>의 소관이다.</p>
+<p>④ <strong>쿠키 전송 범위 속성은 명시적으로 설정한다.</strong> 브라우저별 기본값이 서로 다르고 시기에 따라 바뀌어 왔으므로, 기본값에 기대지 말고 값을 직접 지정하는 것이 현행 권고다.</p>
+</blockquote>
+<p>
+정리하면, 보관 위치 선택은 <strong>1절의 질문이 클라이언트 쪽에서 반복된 것</strong>이다 — 증명 수단을 어디에 두느냐. 서버 쪽 선택(세션 vs 토큰)이 폐기와 확장의 비용을 결정했다면, 클라이언트 쪽 선택은 <strong>탈취 경로와 사용성</strong>의 비용을 결정한다.
+</p>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"JWT는 암호화되어 있다" — 아니다.</strong> 기본 형태는 서명만 되어 있어 페이로드는 누구나 읽는다(3절). 무결성은 보장하지만 기밀성은 보장하지 않는다. 내용을 숨겨야 한다면 별도의 암호화 형식이 필요하다.</li>
+  <li><strong>"토큰이 있으니 세션이 없다" — 상태는 대개 어딘가로 이동한다.</strong> 즉시 폐기를 원하는 순간 차단 목록이나 갱신 토큰 저장소가 등장하고, 그것이 곧 상태다(5절). "무상태"는 달성 여부가 아니라 <strong>어디까지 유지하느냐의 정도</strong> 문제다.</li>
+  <li><strong>"서명이 유효하면 인증 성공" — 무엇에 대해 유효한지가 남는다.</strong> 만료·대상(<code>aud</code>)·발급자(<code>iss</code>)를 확인하지 않으면, 다른 서비스용 토큰이나 기간이 지난 토큰이 통과한다(4절).</li>
+  <li><strong>"라이브러리를 쓰니 안전하다" — 어떤 함수를 어떤 옵션으로 부르는지가 기준.</strong> 내용만 꺼내는 함수와 검증하는 함수는 다르고, 허용 알고리즘을 명시하지 않으면 판단 주체가 토큰 쪽으로 넘어간다. <a href="S3 인젝션 방어.html">S3</a>의 "ORM이 아니라 값이 바인딩 채널로 가는가가 기준"과 같은 판단 구조다.</li>
+  <li><strong>"만료를 길게 잡으면 사용자가 편하다" — 폐기 불가와 곱해진다.</strong> 폐기할 수 없는 증명서의 수명을 늘리는 것은 <strong>악용 창을 늘리는 것</strong>이다. 편의는 만료 연장이 아니라 갱신 구조로 해결한다(5절).</li>
+  <li><strong>"인증과 인가는 같은 것" — 다른 질문이다.</strong> 인증(authentication)은 "누구인가", 인가(authorization)는 "무엇을 할 수 있는가"다. 토큰에 권한 정보를 담을 수는 있으나, 그것이 인가 판단을 대신하지는 않는다 — 권한은 서버가 확인할 문제다.</li>
+</ul>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+토큰 검증은 어느 언어에서든 "서명을 다시 계산해 비교한다"는 같은 일을 한다. 그런데 <strong>실수가 나는 층이 언어마다 다르다</strong> — Python은 검증 함수의 <em>옵션</em>에서, C++는 비교와 비밀 관리라는 <em>더 낮은 층</em>에서 갈린다. 4절의 원칙(판단 주체를 서버로)이 각 층에서 어떤 모습을 띠는지 본다.
+</p>
+<table>
+  <tr><th>언어/환경</th><th>대표 실수 지점</th><th>표준 방어</th></tr>
+  <tr><td>Python</td><td>검증 없이 내용만 꺼내기·허용 알고리즘 미지정</td><td>검증 함수 + 알고리즘 명시 + 대상·발급자 확인(아래 심화)</td></tr>
+  <tr><td>C++</td><td>서명 비교에 일반 비교 사용·비밀이 메모리에 잔류</td><td>상수 시간 비교·비밀의 수명 통제(아래 심화)</td></tr>
+  <tr><td>Java</td><td>파서와 검증기를 구분하지 않음</td><td>서명 검증 빌더에 키·허용 알고리즘을 명시하고 검증 전용 API 사용</td></tr>
+  <tr><td>JS·TS</td><td>보관 위치 선택·검증 옵션 누락</td><td>접근 토큰은 메모리, 갱신 토큰은 <code>HttpOnly</code> 쿠키. 검증 시 알고리즘 명시</td></tr>
+</table>
+
+<h3>8.1 Python — 함수 하나, 옵션 하나가 검증 여부를 가른다</h3>
+<p>
+Python의 대표 라이브러리에는 <strong>이름이 비슷한 두 갈래</strong>가 있다. 하나는 서명을 확인하지 않고 내용만 되돌리고, 하나는 검증을 수행한다. 인증 경로에서 전자를 쓰면 4절의 "검증 없는 해독"이 그대로 일어난다.
+</p>
+<pre><code>import jwt   # PyJWT
+
+# 취약 1: 서명을 확인하지 않고 내용만 꺼냄 — 위조 토큰도 통과
+claims = jwt.decode(token, options={"verify_signature": False})
+
+# 취약 2: 검증은 하지만 허용 알고리즘을 서버가 정하지 않음
+#         → 판단 주체가 '토큰이 신고한 alg'로 넘어간다 (알고리즘 혼동의 문)
+claims = jwt.decode(token, key)          # 최신 버전은 algorithms 누락 시 오류
+
+# 안전: 알고리즘을 서버가 고정하고, 대상·발급자까지 검증
+claims = jwt.decode(
+    token,
+    key,
+    algorithms=["RS256"],                # 토큰의 alg 헤더를 신뢰하지 않음
+    audience="https://api.example.com",  # 이 토큰이 '우리'를 향한 것인가
+    issuer="https://auth.example.com",   # 우리가 신뢰하는 발급자인가
+)                                        # 만료(exp)는 기본 검증 대상
+</code></pre>
+<p>
+<code>Python 관점의 통찰: 세 줄의 차이는 문법이 아니라 '누가 결정하는가'다. algorithms를 생략하면 검증 방식의 결정권이 토큰 쪽으로 넘어가고, verify_signature를 끄면 결정 자체가 사라진다 — 즉 이 라이브러리에서 알고리즘 혼동은 별도의 공격이 아니라 인자를 비워 둔 결과다. 그래서 최신 버전들은 algorithms를 필수로 요구하는 방향으로 바뀌었다: 위험한 기본값을 없애고 결정을 강제하는 설계다. 옛 예제 코드에 이 인자가 없는 이유는 그때는 생략이 허용됐기 때문이며, 그 예제를 그대로 옮기는 것이 지금 가장 흔한 경로다. 라이브러리 버전이 곧 방어선이 되는 드문 사례이므로, 인증 코드에서는 인자를 명시했는지를 먼저 본다.</code>
+</p>
+
+<h3>8.2 C++ — 비교하는 방식과 비밀이 머무는 시간</h3>
+<p>
+C 계열에서는 검증 로직을 더 낮은 층에서 다루게 되고, 그 층에는 상위 언어가 감춰 주던 두 가지가 드러난다. 첫째, <strong>서명 비교는 결국 바이트 비교</strong>라는 점. 둘째, <strong>비밀 키가 메모리 어딘가에 실제로 존재</strong>한다는 점이다.
+</p>
+<p>
+일반적인 문자열 비교는 <strong>다른 바이트를 만나는 즉시 반환</strong>한다. 편의로는 좋지만, 서명 비교에 쓰면 "몇 번째 바이트까지 맞았는지"가 <em>걸린 시간</em>으로 새어 나간다. 공격자가 값을 조금씩 바꿔 응답 시간을 관찰하면 서명을 앞에서부터 한 바이트씩 맞춰 갈 수 있다 — 이것이 타이밍 부채널(timing side channel)이다. 방어는 <strong>상수 시간 비교</strong>(constant-time comparison): 결과와 무관하게 <em>항상 전체를 끝까지</em> 훑는다.
+</p>
+<pre><code>#include &lt;cstddef&gt;
+#include &lt;string_view&gt;
+
+// 취약: 첫 불일치에서 즉시 반환 → 걸린 시간이 '얼마나 맞았는지'를 알려 준다
+bool bad_compare(std::string_view a, std::string_view b) {
+    return a == b;
+}
+
+// 안전: 길이와 무관하게 전체를 훑고, 차이를 누적해 마지막에 한 번 판정
+bool constant_time_equal(std::string_view a, std::string_view b) {
+    if (a.size() != b.size()) return false;   // 길이는 비밀이 아님
+    unsigned char diff = 0;
+    for (std::size_t i = 0; i &lt; a.size(); ++i)
+        diff |= static_cast&lt;unsigned char&gt;(a[i] ^ b[i]);  // 조기 종료 없음
+    return diff == 0;
+}
+</code></pre>
+<p>
+<code>C++ 관점의 통찰: 이 코드가 보여 주는 것은 "정답이 같아도 도달 경로가 정보를 흘린다"는 사실이다 — 상위 언어에서는 라이브러리가 대신 처리해 보이지 않던 층이다. 두 번째 층은 수명(lifetime)이다: 비밀 키를 담은 문자열은 스코프를 벗어나도 해제된 메모리에 내용이 남을 수 있고, 값을 지우는 코드는 "이후 읽히지 않는다"는 이유로 컴파일러가 최적화로 제거할 수도 있다. 그래서 이 층에서는 비밀을 다루는 버퍼의 수명과 소거를 명시적으로 관리한다(보안용 소거 함수·전용 타입 사용). 정리하면 C++에서 서명 검증의 위험은 알고리즘 선택 이전에 있다 — 비교 방식과 비밀의 체류 시간이라는, 더 아래층의 문제다. 4절의 원칙("판단을 서버가 통제한다")이 여기서는 "비교와 메모리를 우리가 통제한다"로 내려온 형태다.</code>
+</p>
+
+<h3>8.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java도 <strong>파싱과 검증을 구분</strong>하는 것이 핵심이다 — 서명 검증용 빌더에 키와 허용 알고리즘을 명시하고, 내용만 읽는 경로를 인증에 쓰지 않는다. 세션 방식을 쓸 때는 서버 세션 저장소 설계가 따라오므로 <a href="C4 서버 세션 관리.html">C4</a>와 함께 보면 그림이 완성된다.
+JS·TS에서 실수가 나는 층은 검증보다 <strong>보관 위치</strong>다(6절). 서버 검증에서는 알고리즘 명시가 동일하게 필요하고, 브라우저 쪽에서는 접근 토큰을 메모리에, 갱신 토큰을 <code>HttpOnly</code> 쿠키에 두는 구성이 현재 권고다. 토큰을 <code>localStorage</code>에 넣는 예제가 여전히 흔하므로, 코드 리뷰에서 가장 먼저 확인할 지점이 된다.
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>서버 세션 관리의 실제</strong> — 세션 저장소 선택, 만료 정책, 여러 서버 간 공유 설계는 <a href="C4 서버 세션 관리.html">C4</a>에서 다룬다. 2절의 "상태를 서버가 진다"가 구체적으로 무엇을 뜻하는지 이어진다.</li>
+  <li><strong>쿠키 보관의 대가 갚기</strong> — <code>HttpOnly</code> 쿠키가 여는 자동 전송 표면(CSRF)과 그 방어(전송 범위 제한 속성, 검증 토큰, 이중 제출)는 <a href="S4 CSRF와 세션 보호.html">S4</a>의 소관이다. 6절 표의 "비용" 칸이 거기서 상환된다.</li>
+  <li><strong>위임 인가로의 확장</strong> — 제3자에게 권한을 위임하는 흐름, 인증과 인가의 분리는 <a href="S7 OAuth2·OIDC 위임 인가.html">S7</a>로 이어진다. 이 문서가 "우리 서비스가 발급한 증명 수단"을 다뤘다면, 그쪽은 "다른 곳이 발급한 것을 어떻게 신뢰하는가"다.</li>
+  <li><strong>기업 환경의 통합 인증</strong> — 여러 서비스가 하나의 인증을 공유하는 구조와 그 표준 흐름은 <a href="C5 SSO와 SAML 인증 흐름.html">C5</a>에서 다룬다.</li>
+  <li><strong>서명·해시의 기초</strong> — 대칭과 비대칭 서명의 차이, 왜 공개 키로 검증이 가능한지는 <a href="S8 암호학 실무 기초.html">S8</a>이 뒷받침한다. 4절의 "알고리즘 강등"이 왜 통하는지가 그 기초에서 설명된다.</li>
+  <li><strong>전송 구간 보호</strong> — 증명 수단은 소지자가 곧 권한자이므로, 전송 중 노출을 막는 것이 전제 조건이다. <a href="S9 TLS·HTTPS 동작.html">S9</a>와 함께 본다.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>HTTP가 기억하지 않으므로 매 요청에 신원을 다시 증명해야 한다 — 갈림길은 <strong>인증 상태를 어디에 두는가</strong>다.</li>
+  <li><strong>세션</strong>: 의미 없는 참조를 주고 서버가 기억한다 → 폐기가 쉽고, 조회 비용과 상태 공유 설계를 지불한다.</li>
+  <li><strong>토큰(JWT)</strong>: 내용을 담은 문서를 주고 서명으로 위조를 막는다 → 조회가 없고 확장이 자유롭지만, 폐기가 어렵고 페이로드가 읽힌다.</li>
+  <li>페이로드는 <strong>인코딩일 뿐 암호화가 아니다</strong>. JWT는 무결성을 보장하고 기밀성은 보장하지 않는다.</li>
+  <li>모든 신뢰가 <strong>서명 검증</strong>에 걸린다. 토큰이 신고한 <code>alg</code>를 믿는 순간 방어가 사라진다 → <strong>허용 알고리즘을 서버가 고정</strong>하고 만료·대상·발급자까지 확인한다.</li>
+  <li>무상태의 대가는 폐기다 → 접근 토큰은 짧게, 갱신 토큰은 서버가 관리하며 <strong>회전 + 재사용 감지</strong>. 즉시 폐기를 위해 상태를 도입하면 무상태의 이점을 그만큼 반납한다.</li>
+  <li>보관 위치는 <a href="S1 프론트엔드 보안 기초.html">S1</a>과 직결 — XSS의 전리품이 바로 이 증명 수단이다. <code>localStorage</code>는 스크립트에 읽히고, <code>HttpOnly</code> 쿠키는 그것을 막는 대신 자동 전송 표면을 연다. 현재 권고는 <strong>접근 토큰은 메모리, 갱신 토큰은 <code>HttpOnly</code> 쿠키</strong>이며, 브라우저에 토큰을 두지 않는 구성도 널리 권장된다.</li>
+  <li>"어느 쪽이 우월한가"가 아니라 <strong>"어떤 비용을 지불할 수 있는가"</strong>가 판단 기준이다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="S1 프론트엔드 보안 기초.html">S1 프론트엔드 보안 기초.html</a> — XSS와 출력 이스케이프, CSP. 이 문서의 6절과 한 사건의 양면: XSS가 노리는 물건이 여기서 다룬 토큰·세션 ID다</li>
+  <li><a href="S7 OAuth2·OIDC 위임 인가.html">S7 OAuth2·OIDC 위임 인가.html</a> — 후속 문서: 제3자 위임 인가 흐름과 인증·인가의 분리. "다른 곳이 발급한 증명 수단을 어떻게 신뢰하는가"</li>
+</ul>
+
+</body>
+</html>

@@ -80,7 +80,7 @@
   <li>클래스 내부의 <code>new</code>는 그 구현체와의 <strong>영구 결합 선언</strong>이다 — 교체 불가, 대체 불가. DI는 이 결합을 "인터페이스로 받는 자리"로 바꿔 <strong>갈아 끼울 수 있는 틈(seam)</strong>을 만든다.</li>
   <li>그 틈의 최대 수혜자가 <strong>테스트</strong>다: 진짜 DB·메일 서버 대신 <strong>가짜(mock) 객체를 주입</strong>하면, 외부 세계 없이 내 로직만 빠르고 결정적으로 검증할 수 있다.</li>
   <li>주입 방식은 <strong>생성자 주입</strong>을 기본으로 한다 — 필수 의존성이 시그니처에 드러나고, 주입 없이는 객체가 만들어질 수조차 없기 때문이다. setter 주입은 "선택적·교체 가능" 의존성에 한정한 보조 수단이다.</li>
-  <li>DI는 <strong>프레임워크가 아니라 설계 기법</strong>이다. Spring 없이 <code>new OrderService(new EmailSender())</code>라고 손으로 조립해도 DI다. 프레임워크(DI 컨테이너)는 그 조립을 자동화해 줄 뿐이다.</li>
+  <li>DI는 <strong>프레임워크가 아니라 설계 기법</strong>이다. Spring 없이 <code>new OrderService(new EmailSender())</code>라고 손으로 조립해도 DI다. DI 컨테이너는 그 조립을 자동화해 줄 뿐이다.</li>
   <li>실무 감각: "이 클래스, 테스트하기 어렵네"라는 느낌은 대개 <strong>숨은 의존성(내부 <code>new</code>, 전역 접근)의 냄새</strong>다. 테스트 용이성은 설계 품질의 리트머스지다.</li>
 </ul>
 
@@ -219,7 +219,7 @@ DI 없는 1절의 코드로 같은 테스트를 시도해 보면, 가짜를 <em>
 <h2>5. DI 컨테이너 — 수동 조립의 자동화, 그 이상도 이하도 아니다</h2>
 <p>
 2절에서 "생성과 조립"을 클래스 밖으로 밀어냈지만, 그 노동이 사라진 것은 아니다 — 조립자의 손으로 이동했을 뿐이다. 객체가 수십 개로 늘면 <code>new A(new B(new C(...)))</code>식 수동 조립이 번거로워진다.
-<strong>DI 컨테이너(DI container)</strong>는 이 조립을 대신해 주는 도구다: 클래스들을 등록해 두면, 컨테이너가 생성자 시그니처를 보고 <strong>필요한 의존성을 찾아 자동으로 꽂아서</strong> 객체를 만들어 준다. Java 진영의 Spring이 대표적이다.
+<strong>DI 컨테이너</strong>는 이 조립을 대신해 주는 도구다: 클래스들을 등록해 두면, 컨테이너가 생성자 시그니처를 보고 <strong>필요한 의존성을 찾아 자동으로 꽂아서</strong> 객체를 만들어 준다. Java 진영의 Spring이 대표적이다.
 </p>
 <blockquote class="info">
 <p><strong>순서를 바로잡자:</strong> "Spring을 쓰니까 DI를 한다"가 아니라, <strong>DI라는 설계 기법이 먼저 있고, 컨테이너는 그 조립 노동을 자동화하는 도구</strong>다. 컨테이너 없이 <code>main</code>에서 손으로 조립해도 완전한 DI이며, 반대로 Spring을 쓰면서도 클래스 내부에서 <code>new</code>를 남발하면 DI의 이점은 사라진다. 프레임워크는 기법을 대신 이해해 주지 않는다.</p>
@@ -269,45 +269,55 @@ DI 없는 1절의 코드로 같은 테스트를 시도해 보면, 가짜를 <em>
   </tr>
 </table>
 
-<h3>7.1 Java — 생성자 주입 + mock 라이브러리의 표준 흐름</h3>
+<h3>7.1 C++ — 주입이 수명·소유권 설계와 결부되는 언어</h3>
 <p>
-현대 Java(Spring 계열)의 표준은 <strong>생성자 주입</strong>이다. 컨테이너가 생성자를 보고 자동으로 조립해 주므로, 코드는 프레임워크 어노테이션 유무와 무관하게 "그냥 생성자로 받는 평범한 클래스"로 유지된다 — 덕분에 <strong>단위 테스트에서는 컨테이너 없이</strong> <code>new OrderService(mock)</code>로 직접 조립하면 된다. 테스트가 컨테이너 기동을 기다릴 필요가 없다는 것은 테스트 속도와 독립성의 결정적 차이를 만든다.
+C++에서 협력자를 구체 타입의 값 멤버로 소유하는 것은 Java의 내부 <code>new</code>와 같은 박제다. 주입의 관용 형태는 두 갈래다: <strong>가상 함수 기반 주입</strong>(추상 클래스 참조/포인터로 받아 런타임에 갈아 끼움)과 <strong>템플릿 파라미터 주입</strong>(갈아 끼울 타입 자체를 컴파일 타임에 끼워 넣는 정적 DI).
 </p>
-<pre><code>@Test
-void 주문_완료시_알림_요청() {
-    NotificationSender mock = mock(NotificationSender.class); // 라이브러리가 가짜를 생성
-    OrderService service = new OrderService(mock);            // 컨테이너 없이 직접 주입
+<pre><code>// ① 런타임 주입 — 추상 클래스 참조로 받는다
+struct NotificationSender {
+    virtual void send(const std::string&amp; to, const std::string&amp; msg) = 0;
+    virtual ~NotificationSender() = default;
+};
 
-    service.completeOrder(order("buyer@example.com"));
+class OrderService {
+    NotificationSender&amp; sender_;              // 소유하지 않고 빌려 쓴다
+public:
+    explicit OrderService(NotificationSender&amp; s) : sender_(s) {}
+};
 
-    verify(mock).send(eq("buyer@example.com"), anyString());  // 상호작용 검증
-}</code></pre>
+// ② 컴파일 타임 주입 — 테스트에서는 OrderServiceT&lt;FakeSender&gt;로 대체
+template &lt;typename Sender&gt;
+class OrderServiceT {
+    Sender sender_;
+public:
+    void complete_order(const Order&amp; o) { sender_.send(o.email(), "완료"); }
+};</code></pre>
 <p>
-<code>Java 관점의 통찰: mock 라이브러리가 가짜를 "만들어 줄 수 있는" 전제 자체가 DI다 — 아무리 정교한 mock도 끼워 넣을 자리(주입 지점)가 없으면 무용지물이다. 반대로 static 메서드 직접 호출은 자리 자체가 없는 대표 사례라 테스트의 오랜 난적이었다. 도구로 우회하는 방법이 없지는 않으나, 우회 도구가 필요하다는 사실 자체를 "설계를 고치라"는 신호로 읽는 쪽이 건강하다.</code>
-</p>
-
-<h3>7.2 JS·TS — <code>import</code>가 곧 하드와이어링인 세계</h3>
-<p>
-JS·TS의 특수성은 <strong>모듈 시스템이 결합 지점</strong>이라는 데 있다. 파일 최상단에서 <code>import { sendEmail } from './emailApi'</code>로 가져와 직접 호출하는 순간, Java의 내부 <code>new</code>와 동일한 박제가 일어난다.
-테스트 러너의 모듈 mock 기능으로 통째로 치환하는 우회로가 있지만, 더 근본적인 처방은 역시 주입이다.
-</p>
-<pre><code>// 하드와이어링: 이 함수는 영원히 진짜 emailApi와만 일한다
-import { sendEmail } from './emailApi'
-export function completeOrder(order) { ...; sendEmail(order.email) }
-
-// 주입형: 협력자를 인자로 받는다 — 테스트에서는 가짜 함수를 전달
-export function completeOrder(order, sendFn = sendEmail) { ...; sendFn(order.email) }</code></pre>
-<p>
-Vue3에서는 이 원리가 두 층위로 나타난다: <strong>props</strong>(부모가 데이터·콜백을 주입 — 컴포넌트를 "받은 것만으로 렌더링하는" 순수한 단위로 유지)와 <strong>provide/inject</strong>(먼 조상이 서비스 객체를 제공 — props를 여러 단계 릴레이하는 대신 쓰는 컨테이너 유사 메커니즘). 컴포넌트 테스트 시 mount 옵션으로 props와 provide에 가짜를 꽂을 수 있게 설계하는 것이, 백엔드의 생성자 주입과 정확히 대응한다.
-</p>
-<p>
-<code>JS·TS 관점의 통찰: 함수형 스타일에서는 "클래스+인터페이스" 없이 함수 인자와 클로저·팩토리만으로 DI가 성립한다. 기본값 인자(sendFn = sendEmail) 패턴은 운영 호출부를 바꾸지 않으면서 테스트에만 틈을 여는 실용 기법 — 다만 기본값이 진짜 구현을 참조하므로 모듈 로드 시점 결합은 남는다는 한계도 함께 알아 두자.</code>
+<code>C++ 관점의 통찰: ①은 가상 호출(어느 구현의 함수를 부를지 런타임에 결정하는 메커니즘) 비용을 치르는 대신 mock 프레임워크와 호환되고, ②는 그 비용이 0인 대신 조합이 컴파일 타임에 굳는다 — 성능 민감 코드가 ②를 선호하는 이유다. 그리고 주입받은 참조는 소유하지 않으므로 "주입된 것이 서비스보다 오래 살아 있어야 한다"는 수명 계약이 따라온다: C++의 DI는 조립 설계인 동시에 소유권 설계다.</code>
 </p>
 
-<h3>7.3 Python / C++ — 한 줄 요약</h3>
+<h3>7.2 Python — 형식 비용이 가장 낮은 대신, 함정도 내장된 언어</h3>
 <p>
-Python은 덕 타이핑 덕분에 인터페이스 선언 없이도 "같은 메서드를 가진 아무 객체"를 주입할 수 있어 DI의 형식 비용이 가장 낮고, 그마저 안 되어 있으면 monkeypatch로 런타임에 강제 치환하는 최후 수단이 있다 — 단, 패치 남용은 숨은 결합을 방치하는 진통제가 되기 쉽다.
-C++은 두 갈래가 있다: 가상 함수 기반 주입(런타임 다형성, mock 프레임워크와 호환)과 <strong>템플릿 파라미터 주입</strong>(컴파일 타임에 가짜 타입을 끼워 넣는 정적 DI — 가상 호출 비용이 없어 성능 민감 코드에서 선호). 어느 쪽이든 "소유를 값으로 박제하지 말고 추상으로 받는다"는 원리는 같다.
+Python은 덕 타이핑(선언된 타입이 아니라 "필요한 메서드를 실제로 가졌는가"로 호환을 판정하는 방식) 덕에 인터페이스 선언 없이도 아무 객체나 주입할 수 있다 — DI의 형식 비용이 가장 낮은 언어다. 관용 형태는 기본값 있는 인자 주입이다.
+</p>
+<pre><code>class FakeSender:                          # 인터페이스 선언 없이 메서드만 맞추면 호환
+    def __init__(self): self.sent = []
+    def send(self, to, msg): self.sent.append(to)
+
+def complete_order(order, sender=None):
+    sender = sender or EmailSender()       # 호출 시점 생성 — 아래 함정의 회피 관용구
+    ...
+    sender.send(order.email, "주문이 완료되었습니다")
+
+complete_order(order, sender=FakeSender())   # 테스트: 키워드로 가짜 주입</code></pre>
+<p>
+<code>Python 관점의 통찰: sender=EmailSender()처럼 기본값 자리에서 직접 생성하면 안 되는 이유가 있다 — 파이썬의 기본값은 함수 정의(모듈 로드) 시점에 단 한 번 평가되므로, 진짜 구현이 import만으로 실체화되고 모든 호출이 그 한 객체를 공유하게 된다. None 기본값 + 함수 안 생성이 표준 회피 관용구다. 주입 자리가 아예 없을 때는 monkeypatch(테스트 중 모듈·객체의 속성을 런타임에 임시 치환하는 기법)라는 최후 수단이 있지만, 패치가 늘어난다는 것은 숨은 결합을 진통제로 덮고 있다는 신호로 읽는 편이 건강하다.</code>
+</p>
+
+<h3>7.3 Java / JS·TS — 한 줄 요약</h3>
+<p>
+Java의 표준은 생성자 주입이다 — 컨테이너가 생성자를 보고 조립해 주면서도 클래스는 "생성자로 받는 평범한 클래스"로 남기 때문에, 단위 테스트에서는 컨테이너 기동 없이 <code>new OrderService(mock)</code>으로 직접 조립한다. mock 라이브러리가 아무리 정교해도 끼워 넣을 자리가 없으면 무용지물이며, <code>static</code> 메서드 직접 호출이 그 "자리 없음"의 대표다 — 우회 도구가 필요해지는 순간을 설계를 고치라는 신호로 읽는다.
+JS·TS에서는 모듈 최상단 <code>import</code> 후 직접 호출이 곧 하드와이어링이다 — 함수 인자·팩토리로 협력자를 전달하는 것이 주입이고, Vue3에서는 props(부모의 주입)와 <code>provide</code>/<code>inject</code>(먼 조상의 주입)가 같은 원리의 두 층위다. 기본값 인자(<code>sendFn = sendEmail</code>) 패턴은 운영 호출부를 바꾸지 않으면서 테스트에만 틈을 열지만, 기본값이 진짜 구현을 참조하므로 모듈 로드 시점 결합은 남는다.
 </p>
 
 <h2>8. 함께 알면 좋은 것</h2>
