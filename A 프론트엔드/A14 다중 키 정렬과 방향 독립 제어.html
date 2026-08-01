@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A14 다중 키 정렬과 방향 독립 제어</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>A14 다중 키 정렬과 방향 독립 제어</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>다중 키 정렬은 "키 하나로 정렬"이 아니라 <strong>키의 우선순위 목록</strong>이다 — 1차 키가 같을 때만 2차 키가 개입한다(사전식 비교).</li>
+  <li><strong>정렬 방향(오름/내림)은 목록 전체의 속성이 아니라 키 하나하나의 속성</strong>이다. SQL이 <code>ORDER BY date DESC, title ASC</code>처럼 키마다 방향을 붙이는 이유다.</li>
+  <li>가장 흔한 오적용: 방향을 뒤집는다며 <strong>결과 리스트를 통째로 역순</strong>으로 만들면 2차 키 순서까지 함께 뒤집힌다. 역순과 방향 토글은 다른 연산이다.</li>
+  <li>UI 규약의 정석은 <strong>"1차 키 방향은 사용자가 토글, 2차 키는 항상 고정"</strong> — 그룹의 순서는 바뀌어도 그룹 내부 순서는 흔들리지 않아야 한다.</li>
+  <li>구현의 정석은 <strong>키별 비교자를 만들어 합성</strong>하는 것 — 방향 반전을 리스트가 아니라 해당 키의 비교자에만 적용한다.</li>
+</ul>
+
+<h2>1. 다중 키 정렬은 "키의 우선순위 목록"이다</h2>
+<p>
+게시판 목록을 "카테고리별로 묶고, 같은 카테고리 안에서는 최신 글부터" 보여준다고 하자. 이것은 정렬 두 번이 아니라
+<strong>정렬 한 번</strong>이다 — 비교 기준이 두 개일 뿐이다. 두 글을 비교할 때 먼저 카테고리를 보고, <strong>카테고리가 같을 때만</strong> 작성일을 본다.
+</p>
+<div class="flow">compare(a, b):
+  1차 키(카테고리) 비교 → 다르면 그 결과가 곧 최종 순서
+                        → 같으면 ↓
+  2차 키(작성일)   비교 → 다르면 그 결과가 최종 순서
+                        → 같으면 ↓ (3차 키 … 없으면 "동순위")</div>
+<p>
+이 방식을 사전식 비교(lexicographic comparison)라 한다. 사전에서 단어를 찾을 때 첫 글자가 같으면 둘째 글자로 넘어가는 것과 같은 구조다.
+핵심 성질은 <strong>하위 키는 상위 키가 동점일 때만 발언권을 얻는다</strong>는 것 — 2차 키가 아무리 크게 달라도 1차 키의 순서를 뒤집을 수 없다.
+그래서 2차 키를 타이브레이커(tie-breaker)라고도 부른다. 동점 상황의 순서까지 명시해 두면 정렬 결과가 실행할 때마다 달라지는 일이 없어지므로,
+다중 키는 "보기 좋은 정렬"을 넘어 <strong>결정적(같은 입력이면 항상 같은 출력) 정렬</strong>을 만드는 장치이기도 하다.
+</p>
+
+<h2>2. 방향은 키마다 붙는 속성이다 — 그리고 "전체 역순"이라는 오적용</h2>
+<p>
+키가 목록이라면, 오름차순/내림차순이라는 <strong>방향은 어디에 붙는 속성일까?</strong> 목록 전체가 아니라 <strong>키 각각</strong>이다.
+"작성일은 최신부터(내림), 같은 날짜면 제목 가나다순(오름)"처럼 키마다 방향이 다른 요구가 자연스럽게 존재하기 때문이다.
+SQL 문법이 이 사실을 정확히 반영한다: <code>ORDER BY created_at DESC, title ASC</code> — 방향이 키 뒤에 하나씩 붙는다.
+</p>
+<p>
+여기서 개념 함정이 생긴다. "작성일 최신순 ↔ 오래된순" 토글 버튼을 구현하면서, 이미 정렬된 결과 리스트를
+<strong>통째로 역순으로 뒤집는</strong> 것이다. 얼핏 같아 보이지만 결과가 다르다:
+</p>
+<table>
+  <tr><th>연산</th><th>1차 키(작성일)</th><th>2차 키(제목)</th><th>결과</th></tr>
+  <tr>
+    <td>1차 키 방향만 반전 (의도)</td>
+    <td>내림 → 오름</td>
+    <td>오름 유지</td>
+    <td>같은 날짜 안에서는 여전히 제목 ㄱ→ㅎ</td>
+  </tr>
+  <tr>
+    <td>리스트 전체 역순 (오적용)</td>
+    <td>내림 → 오름 (겉보기 동일)</td>
+    <td><strong>오름 → 내림 (따라 뒤집힘)</strong></td>
+    <td>같은 날짜 안에서 제목이 ㅎ→ㄱ으로 뒤집힘</td>
+  </tr>
+</table>
+<p>
+전체 역순은 "모든 키의 방향을 일괄 반전"하는 연산이지, "1차 키의 방향만 바꾸는" 연산이 아니다.
+1차 키만 보면 두 결과가 똑같아 보이기 때문에 이 버그는 테스트를 잘 통과한다 — 동점 데이터(같은 날짜의 글 여러 개)가 있을 때만,
+그것도 2차 키를 유심히 봐야만 드러나는 <strong>조용한 오적용</strong>이다. 방향을 뒤집었더니 2차 키까지 함께 뒤집히는 이 현상을
+<strong>방향 전파 오적용</strong>이라 부르기로 하자. 이후 절들은 이 함정을 UX 규약(3절)과 구현(4절) 양쪽에서 어떻게 막는지의 이야기다.
+</p>
+
+<h2>3. UX 규약 — 그룹 토글은 허용, 내부 순서는 고정</h2>
+<p>
+방향이 키마다 독립이라는 원리는 화면의 동작 규약으로 이렇게 번역된다: <strong>사용자가 바꾸는 것은 1차 키(와 그 방향)뿐이고,
+2차 키 이하는 화면이 미리 정해 둔 고정 규칙</strong>이다.
+</p>
+<ul>
+  <li><strong>테이블 헤더 클릭</strong> — 클릭한 컬럼이 1차 키가 되고, 다시 클릭하면 그 키의 방향만 토글된다. 이때 동점을 정리하는 2차 키(예: 등록순, ID순)는 방향 토글에 <strong>영향받지 않고 항상 같은 방향</strong>이어야 한다. 그래야 사용자는 "정렬 기준을 바꿨는데 왜 같은 날짜 글들의 순서까지 출렁이지?"라는 혼란을 겪지 않는다.</li>
+  <li><strong>그룹이 있는 목록</strong> — 카테고리로 묶인 목록에서 "그룹 순서 토글"(카테고리 ㄱ→ㅎ ↔ ㅎ→ㄱ)은 1차 키 방향 반전이다. 이때 <strong>그룹 내부의 정렬(최신순)은 고정</strong>되어야 한다. 그룹 토글이 내부 순서까지 뒤집으면, 사용자 입장에서는 "카테고리 순서만 바꿨는데 각 카테고리 안의 글 순서가 갑자기 오래된순"이 되는 — 2절의 방향 전파 오적용을 화면에서 그대로 목격하게 된다.</li>
+</ul>
+<blockquote class="info">
+<p><strong>규약의 본질:</strong> 2차 키는 사용자에게 "정렬 옵션"이 아니라 <strong>화면의 일관성 보장</strong>이다.
+사용자가 무엇을 토글하든 동점 처리 규칙이 흔들리지 않아야, 정렬 상태가 몇 가지든 화면이 예측 가능하게 유지된다.</p>
+</blockquote>
+
+<h2>4. 구현 — 비교자 합성과 "반전의 적용 범위"</h2>
+<p>
+이 규약을 코드로 옮기는 정석은 비교자(comparator — 두 원소를 받아 순서를 판정하는 함수) 합성이다.
+키마다 작은 비교자를 만들고, "1차로 이것, 동점이면 2차로 저것" 순서로 이어 붙인다. 그러면 <strong>방향 반전을 정확히 필요한 키의 비교자에만</strong> 적용할 수 있다.
+</p>
+<pre><code>// 언어 중립 의사코드 — 방향은 "키 비교자 단위"로만 반전한다
+byDate    = (a, b) =&gt; compare(a.createdAt, b.createdAt)
+byTitle   = (a, b) =&gt; compare(a.title, b.title)
+descending = (cmp) =&gt; (a, b) =&gt; cmp(b, a)          // 비교자 하나를 반전
+
+// 사용자가 고른 1차 키 방향(dir)은 1차 비교자에만 적용, 2차 키는 항상 고정
+primary  = (dir == "desc") ? descending(byDate) : byDate
+sortKey  = combine(primary, byTitle)                // 동점일 때만 byTitle로
+list.sort(sortKey)                                  // 전체 reverse()는 등장하지 않는다</code></pre>
+<p>
+반전 연산이 <code>descending(byDate)</code>처럼 <strong>키 하나의 비교자</strong>를 감싸는 데만 쓰이고, 완성된 합성 비교자나 결과 리스트에는
+결코 적용되지 않는다는 점이 전부다. 합성 전체를 반전하거나 리스트를 뒤집는 순간, 2절의 오적용이 코드에 들어온다.
+같은 원리로, 정렬을 파생 단계의 하나로 두는 화면(원본 배열은 불변으로 두고 필터→정렬→그룹 순서로 계산)에서는
+"방향 상태가 바뀌면 비교자를 새로 합성해 다시 정렬"이 자연스러운 구조가 된다 — 이 파이프라인 관점은
+<a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a>에서 다룬다.
+</p>
+
+<h2>5. SQL의 다중 방향 — 표준 문법과 방언 차이</h2>
+<p>
+프론트가 비교자를 합성해 풀던 문제를, SQL은 처음부터 문법으로 지원한다. 방향이 키마다 붙는다는 원리가 표준 문법 그 자체다:
+</p>
+<pre><code>-- 키마다 방향이 독립 — 표준 SQL, 모든 주요 DB 공통
+SELECT id, category, created_at, title
+FROM   post
+ORDER  BY category ASC, created_at DESC, title ASC;
+
+-- Oracle·PostgreSQL: NULL의 위치까지 키별로 독립 제어 가능
+ORDER  BY created_at DESC NULLS LAST;</code></pre>
+<p>
+다만 <strong>NULL이 어디에 정렬되는가</strong>는 방언 차이가 있다. Oracle은 NULL을 가장 큰 값처럼 취급해 <strong>오름차순에서 NULL이 마지막</strong>에 오고
+(내림차순이면 처음), 이를 바꾸는 <code>NULLS FIRST / NULLS LAST</code> 구문을 지원한다. PostgreSQL도 같은 기본값과 구문을 쓴다.
+반면 MySQL·SQL Server는 NULL을 가장 작은 값처럼 취급해 <strong>오름차순에서 NULL이 먼저</strong> 오며, <code>NULLS LAST</code> 구문이 없어
+<code>ORDER BY col IS NULL, col</code> 같은 표현식 우회를 쓴다. 즉 같은 <code>ORDER BY created_at ASC</code>라도 DB를 옮기면 NULL 행의 위치가 달라질 수 있으므로,
+NULL이 섞이는 컬럼의 정렬은 <strong>위치를 명시적으로 지정</strong>하는 것이 이식성 있는 습관이다.
+</p>
+<p>
+방향 독립이 비용과 만나는 지점도 SQL에 있다. 복합 인덱스 <code>(category ASC, created_at ASC)</code>는
+<code>ORDER BY category DESC, created_at DESC</code>(전 키 일괄 반전)는 역방향 스캔으로 처리할 수 있지만,
+<code>ORDER BY category ASC, created_at DESC</code>(키별로 방향이 다름)는 처리하지 못해 별도 정렬 작업이 발생한다 —
+키별 방향을 살리려면 인덱스 정의에도 <code>(category ASC, created_at DESC)</code>처럼 방향을 새겨야 한다.
+"일괄 반전은 공짜, 독립 방향은 설계가 필요"한 셈이다. 자세한 원리는 <a href="../E 데이터베이스(응용+이론)/E1 인덱스 원리와 복합 인덱스.html">E1 인덱스 원리와 복합 인덱스.html</a> 참고.
+</p>
+
+<h2>6. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "역순 = 내림차순 토글"?</strong> — 전체 역순은 <em>모든 키</em>의 방향을 일괄 반전하는 연산이다. 1차 키만 보면 같아 보여서 리뷰·테스트를 잘 통과하고, 동점 데이터가 쌓인 뒤에야 2차 키가 뒤집힌 채 드러난다. 방향 토글은 반드시 해당 키의 비교자에만 적용한다.</p>
+<p><strong>② "숫자니까 <code>a - b</code>로 비교하면 된다"?</strong> — 뺄셈 비교자는 정수 오버플로(큰 음수 − 큰 양수), 부동소수점 오차, NaN에서 순서 공리를 깨뜨릴 수 있다. 언어가 제공하는 비교 유틸리티나 명시적 대소 비교(<code>a &lt; b ? -1 : a &gt; b ? 1 : 0</code>)를 쓰는 것이 안전하다.</p>
+<p><strong>③ "동점은 원래 순서가 유지되겠지"?</strong> — 그것은 안정 정렬(stable sort — 비교 결과가 동점인 원소들의 기존 상대 순서를 보존하는 정렬)일 때만 참이고, 안정성 보장은 언어·API마다 다르다. 동점 순서가 화면 요구사항이라면 안정성에 기대지 말고 그 기준을 <em>명시적인 마지막 키</em>로 넣는 것이 이식성 있다.</p>
+<p><strong>④ "방향을 반전하면 NULL 위치도 알아서 따라온다"?</strong> — 대개 "NULL(값 없음)은 방향과 무관하게 항상 맨 아래" 같은 요구가 많다. 비교자 부호를 통째로 반전하면 NULL 처리까지 뒤집혀 값 없는 행이 맨 위로 떠오른다. NULL 배치는 방향과 <em>독립된 규칙</em>으로 분리해 두어야 한다(SQL의 <code>NULLS LAST</code>가 방향과 별도 구문인 이유).</p>
+</blockquote>
+
+<h2>★ 7. 언어별 대조</h2>
+<p>
+"키별 비교자 합성 + 반전은 키 단위"라는 원리는 같지만, 언어마다 <strong>합성 도구·안정성 보장·반전의 함정 지점</strong>이 다르다.
+</p>
+<table>
+  <tr><th>언어</th><th>합성 도구</th><th>기본 정렬의 안정성</th><th>방향 반전의 함정</th></tr>
+  <tr>
+    <td>Java</td>
+    <td><code>Comparator.comparing().thenComparing()</code></td>
+    <td>객체 정렬은 안정(TimSort)</td>
+    <td><code>reversed()</code>를 어디에 거는가에 따라 반전 범위가 달라짐</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>비교 함수 직접 합성(<code>||</code> 관용구)</td>
+    <td>ES2019부터 안정성 표준 보장</td>
+    <td><code>sort()</code>가 원본 파괴 + 기본 비교가 문자열 변환</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td><code>key=</code> 튜플 (비교자 없이 키 추출)</td>
+    <td>안정(Timsort) — 언어 차원 보장</td>
+    <td><code>reverse=True</code>가 <em>전 키 일괄 반전</em> — 오적용의 언어 기능판</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td><code>std::tie</code> 튜플 비교 관용구</td>
+    <td><code>std::sort</code>는 불안정, <code>std::stable_sort</code> 별도</td>
+    <td>비교자가 엄격 약순서를 깨면 미정의 동작(크래시 가능)</td>
+  </tr>
+</table>
+
+<h3>7.1 Java — 합성은 우아하지만 <code>reversed()</code>의 적용 범위가 함정</h3>
+<p>
+Java는 비교자 합성이 표준 API로 정착된 언어다. <code>Comparator.comparing(키추출함수)</code>로 키 비교자를 만들고
+<code>thenComparing</code>으로 잇는다. 함정은 <code>reversed()</code>가 <strong>자기가 호출된 비교자 전체</strong>를 반전한다는 것 —
+합성이 끝난 뒤에 걸면 2차 키까지 함께 뒤집힌다. 방향 전파 오적용이 메서드 체이닝 위치 하나로 재현되는 셈이다.
+</p>
+<pre><code>// 오적용: 합성 전체에 reversed() — 제목 순서까지 뒤집힌다
+Comparator&lt;Post&gt; wrong = Comparator.comparing(Post::createdAt)
+                                   .thenComparing(Post::title)
+                                   .reversed();
+
+// 의도: 1차 키에만 반전 — 반전을 "합성 전에, 키 단위로"
+Comparator&lt;Post&gt; right = Comparator.comparing(Post::createdAt).reversed()
+                                   .thenComparing(Post::title);
+
+// NULL 배치는 방향과 독립 규칙으로 — nullsLast로 감싼다
+Comparator&lt;Post&gt; nullSafe =
+    Comparator.comparing(Post::createdAt,
+                         Comparator.nullsLast(Comparator.reverseOrder()))
+              .thenComparing(Post::title);</code></pre>
+<p>
+<code>Java 관점의 통찰: 컬렉션 객체 정렬(List.sort 등)은 TimSort로 안정성이 보장되지만, 원시 타입 배열(int[] 등)의 Arrays.sort는 불안정한 이중 피벗 퀵정렬이다 — "Java 정렬은 안정"이라고 일반화하면 박싱 여부에 따라 어긋난다. 또 comparing의 키 추출은 박싱·메서드 참조 호출을 동반하므로, JIT가 인라인하기 전 대량 정렬에서는 키 추출 비용 자체가 보이기도 한다.</code>
+</p>
+
+<h3>7.2 JS·TS — 합성 유틸이 없어 직접 조립하는 언어, 기본값의 함정</h3>
+<p>
+JavaScript의 <code>Array.prototype.sort</code>는 비교 함수 하나만 받으므로, 다중 키는 <strong>"앞 키 결과가 0(동점)일 때만 다음 키"</strong>를
+<code>||</code> 연산자로 직접 조립하는 관용구를 쓴다(0은 falsy이므로 동점일 때만 다음 항이 평가된다).
+기본값의 함정이 둘 있다: 비교 함수를 생략하면 <strong>원소를 문자열로 바꿔 비교</strong>하므로 <code>[10, 2, 1]</code>이 <code>[1, 10, 2]</code>가 되고,
+<code>sort()</code>는 <strong>원본 배열을 제자리에서 바꾼다</strong> — 프레임워크의 반응형 상태를 정렬 표시 목적으로 건드리면 파생 계산이 원본을 오염시킨다.
+2020년대 중반 기준으로는 원본을 보존하는 <code>toSorted()</code>가 표준에 들어와(2023년 표준화) 이 용도로 권장된다.
+</p>
+<pre><code>const dir = sortDesc ? -1 : 1;               // 사용자가 토글하는 것은 1차 키 방향뿐
+
+const sorted = posts.toSorted((a, b) =&gt;
+  dir * (a.createdAt - b.createdAt)          // 1차 키: 방향 계수는 여기에만
+  || a.title.localeCompare(b.title, "ko")    // 2차 키: 항상 고정 (동점일 때만 평가)
+);</code></pre>
+<p>
+<code>JS·TS 관점의 통찰: 정렬 안정성은 ES2019에서야 명세에 들어왔다 — 그 이전 엔진은 배열 길이에 따라 알고리즘을 바꿔 안정성이 달라지기도 했다. TypeScript는 비교 함수의 반환 타입(number)만 검사할 뿐 "동점=0" 계약이나 순서 공리는 검사하지 못하므로, 비교 함수의 정합성은 여전히 테스트의 몫이다. 한국어 제목 정렬은 localeCompare 또는 Intl.Collator를 써야 코드 포인트 순이 아닌 사전 순이 된다.</code>
+</p>
+
+<h3>7.3 Python — 비교자 대신 키 튜플, 그리고 <code>reverse=True</code>라는 양날</h3>
+<p>
+Python의 <code>sorted</code>는 비교 함수 대신 <strong>키 추출 함수</strong>를 받고, 키로 튜플을 돌려주면 튜플의 사전식 비교가 곧 다중 키 정렬이 된다.
+문제는 방향이다. <code>reverse=True</code>는 <strong>모든 키를 일괄 반전</strong>하므로, 정확히 2절의 방향 전파 오적용을 언어 기능으로 제공하는 셈이다.
+키별 독립 방향은 (1) 숫자 키라면 부호 반전, (2) 일반 키라면 <strong>안정 정렬을 이용한 다단계 정렬</strong>(하위 키부터 정렬하고 상위 키로 다시 정렬 —
+안정성이 하위 키 순서를 보존해 준다)로 푼다.
+</p>
+<pre><code>posts.sort(key=lambda p: (p.category, p.created_at))   # 튜플 = 다중 키
+
+# 함정: 1차 키만 내림차순이 필요한데 reverse=True는 전부 뒤집는다
+sorted(posts, key=lambda p: (p.created_at, p.title), reverse=True)  # 제목까지 역순!
+
+# 해법 1 — 숫자·날짜형 키는 부호 반전으로 그 키만 뒤집기
+sorted(posts, key=lambda p: (-p.created_at.timestamp(), p.title))
+
+# 해법 2 — 문자열 키 등: 안정 정렬 2단계 (하위 키 먼저, 상위 키 나중)
+posts.sort(key=lambda p: p.title)                       # 2차 키 (고정)
+posts.sort(key=lambda p: p.created_at, reverse=True)    # 1차 키만 원하는 방향</code></pre>
+<p>
+<code>Python 관점의 통찰: Timsort의 안정성은 CPython의 구현 세부가 아니라 언어 명세 수준의 보장이라, 위의 2단계 정렬 관용구가 이식성 있게 성립한다. 옛 스타일 비교 함수를 써야 하면 functools.cmp_to_key로 감싸는데, 이는 원소마다 래퍼 객체를 만들어 비교를 위임하므로 키 튜플 방식보다 느리다 — "키 추출은 원소당 1회, 비교는 O(n log n)회"라는 비용 구조 차이가 key= 설계의 이유다.</code>
+</p>
+
+<h3>7.4 C++ — <code>std::tie</code> 관용구와, 비교자가 지켜야 할 순서 공리</h3>
+<p>
+C++에서 다중 키 비교의 관용구는 <code>std::tie</code>다 — 멤버들을 참조 튜플로 묶으면 튜플의 사전식 <code>&lt;</code> 비교를 그대로 얻는다.
+방향 독립은 튜플 안에서 해당 키만 자리를 바꾸거나(내림차순 키는 <code>b</code> 쪽을 먼저), 키 단위 비교식을 직접 쓴다.
+C++ 특유의 위험은 비교자의 <strong>정합성 요구가 계약 수준이 아니라 미정의 동작 경계</strong>라는 점이다:
+<code>std::sort</code>의 비교자는 엄격 약순서(strict weak ordering — 비반사성·비대칭성·추이성을 갖춘 "진짜 미만" 관계)를 만족해야 하며,
+<code>&lt;=</code>를 쓰거나 방향 반전을 어설프게 섞어 공리를 깨면 정렬이 틀리는 정도가 아니라 <strong>범위 밖 접근으로 크래시</strong>할 수 있다.
+</p>
+<pre><code>std::sort(posts.begin(), posts.end(),
+    [desc](const Post&amp; a, const Post&amp; b) {
+        if (a.created_at != b.created_at)              // 1차 키: 방향은 여기에만
+            return desc ? b.created_at &lt; a.created_at
+                        : a.created_at &lt; b.created_at;
+        return a.title &lt; b.title;                      // 2차 키: 항상 고정
+    });
+
+// 전 키 같은 방향이면 tie 관용구가 가장 간결
+std::sort(posts.begin(), posts.end(), [](const Post&amp; a, const Post&amp; b) {
+    return std::tie(a.category, a.created_at) &lt; std::tie(b.category, b.created_at);
+});</code></pre>
+<p>
+<code>C++ 관점의 통찰: std::sort는 안정성을 보장하지 않으므로 동점 보존이 요구라면 std::stable_sort를 써야 하는데, 후자는 추가 메모리를 쓰는 병합 계열이라 트레이드오프가 있다. std::tie가 참조 튜플이라 복사가 없다는 점, 비교자가 인라인되기 쉬운 람다일 때 함수 포인터보다 빠르다는 점은 "비교 한 번의 비용 × O(n log n)"이 체감되는 C++다운 관심사다.</code>
+</p>
+
+<h2>8. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>안정 정렬의 활용</strong> — 안정성은 "동점 보존" 그 자체로도 요구사항이지만, Python 절에서 본 것처럼 <em>다단계 정렬로 키별 방향을 합성하는 도구</em>가 되기도 한다. 자신이 쓰는 API의 안정성 보장 여부를 확인하는 습관이 먼저다.</li>
+  <li><strong>로케일 정렬(collation)</strong> — 문자열 키의 "사전 순"은 언어권마다 다르다. 코드 포인트 비교와 사전 순 비교의 차이, <code>Intl.Collator</code>·DB collation 설정이 정렬 결과를 바꾸는 지점을 알아두면 "브라우저와 DB의 정렬이 다른" 현상을 설명할 수 있다.</li>
+  <li><strong>복합 인덱스와 정렬 방향</strong> — 5절에서 본 대로, 키별 방향 요구는 인덱스 설계에까지 전파된다. leading column 원리와 함께 보면 "정렬 요구가 곧 인덱스 요구"임이 보인다.</li>
+  <li><strong>서버 정렬 vs 클라이언트 정렬</strong> — 페이지네이션이 있으면 정렬은 반드시 서버(SQL)가 해야 한다. 한 페이지만 받은 클라이언트가 재정렬하면 "페이지 안에서만 정렬된" 화면이 된다. 정렬 기준·방향을 쿼리 파라미터로 내려보내는 API 설계와 연결되는 지점.</li>
+  <li><strong>정렬 상태의 URL 동기화</strong> — 1차 키와 방향을 URL 쿼리에 실으면 새로고침·공유에도 정렬 상태가 보존된다. "정렬 상태도 상태"라는 관점에서, 파생 계산 파이프라인의 입력으로 다루는 설계가 깔끔하다.</li>
+</ul>
+
+<h2>9. 한 장 요약</h2>
+<ul>
+  <li>다중 키 정렬 = 사전식 비교. 하위 키는 상위 키 동점일 때만 발언권을 갖고, 마지막 키까지 명시하면 정렬이 결정적이 된다.</li>
+  <li>방향은 <strong>키의 속성</strong>이다. "전체 역순"은 모든 키를 일괄 반전하는 다른 연산 — 1차 키만 봐서는 구분이 안 되므로 조용히 스며드는 오적용이다.</li>
+  <li>UX 규약: 사용자가 토글하는 것은 1차 키(그룹)의 방향뿐, 2차 키(내부 순서)는 항상 고정 — 화면 일관성의 보장 장치다.</li>
+  <li>구현: 키별 비교자를 합성하고, 반전은 해당 키의 비교자에만. Java는 <code>reversed()</code> 위치, Python은 <code>reverse=True</code>의 일괄성, C++는 순서 공리가 각각의 함정.</li>
+  <li>SQL은 키별 방향이 표준 문법이지만 NULL 위치는 방언(Oracle·PostgreSQL은 ASC에서 마지막 + <code>NULLS FIRST/LAST</code> 지원, MySQL·SQL Server는 반대 기본값에 구문 없음) — NULL 배치는 명시가 이식성 있다.</li>
+  <li>키별 독립 방향은 인덱스 설계까지 전파된다: 일괄 반전은 역스캔으로 공짜, 독립 방향은 인덱스에 방향을 새겨야 한다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a> — 정렬을 불변 원본 위의 파생 단계로 두는 구조. 방향 상태가 바뀌면 비교자를 다시 합성해 재계산하는 틀.</li>
+  <li><a href="../E 데이터베이스(응용+이론)/E1 인덱스 원리와 복합 인덱스.html">E1 인덱스 원리와 복합 인덱스.html</a> — ORDER BY를 인덱스가 대신 처리하는 조건과 키별 방향이 인덱스 정의에 새겨져야 하는 이유.</li>
+</ul>
+
+</body>
+</html>
