@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M4 정적 자산 캐싱과 무효화</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>M4 정적 자산 캐싱과 무효화</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>"배포했는데 사용자에겐 옛 화면"의 뿌리: 배포는 <strong>서버의 파일</strong>을 바꾸지만, 이미 나눠 준 <strong>사용자 브라우저 캐시는 서버 권한 밖</strong>이다 — 준 것을 소급 회수하는 프로토콜은 없다.</li>
+  <li>그래서 현대의 답은 "캐시를 지우는 것"이 아니라 <strong>무효화가 필요 없는 이름</strong>을 만드는 것 — 파일 내용의 해시를 파일명에 박는 <strong>콘텐츠 해시 지문(fingerprint)</strong>이다. 내용이 바뀌면 이름(URL)이 바뀌므로, 새 배포는 캐시와 경합하지 않는다.</li>
+  <li>지문 체계의 성립 조건이자 최대 함정: <strong>진입점(HTML)은 지문을 못 단다</strong>(사용자가 치는 주소라 이름이 고정). 따라서 정책은 두 부류로 갈라야 한다 — <strong>지문 자산은 "1년 + immutable", HTML은 "no-cache(매번 재검증)"</strong>.</li>
+  <li>캐시는 한 겹이 아니다 — 브라우저(사적 캐시)와 CDN(공유 캐시)이 겹쳐 있고, CDN은 지울 수(purge) 있지만 브라우저는 못 지운다. 두 층을 구분해야 "어디의 옛 것인가"를 진단할 수 있다.</li>
+  <li>파일이 어떤 경로로 서빙되는가는 <a href="../O 운영·인프라·디버깅/O2 정적 파일 서빙 모델.html">O2 정적 파일 서빙 모델.html</a>의 소관 — 이 문서는 O2가 위임한 <strong>캐싱·무효화 정책</strong>을 다룬다(데이터 캐싱 전반의 전략은 Q3).</li>
+</ul>
+
+<h2>1. 문제의 구조 — 배포는 서버를 바꾸고, 캐시는 남는다</h2>
+<p>
+금요일에 CSS를 고쳐 배포했는데, 월요일에도 일부 사용자 화면이 옛 디자인이라고 하자. 서버를 확인하면 새 파일이 맞다.
+무슨 일이 벌어진 걸까 — 이 사건을 이해하려면 HTTP 캐시의 근본 계약부터 봐야 한다.
+</p>
+<p>
+브라우저 캐시는 성능의 주춧돌이다. 서버가 응답에 <code>Cache-Control: max-age=86400</code>을 실으면 "이 응답은 24시간 동안
+신선하다"는 뜻이고, 브라우저는 그동안 같은 URL을 <strong>네트워크에 묻지 않고</strong> 저장본으로 답한다. 재방문이 빠른 이유이자,
+서버 부하가 견딜 만한 이유다. 그런데 이 계약을 서버 입장에서 다시 읽으면 서늘한 조항이 보인다:
+<strong>일단 내보낸 응답의 유효기간을 소급해서 줄일 방법이 없다.</strong> "아까 준 그 파일, 취소!"라는 메시지를 보낼 채널 자체가
+존재하지 않는다 — 브라우저는 신선한 캐시가 있는 동안 서버에 접속조차 안 하기 때문이다.
+</p>
+<div class="flow">금요일: 브라우저가 style.css 수신 (max-age=86400… 이 아니라 30일이었다면)
+        → 30일간 "style.css는 물어볼 필요 없음"이 사용자 기기에 확정
+배포:   서버의 style.css 교체 — 그러나 이미 배포된 계약은 서버 밖에 있다
+월요일: 브라우저, 여전히 저장본 사용 (서버는 요청을 받아 보지도 못한다)</div>
+<p>
+즉 "배포했는데 옛 화면"은 버그가 아니라 <strong>서버가 과거에 서명한 계약이 이행되고 있는 것</strong>이다. 캐시 기간을 짧게 잡으면
+문제는 줄지만 캐시의 이득도 같이 준다 — 매번 재검증하면 왜 캐시를 하는가. 이 딜레마(길게 캐시하고 싶다 ↔ 즉시 갱신하고 싶다)를
+정면으로 푸는 발상 전환이 다음 절이다.
+</p>
+
+<h2>2. 해시 지문 — 무효화가 필요 없는 이름</h2>
+<p>
+딜레마의 원인을 정확히 짚으면: <strong>같은 URL이 다른 내용을 가리키게 되기 때문</strong>이다. <code>style.css</code>라는 이름이
+금요일엔 옛 내용, 배포 후엔 새 내용을 가리키니 "그 이름의 캐시"가 낡는다. 그렇다면 — 이름이 내용마다 다르면 어떤가?
+</p>
+<p>
+콘텐츠 해시 지문이 그 답이다. 빌드가 파일 내용의 해시를 계산해 파일명에 박는다: <code>style-e3a1f9.css</code>.
+내용을 한 글자라도 고치면 해시가 바뀌므로 <strong>새 파일은 새 이름(새 URL)</strong>으로 나간다. 이제 배포는 캐시와 싸우지 않는다 —
+새 HTML이 <code>style-b7d244.css</code>를 참조하는 순간, 그 URL은 어느 캐시에도 없으니 반드시 서버로 온다.
+옛 <code>style-e3a1f9.css</code>의 캐시는? <strong>아무도 더는 그 이름을 부르지 않으므로</strong> 무해하게 방치되다 만료·축출로
+자연 소멸한다. "무효화"라는 동작 자체가 필요 없어진 것이다.
+</p>
+<p>
+이름이 내용을 보증하게 되면 캐시 정책을 극단까지 밀 수 있다. 그 이름의 내용은 <strong>정의상 영원히 그 내용</strong>이므로:
+</p>
+<pre><code># 지문 자산의 표준 헤더 (2020년대 중반 기준 표준 관행)
+Cache-Control: public, max-age=31536000, immutable
+# max-age=1년: 사실상 무기한 캐시
+# immutable: "신선한 동안엔 재검증 요청도 보내지 마라" — 새로고침 시의
+#            조건부 요청(304 왕복)마저 없앤다. 지문 자산에만 안전한 선언.</code></pre>
+<p>
+<code>immutable</code>은 이 체계의 마침표다 — 사용자가 새로고침을 눌러도 브라우저가 "혹시 바뀌었나요?" 재검증조차 보내지 않게
+한다. 내용이 바뀌면 이름이 바뀐다는 보증이 있을 때만 안전한 선언이므로, <strong>지문 없는 파일에 붙이면 안 된다</strong>.
+덧붙여, 지문을 쿼리스트링으로 다는 구식 변형(<code>style.css?v=42</code>)은 피하는 것이 현행 관행이다 — 일부 CDN·프록시가
+캐시 키에서 쿼리스트링을 무시하도록 설정되어 있어 버전이 다른데 같은 캐시를 맞는 사고가 나기 때문이다.
+<strong>지문은 경로(파일명)에 넣는다.</strong>
+</p>
+
+<h2>3. 지문을 달 수 없는 파일 — 진입점의 캐시 정책</h2>
+<p>
+2절만 보면 문제가 다 풀린 것 같지만, 체계에는 자기 자신을 지탱하지 못하는 지점이 하나 있다. 새 지문 이름
+<code>style-b7d244.css</code>를 사용자는 어떻게 알게 되는가? <strong>HTML이 참조해 준다.</strong> 그러면 그 HTML은?
+<code>index.html</code>·<code>/orders</code> 같은 진입점 URL은 사용자가 치고 북마크하는 <strong>고정된 이름</strong>이라 지문을 달 수 없다.
+즉 지문 체계 전체가 <strong>"진입점은 항상 최신"이라는 전제</strong> 위에 서 있고, 그 전제는 지문이 아닌 다른 수단으로 지켜야 한다.
+</p>
+<blockquote class="warn">
+<p><strong>개념 함정 — "정적 자산 캐싱"을 한 정책으로 묶는 것:</strong> "배포했는데 옛 화면"의 실전 원인 1위가 바로
+<strong>HTML에 긴 캐시를 준 것</strong>이다. 자산에 지문이 완벽해도, 옛 HTML이 캐시에 살아 있으면 사용자는 옛 지문 목록 —
+즉 옛 화면 전체 — 을 계속 본다. 반대 방향의 사고도 있다: HTML은 매번 오는데 <strong>자산에 지문이 없으면</strong>(이름 고정
+<code>logo.png</code>) 그 자산만 옛것이 섞인다. 진단 순서는 그래서 "HTML이 최신인가 → HTML이 참조하는 이름에 지문이 있는가"다.</p>
+</blockquote>
+<p>
+표준 배치는 이렇게 정리된다:
+</p>
+<table>
+  <tr><th>부류</th><th>예</th><th>정책</th><th>이유</th></tr>
+  <tr><td><strong>진입점</strong></td><td>HTML, SPA의 index.html</td><td><code>no-cache</code> (저장은 하되 <strong>매번 재검증</strong>)</td><td>이름 고정 — 최신성 보증은 재검증(304)으로</td></tr>
+  <tr><td><strong>지문 자산</strong></td><td><code>app-a1b2c3.js</code>, <code>style-e3a1f9.css</code>, 해시 폰트·이미지</td><td><code>public, max-age=31536000, immutable</code></td><td>이름 = 내용 보증 — 무기한 캐시 안전</td></tr>
+  <tr><td><strong>이름 고정 자산</strong></td><td><code>favicon.ico</code>, <code>robots.txt</code>, 외부가 경로를 요구하는 파일</td><td>짧은 <code>max-age</code>(수 분~수 시간) + 재검증</td><td>지문 불가·갱신 빈도 낮음 — 지연 허용선에서 절충</td></tr>
+</table>
+<p>
+<code>no-cache</code>가 "캐시 금지"가 아니라는 점은 짚을 가치가 있다 — 저장은 허용하되 <strong>사용 전에 반드시 서버에 재검증</strong>
+하라는 뜻이다(진짜 저장 금지는 <code>no-store</code>). 재검증은 조건부 요청(ETag·수정 시각 비교)으로 이루어져, 안 바뀌었으면
+본문 없는 <code>304 Not Modified</code>만 오간다 — HTML은 "왕복 1회는 지불하되 본문 전송은 아끼는" 위치에 서는 것이다.
+이렇게 두 부류의 정책이 갈라지고 나면, 남는 질문은 "그 헤더를 <strong>어느 캐시가</strong> 읽는가"다 — 캐시가 한 겹이 아니기 때문이다.
+</p>
+
+<h2>4. 캐시는 층이다 — 브라우저, CDN, 그리고 배포 순서</h2>
+<p>
+사용자와 원본 서버 사이에는 보통 두 종류 이상의 캐시가 있다: 사용자 기기의 <strong>브라우저 캐시</strong>(한 사람 전용 — 사적 캐시)와,
+지리적으로 분산된 <strong>CDN 엣지 캐시</strong>(모든 사용자가 공유 — 공유 캐시). 같은 <code>Cache-Control</code>을 두 층이 함께 읽되,
+층을 구분하는 디렉티브가 있다 — <code>private</code>(브라우저만 저장, CDN 저장 금지: 개인화 응답용), <code>public</code>(공유 캐시도
+저장 가능), <code>s-maxage</code>(공유 캐시에만 적용되는 별도 수명).
+</p>
+<p>
+무효화 능력이 층마다 다르다는 것이 실무의 핵심이다. <strong>CDN은 지울 수 있다</strong> — 운영자가 퍼지(purge) API로 엣지 캐시를
+즉시 비울 수 있고, 그래서 지문 없는 파일의 사고도 CDN 층까지는 수습이 된다. 그러나 <strong>브라우저 캐시는 지울 수 없다</strong> —
+수백만 사용자 기기에 손이 닿지 않는다는 1절의 문제로 되돌아온다. "퍼지했는데도 일부 사용자만 옛 화면"이라는 증상이 두 층 구분의
+표준 시그니처다: CDN은 비웠지만, 그 전에 받아 간 브라우저들의 계약이 남은 것이다. 결국 브라우저 층의 답은 지문뿐이고,
+CDN 퍼지는 지문 체계의 보조 수단(진입점 HTML의 엣지 갱신을 앞당기는 용도)으로 자리가 정해진다.
+</p>
+<blockquote class="info">
+<p><strong>배포 순서 한 가지:</strong> 새 HTML이 먼저 나가고 지문 자산이 아직 안 올라간 순간이 있으면, 그 사이의 방문자는
+존재하지 않는 URL(404)을 참조하는 깨진 화면을 받는다. 표준 수순은 <strong>자산 먼저, 진입점 나중</strong> — 옛 HTML + 새 자산의
+공존은 무해하지만(옛 HTML은 옛 지문을 부르고, 옛 지문 파일을 당분간 남겨 두면 된다), 그 역은 사고다. 옛 지문 파일을 언제까지
+남길 것인가(이전 배포 N개 보존)까지가 배포 설계의 일부다.</p>
+</blockquote>
+
+<h2>흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"강력 새로고침하라고 안내하면 된다?"</strong> — Ctrl+F5는 그 사용자 한 명의 그 페이지만 고치는 수동 조치다.
+  안내가 필요한 상황 자체가 정책 실패의 증거이며, 지문 체계가 서 있으면 일반 새로고침(아니, 다음 내비게이션)만으로 최신이 된다.</li>
+  <li><strong>"no-cache = 캐시 안 함?"</strong> — 저장하되 매번 재검증이다(안 함은 <code>no-store</code>). 이 구분을 놓치면 "no-cache를
+  줬는데 왜 304가 오가죠?"라는 혼란과, 반대로 민감 정보에 no-cache만 주는(저장은 되는) 사고 양쪽이 나온다.</li>
+  <li><strong>"max-age가 지나면 캐시가 삭제된다?"</strong> — 만료는 삭제가 아니라 <strong>"신선하지 않음"으로의 전환</strong>이다.
+  만료된 저장본은 재검증 후보로 남아, 304를 받으면 본문 전송 없이 되살아난다. 캐시의 상태는 2가지(있다/없다)가 아니라
+  3가지(신선/낡음/없음)로 모델링해야 동작이 읽힌다.</li>
+  <li><strong>"쿼리스트링 버전(<code>?v=42</code>)이면 충분하다?"</strong> — 브라우저에는 통하지만 CDN·중간 프록시가 쿼리를 캐시 키에서
+  빼도록 설정된 환경에서 조용히 깨진다(2절). 지문은 파일명에 — 이식성이 다른 선택지다.</li>
+  <li><strong>"CDN 퍼지했으니 전부 갱신됐다?"</strong> — 퍼지가 닿는 것은 공유 캐시 층뿐이다(4절). 브라우저 층에 이미 배포된 긴
+  수명 계약은 만료를 기다리는 수밖에 없다 — 사고 수습의 한계선을 정확히 아는 것이 재발 방지 설계(지문화)의 동기가 된다.</li>
+  <li><strong>"서비스 워커가 있으니 Cache-Control은 무관하다?"</strong> — 서비스 워커의 Cache Storage는 <strong>별도의 세 번째
+  층</strong>이며 개발자 코드가 수명을 전적으로 관리한다. HTTP 캐시 정책이 완벽해도 서비스 워커가 옛 자산을 쥐고 있으면 같은
+  증상이 난다 — "배포했는데 옛 화면" 진단 목록에 이 층도 넣어야 한다.</li>
+</ul>
+
+<h2>★ 언어별 대조 — 지문과 헤더는 각 스택 어디에서 만들어지는가</h2>
+<p>
+캐싱 정책은 HTTP의 것이라 언어 중립이지만, <strong>지문을 계산하는 주체</strong>와 <strong>헤더를 붙이는 지점</strong>은 스택마다 다르다 —
+그 위치를 모르면 "설정은 했는데 헤더가 안 붙는" 미궁에 빠진다.
+</p>
+<table>
+  <tr><th></th><th>JS·TS</th><th>Java</th><th>Python</th><th>C++</th></tr>
+  <tr><td>지문 계산 주체</td><td>번들러(빌드 시)</td><td>프레임워크 리소스 체인(기동/요청 시)</td><td>collectstatic(배포 준비 시)</td><td>(캐시 인프라 자체를 구현하는 쪽)</td></tr>
+  <tr><td>참조 재작성</td><td>번들러가 HTML·import 자동 재작성</td><td>템플릿 헬퍼가 URL 버전 삽입</td><td>템플릿 태그 + manifest 조회</td><td>해당 없음(또는 펌웨어 버전이 지문)</td></tr>
+  <tr><td>대표 함정</td><td>index.html까지 길게 캐시</td><td>리소스 체인 미적용 경로</td><td>manifest 불일치로 기동 실패</td><td>캐시 키 설계 실수</td></tr>
+</table>
+
+<h3>JS·TS — 지문의 본진: 번들러가 이름을 만들고 참조를 다시 쓴다</h3>
+<p>
+프론트엔드 빌드에서 지문은 기본값이다 — Vite류 번들러는 산출물마다 내용 해시를 파일명에 박고
+(<code>assets/index-a1b2c3.js</code>), HTML과 모듈 간 import 경로를 <strong>전부 자동으로 재작성</strong>한다. 개발자가 지문을 수동
+관리하지 않는다는 것이 이 생태계의 강점이고, 대신 알아야 할 내부 기제가 <strong>해시의 연쇄</strong>다: 모듈 A가 B를 import하면 A의
+산출물에는 B의 지문 파일명이 박히므로, <strong>B의 내용 변경은 B뿐 아니라 A의 해시도 바꾼다</strong> — 의존 그래프를 따라 지문이
+연쇄 갱신되는 구조라, "한 줄 고쳤는데 파일 여러 개의 이름이 바뀌는" 것이 정상 동작이다:
+</p>
+<pre><code>// vite build 산출물의 구조
+dist/index.html                  ← 진입점: no-cache로 서빙해야 하는 쪽
+dist/assets/index-a1b2c3.js      ← 지문 자산: 1년 + immutable
+dist/assets/vendor-9f8e7d.js     ← 라이브러리 청크(변경 잦은 앱 코드와 분리해
+                                    캐시 적중률을 높이는 표준 분할)</code></pre>
+<p>
+함정은 번들러의 일이 <strong>이름 만들기까지</strong>라는 데 있다 — <code>Cache-Control</code> 헤더는 서빙 계층(정적 서버·CDN 설정)의
+몫이라, "빌드는 완벽한데 헤더는 전부 기본값"인 배포가 흔하다. 특히 SPA에서 라우팅 폴백으로 모든 경로에 <code>index.html</code>을
+주는 설정이 자산 경로까지 덮치거나, 반대로 <code>index.html</code>에 자산용 장기 캐시가 묻는 사고가 3절 함정의 실물이다.
+TS 덤: 타입만의 수정은 산출물 불변(M3)이므로 해시도 그대로 — 캐시 관점에서는 "배포할 게 없는 배포"가 된다.
+</p>
+
+<h3>Java — 서버가 지문을 만든다: 리소스 체인과 템플릿 헬퍼</h3>
+<p>
+서버 템플릿 중심의 Java 스택에서는 프레임워크가 지문 역할을 맡는다. Spring의 리소스 체인은 정적 자원의 내용 해시를 계산해
+<code>/css/style-e3a1f9.css</code>식 URL을 만들고, 템플릿의 URL 헬퍼가 원본 경로를 버전 경로로 재작성한다:
+</p>
+<pre><code>// Spring 리소스 체인 — 서버가 해시 버전 URL을 만들고 해석한다
+registry.addResourceHandler("/static/**")
+        .addResourceLocations("classpath:/static/")
+        .setCacheControl(CacheControl.maxAge(Duration.ofDays(365)).cachePublic().immutable())
+        .resourceChain(true)
+        .addResolver(new VersionResourceResolver().addContentVersionStrategy("/**"));
+// 템플릿에서는 @{/static/css/style.css} → /static/css/style-e3a1f9.css 로 재작성</code></pre>
+<p>
+빌드 시점 지문(JS 생태계)과 달리 <strong>서빙 시점 지문</strong>이라는 점이 구조적 차이다 — 해시 계산·매핑이 서버 기동/요청 처리에서
+일어나므로, 캐싱(해시 결과 캐시)이 안 되면 요청마다 해시 비용을 낸다는 관리 포인트가 생긴다. 대표 함정은 <strong>체인을 우회하는
+참조</strong>다: 템플릿 헬퍼를 거치지 않고 하드코딩한 경로, JS 코드 안에서 조립하는 자산 URL은 재작성이 안 되어 지문 없는 이름으로
+나간다 — "대부분 지문인데 일부만 옛것"의 원인이 대개 이것이다. JVM 관점 덤: jar 내부 리소스는 수정 시각이 패키징 시각으로 뭉개지는
+경우가 있어, 수정 시각 기반 재검증보다 <strong>내용 기반(ETag·해시)</strong>이 안전하다.
+</p>
+
+<h3>Python — collectstatic과 manifest: 배포 준비 단계의 지문</h3>
+<p>
+Django의 표준 배치는 배포 준비 명령이 지문을 만드는 구조다 — <code>collectstatic</code>이 정적 파일을 모으면서
+<code>ManifestStaticFilesStorage</code>가 각 파일의 해시 파일명 사본과 <strong>원본명→지문명 대응표(manifest JSON)</strong>를 생성하고,
+템플릿 태그가 렌더링 시 그 대응표를 조회한다:
+</p>
+<pre><code># settings.py
+STORAGES = {"staticfiles": {"BACKEND":
+    "django.contrib.staticfiles.storage.ManifestStaticFilesStorage"}}
+
+# 템플릿: {% static "css/style.css" %} → /static/css/style.e3a1f9.css
+# collectstatic이 만든 staticfiles.json(manifest)을 조회해 재작성</code></pre>
+<p>
+지문 시점이 "빌드"도 "서빙"도 아닌 <strong>배포 준비 단계</strong>라는 절충이고, 그래서 특유의 함정도 배포 절차에 있다:
+manifest에 없는 파일을 템플릿이 참조하면 <strong>렌더링 시점 예외</strong>가 난다 — CSS 안의 <code>url()</code> 참조가 깨져 있거나
+collectstatic을 안 돌리고 배포한 경우로, "로컬(개발 모드, 지문 비활성)에선 되는데 운영에서만 500"이라는 시그니처를 만든다.
+파이썬 앱 서버가 정적 서빙까지 하는 소규모 배치에서는 WhiteNoise류 미들웨어가 지문 파일에 자동으로 장기+<code>immutable</code>
+헤더를 붙여 주는 것이 관행이다 — 지문·헤더·서빙이 한 프로세스에 모이는, 이 문서 표준 배치의 최소 구현이라 학습 재료로도 좋다.
+</p>
+
+<h3>C++ — 정책의 소비자가 아니라 캐시 인프라의 구현자</h3>
+<p>
+C++이 이 주제와 만나는 첫 자리는 <strong>캐시를 구현하는 쪽</strong>이다 — 주요 CDN 엣지·리버스 프록시 캐시가 C·C++ 계열로 작성되어
+있고, 이 관점에서 보면 이 문서의 헤더들은 "설정"이 아니라 <strong>파싱해서 상태 기계를 돌려야 하는 프로토콜</strong>이다.
+구현 관점의 핵심 설계가 <strong>캐시 키</strong>다: 무엇으로 저장본을 식별하는가(메서드+호스트+경로+…). 쿼리스트링을 키에 넣을지가
+설정 사항이라는 사실 — 2절에서 쿼리 버전이 위험한 이유 — 이 구현 쪽에서 보면 자명해진다. 두 번째 자리는 C6에서 본 내장 웹 콘솔이다.
+자산이 펌웨어 바이너리에 구워지는(O8) 환경에서는 <strong>펌웨어 버전이 곧 지문</strong>이므로, ETag를 버전 문자열로 삼는 수동
+재검증 구현이 정석이다:
+</p>
+<pre><code>// 임베디드 웹 콘솔: 펌웨어 버전 = 자산의 지문 (자산은 바이너리에 구워져 있음)
+void serve_asset(const Request&amp; req, Response&amp; res, const Asset&amp; a) {
+    const std::string etag = "\"" FIRMWARE_VERSION "\"";     // 빌드 시 확정
+    if (req.header("If-None-Match") == etag) {
+        res.status = 304;                                     // 본문 없이 재검증 응답
+        return;
+    }
+    res.header("ETag", etag);
+    res.header("Cache-Control", "max-age=86400");             // 다음 펌웨어까지 무변
+    res.body(a.data, a.size);                                 // 정적 수명 — 댕글링 없음
+}</code></pre>
+<p>
+메모리·수명 관점의 결이 여기서도 나타난다: 구워진 자산은 정적 수명이라 응답 버퍼의 소유권 문제가 없지만(포인터가 프로그램 수명
+내내 유효), 캐시 구현 쪽에서는 반대로 <strong>축출(eviction)과 진행 중인 응답의 경합</strong> — 어떤 저장본을 밀어내는 순간 그것을 읽어
+전송 중인 연결이 있는가 — 이 참조 계수 설계 문제가 된다. 컴파일 타임 덤: 자산을 바이너리에 굽는 것 자체가 "내용이 바뀌면
+산출물(펌웨어)이 바뀐다"는 지문 원리의 극단형이다 — 갱신 단위가 파일이 아니라 펌웨어 전체일 뿐이다.
+</p>
+
+<h2>함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>ETag와 조건부 요청</strong> — 지문 없는 파일의 차선책인 재검증 메커니즘. <code>ETag</code>(내용 식별자)를
+  <code>If-None-Match</code>로 대조해 안 바뀌었으면 304. 왕복은 남지만 본문 전송을 아낀다 — HTML(no-cache)의 짝 기술이다.</li>
+  <li><strong>stale-while-revalidate</strong> — "낡은 것을 일단 주고, 뒤에서 갱신"하는 디렉티브. 재검증 왕복의 지연을 사용자 경로에서
+  숨기는 절충으로, 이름 고정 자산의 중간 정책을 한 단계 다듬는 도구다.</li>
+  <li><strong>Vary 헤더</strong> — 같은 URL이 조건(인코딩·언어 등)에 따라 다른 응답일 때 캐시 키를 확장하는 선언. 잘못 쓰면 캐시
+  적중률이 0으로 추락하는(사실상 키가 요청마다 다름) 양날의 검.</li>
+  <li><strong>CDN 소프트 퍼지·태그 퍼지</strong> — 엣지 저장본을 "삭제" 대신 "낡음 처리"하거나(재검증 유도), 태그 단위로 묶어
+  비우는 운영 기능. 지문 체계의 보조 수단으로서의 퍼지(4절)를 정교화한 형태다.</li>
+  <li><strong>캐싱 전략 일반론</strong> — TTL·무효화·계층화는 정적 자산만의 문제가 아니다. 데이터·API 응답 차원의 캐싱 전략은
+  <a href="../Q 성능·최적화(범도메인 방법론)/Q3 캐싱 전략.html">Q3 캐싱 전략.html</a>이 다루며, 이 문서는 그 일반론이 "이름을 바꿀 수
+  있는 자산"이라는 특수 조건에서 어디까지 단순해지는가의 사례로 읽을 수 있다.</li>
+</ul>
+
+<h2>한 장 요약</h2>
+<ul>
+  <li>브라우저 캐시는 <strong>소급 취소 불가능한 계약</strong> — 배포는 서버만 바꾸므로 "배포했는데 옛 화면"은 계약 이행의 자연 귀결이다.</li>
+  <li>답은 무효화가 아니라 <strong>콘텐츠 해시 지문</strong>: 내용이 바뀌면 이름(URL)이 바뀌어 캐시와 경합 자체가 사라진다. 지문 자산은 <code>max-age=1년, immutable</code>, 지문은 쿼리가 아니라 <strong>파일명에</strong>.</li>
+  <li>체계의 아킬레스건은 <strong>진입점</strong> — HTML은 이름을 못 바꾸므로 <code>no-cache</code>(저장하되 매번 재검증·304)로 항상 최신을 보증해야 지문 체계가 성립한다. 정책은 반드시 "진입점 / 지문 자산 / 이름 고정 자산" 세 부류로 갈라 설계한다.</li>
+  <li>캐시는 층이다: CDN(공유, purge 가능) + 브라우저(사적, purge 불가) + 서비스 워커(코드 관리). "퍼지했는데도 옛 화면"은 층 구분 실패의 시그니처. 배포는 <strong>자산 먼저, HTML 나중</strong>, 옛 지문 파일은 한동안 보존.</li>
+  <li>지문의 제조 지점은 스택마다 다르다 — JS는 번들러(빌드 시), Spring은 리소스 체인(서빙 시), Django는 collectstatic(배포 준비 시), C++은 캐시 구현자·펌웨어 버전 지문. "지문은 됐는데 헤더는 누가 붙이는가"까지 확인해야 완성이다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="../O 운영·인프라·디버깅/O2 정적 파일 서빙 모델.html">O2 정적 파일 서빙 모델.html</a> — 자산이 어떤 경로·주체로 서빙되는가(이 문서가 회수한 캐싱 상세의 상위 배치)</li>
+  <li><a href="../Q 성능·최적화(범도메인 방법론)/Q3 캐싱 전략.html">Q3 캐싱 전략.html</a> — 정적 자산을 넘어선 캐싱 전략 일반론</li>
+</ul>
+
+</body>
+</html>
