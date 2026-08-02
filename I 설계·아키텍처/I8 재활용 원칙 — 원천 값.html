@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>I8 재활용 원칙 — 원천 값</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>I8 재활용 원칙 — 원천 값</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>값에는 계보가 있다: <strong>원천 값(source value)</strong>에서 변환(포맷·조합·요약)을 거쳐 <strong>파생값(derived value)</strong>이 나온다 — 그리고 이 흐름은 <strong>한 방향</strong>이어야 한다.</li>
+  <li>파생값 — 특히 표시용 문자열 — 은 대개 <strong>손실적이고 표현 의존적</strong>이다: 반올림·천 단위 구분·로케일·문구가 섞여, 원천을 복원할 수 없거나 우연히만 복원된다.</li>
+  <li>핵심 함정은 <strong>역파싱</strong>이다: 파생값이 손에 잡히는 곳에 있다는 이유로 거기서 원천을 추출하는 순간, <strong>표시 형식이 데이터 계약으로 승격</strong>된다 — 문구·포맷을 바꾸는 무해한 수정이 데이터 버그가 되는 취약성의 반전.</li>
+  <li>올바른 재활용은 방향이 반대다: <strong>원천을 필요 지점까지 원천인 채로 전달</strong>하고, 계산은 <strong>원천에서 한 번</strong> 해 여러 파생을 만든다 — 파생에서 파생을 캐내지 않는다.</li>
+  <li>이 원칙은 DRY(중복 제거)와 형제지만 다른 축이다 — 코드가 하나여도 <strong>원천이 둘이면</strong> 어긋난다(관계는 4절 한 단락, 상세는 I2 소관).</li>
+</ul>
+
+<h2>1. 값의 계보 — 원천과 파생</h2>
+<p>
+주문 화면에 "결제 금액: ₩12,340 (3건)"이라는 문구가 있다고 하자. 이 문구가 만들어지기까지의 계보를 그려 보면:
+</p>
+<div class="flow">원천 값:   amount = 12340 (정수, 원 단위)     items = [… 3개의 주문 항목 …]
+              │ 통화 포맷(로케일 적용)              │ 개수 집계
+              ▼                                    ▼
+파생값:    "₩12,340"                            3
+              └──────────────┬───────────────────┘
+                             ▼  문구 조합
+표시 문자열: "결제 금액: ₩12,340 (3건)"</div>
+<p>
+아래로 내려갈수록 값은 <strong>사람에게 친절해지고 기계에게 불친절해진다</strong>. 원천 <code>12340</code>은 계산·비교·저장에 쓸 수 있는
+데이터지만, "₩12,340"은 통화 기호·천 단위 구분·로케일 규칙이 섞인 <strong>표현</strong>이고, 최종 문구는 문장 구조까지 얹힌
+<strong>UI 텍스트</strong>다. 변환 과정에서 정보도 깎인다 — 반올림된 표시라면 원 값의 끝자리는 사라졌고, "3건"에서는 어떤 항목들이었는지가
+사라졌다. 즉 파생은 <strong>목적(표시)에 맞춘 손실 압축</strong>이며, 이 구도는 O7의 에러 재래핑, C10의 직렬화에서 본 것과 같은 가족이다.
+</p>
+<p>
+계보가 그려지면 "재활용 원칙"의 질문이 명확해진다: 다른 코드가 이 금액을 <strong>다시 쓰고 싶을 때</strong> — 합계 검증, 다른 화면 표시,
+서버 전송 — 계보의 <strong>어느 지점에서 가져와야 하는가?</strong> 답은 자명해 보인다: 원천에서. 그런데 실무 코드는 자주 반대로 간다.
+왜 그런지, 그리고 무엇이 무너지는지가 다음 절이다.
+</p>
+
+<h2>2. 역파싱 — 취약성이 반전되는 순간</h2>
+<p>
+파생값에서 원천을 캐내는 코드는 이렇게 생겼다:
+</p>
+<pre><code>// 화면 문구에서 금액을 "복원"하는 코드 — 오늘은 동작한다
+const label = totalEl.textContent;            // "결제 금액: ₩12,340 (3건)"
+const amount = Number(label.replace(/[^0-9]/g, ""));   // 123403 ← 벌써 틀렸다: "(3건)"의 3이 섞였다
+// 정규식을 고쳐서 12340을 얻었다 치자 — 문제는 그게 아니다</code></pre>
+<p>
+이 코드를 쓰게 되는 이유는 언제나 같다 — <strong>파생값이 더 가까이 있기 때문이다</strong>. 원천은 다른 컴포넌트의 상태나 서버 응답
+안에 있는데, 표시 문자열은 지금 눈앞의 DOM에 있다. 배관을 새로 까는 것보다 눈앞의 것을 파싱하는 쪽이 오늘은 싸다.
+</p>
+<p>
+문제는 이 선택이 <strong>의존성의 방향을 뒤집는다</strong>는 것이다. 원래 계보에서 표시 문구는 말단이었다 — 문구를 어떻게 바꾸든
+(통화 기호 위치, 공백, "건"→"개") 아무것도 깨지지 않는, <strong>자유롭게 변할 권리가 있는 층</strong>이었다. 그런데 누군가 그 문구를
+파싱하는 순간, 문구의 모든 세부 — 콤마, 괄호, 단어 순서 — 가 <strong>암묵적 데이터 계약</strong>이 된다. 이제 디자이너의 문구 수정,
+로케일 추가(유럽식 <code>12.340,00</code>은 콤마 제거 정규식을 정확히 반대로 깨뜨린다), 반올림 정책 변경이 전부 <strong>파싱 코드의
+조용한 오동작</strong>으로 돌아온다. 취약성의 반전이다: 가장 자주 바뀌어야 할 층(표현)이 가장 바뀌면 안 되는 층(계약)으로 승격됐고,
+그 계약은 <strong>어디에도 문서화되어 있지 않다</strong> — 문구를 고치는 사람은 자기가 계약을 깨고 있다는 사실을 알 방법이 없다.
+</p>
+<blockquote class="warn">
+<p><strong>역파싱의 3중 죄:</strong> ① <strong>복원 불가능한 것을 복원하는 척한다</strong> — 반올림·요약으로 깎인 정보는 파싱으로
+안 돌아온다(표시가 "₩12,000"으로 반올림됐다면 원천 11,987은 영원히 못 얻는다). ② <strong>표현을 계약으로 승격시킨다</strong> —
+위 문단. ③ <strong>실패가 조용하다</strong> — 포맷이 바뀌어도 파싱은 예외 대신 <em>그럴듯한 오값</em>을 내기 일쑤다(콤마 규칙이 바뀌면
+12,340이 12340이 아니라 12.34가 되는 식). 셋 중 ③이 가장 비싸다 — 틀린 금액이 화면·전송·저장으로 번진 뒤에야 발견된다.</p>
+</blockquote>
+<p>
+같은 구조의 변종은 도처에 있다: 표시용 날짜 "26.03.15"를 다시 Date로 파싱(연도가 2026인지 1926인지는 추측이다), 성명 표시
+"김철수"를 성/이름으로 재분리, 목록 라벨 "주문 #123 (완료)"에서 정규식으로 ID·상태 추출, CSS 클래스명 <code>status-done</code>을
+파싱해 상태 판별, 파일명 <code>report_2026Q1_final2.pdf</code>에서 메타데이터 복원 — 전부 "파생이 가까이 있어서" 시작되고,
+"표현이 계약이 되어서" 무너진다.
+</p>
+
+<h2>3. 올바른 방향 — 원천을 전달하고, 원천에서 한 번 계산한다</h2>
+<p>
+해법은 파싱 기술의 개선이 아니라 <strong>배관의 교정</strong>이다. 두 규칙으로 정리된다.
+</p>
+<p>
+<strong>규칙 1 — 원천을 필요 지점까지 원천인 채로 전달한다.</strong> 어떤 코드가 금액을 필요로 한다면, 그 코드까지 <code>12340</code>이
+데이터로 도달할 통로를 만든다. UI 계층이라면 표시 문자열 <strong>옆에</strong> 원천을 함께 싣는 것이 표준 수법이다 — DOM이라면
+데이터 속성(<code>data-*</code>), 컴포넌트라면 프롭스/상태로 원천과 표시를 나란히:
+</p>
+<pre><code>&lt;!-- 표시와 원천을 분리해 나란히 싣는다 — 파싱할 이유 자체를 제거 --&gt;
+&lt;span class="total" data-amount="12340" data-count="3"&gt;
+  결제 금액: ₩12,340 (3건)          &lt;!-- 사람용: 마음껏 바뀌어도 되는 층 --&gt;
+&lt;/span&gt;
+
+const amount = Number(totalEl.dataset.amount);   // 기계용: 명시된 계약에서 읽기</code></pre>
+<p>
+<strong>규칙 2 — 계산은 원천에서 한 번, 파생은 여럿.</strong> 같은 원천이 여러 파생(화면 표시·검증·전송·집계)에 필요하면, 각 파생을
+<strong>모두 원천에서 직접</strong> 계산한다 — 파생 A에서 파생 B를 만들지 않는다. 계보가 나무(원천 하나, 가지 여럿)가 되고, 어떤
+파생의 형식이 바뀌어도 다른 파생이 흔들리지 않는다. 비용이 걱정되면 답은 역파싱이 아니라 <strong>계산 결과의 재사용</strong>(캐시·
+메모이제이션)이다 — "원천에서 한 번 계산"의 '한 번'을 구현하는 정당한 수단이며, 반응형 UI에서 이 나무를 선언적으로 유지하는
+장치가 computed 체인이다(<a href="../A 프론트엔드/A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a> —
+그 문서의 파이프라인이 정확히 이 원칙의 프론트엔드 구현이다).
+</p>
+<blockquote class="ok">
+<p><strong>설계 검사법:</strong> 코드에서 <code>parse</code>·<code>split</code>·정규식이 <strong>자기 시스템이 만든 표시값</strong>을 향해
+있으면 경보다. 외부에서 온 입력의 파싱은 정당한 일이지만(그건 그 데이터의 원천이 외부인 것), <strong>내가 포맷한 것을 내가
+파싱한다</strong>는 것은 어딘가에서 원천의 전달 통로가 끊겼다는 신호다 — 파싱을 고칠 게 아니라 통로를 복구한다.</p>
+</blockquote>
+
+<h2>4. DRY와의 관계 — 형제지만 다른 축</h2>
+<p>
+이 원칙은 DRY("모든 지식은 시스템 안에서 단일하고 권위 있는 표현을 가져야 한다")의 데이터판으로 읽을 수 있다 — 원천 값이 바로
+그 "단일하고 권위 있는 표현"이고, 역파싱은 표시 문자열이라는 <strong>비권위 사본에 권위를 부여하는</strong> 위반이다. 다만 축이 다르다는
+점은 분명히 할 것: DRY가 주로 겨누는 것은 <strong>지식(로직·규칙)의 중복</strong>이고, 이 문서가 겨누는 것은 <strong>값의 계보 방향</strong>이다.
+포맷 함수가 시스템에 하나뿐이어도(코드 중복 0) 그 출력을 역파싱하면 이 원칙 위반이며, 반대로 같은 원천에서 계산하는 코드가
+두 벌 있으면(계보는 건전) DRY 위반이다 — 두 원칙이 서로 다른 결함을 잡는다. DRY 자체의 정확한 범위와 오적용(우연한 중복까지
+합치는 병)은 <a href="I2 DRY 원칙과 범위.html">I2 DRY 원칙과 범위.html</a>의 소관이다.
+</p>
+
+<h2>흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"파싱이 잘 동작하는데 왜 문제인가?"</strong> — 오늘의 동작은 반론이 아니다. 문제는 동작이 아니라 <strong>변경 비용의
+  재배치</strong>다: 표시 문구의 수정 권리가 몰수되고, 그 사실을 아무도 모른다는 것(문서화되지 않은 계약)이 결함이다. 취약성은
+  포맷이 처음 바뀌는 날 청구된다.</li>
+  <li><strong>"외부 API 응답도 파싱하지 말라는 것인가?"</strong> — 아니다. 외부에서 온 데이터는 <strong>그것이 우리 시스템의 원천</strong>이고,
+  파싱은 원천 수용의 정당한 절차다. 금지되는 것은 <strong>자기 시스템이 만든 파생값</strong>으로의 역류다 — "이 값의 원천을 내가 갖고
+  있는가?"가 판별 질문이다.</li>
+  <li><strong>"ISO 8601 문자열도 파생이니 파싱하면 안 되나?"</strong> — 표현에는 두 부류가 있다: <strong>계약된 교환 표현</strong>(ISO 8601,
+  JSON — 무손실·형식 보장·파싱이 설계 목적)과 <strong>표시 표현</strong>(로케일 포맷·UI 문구 — 손실적·변경 자유). 전자의 파싱은 직렬화
+  계약의 이행이고(C10), 후자의 파싱이 역파싱이다. "이 형식은 바뀌지 않기로 약속돼 있는가"로 구분한다.</li>
+  <li><strong>"DB에 파생 컬럼(집계·요약)을 두는 것도 위반인가?"</strong> — 파생을 <strong>저장</strong>하는 것 자체는 성능 트레이드오프의
+  영역이다(비정규화). 위반은 그 파생 컬럼을 <strong>원천 취급</strong>할 때 — 원천 수정 없이 파생만 고치거나, 파생에서 원천을 역산할 때 —
+  시작된다. 파생 저장에는 반드시 "원천에서 재계산 가능"이라는 성질과 동기화 규율이 따라붙어야 한다.</li>
+  <li><strong>"원천을 전달하면 페이로드가 커진다?"</strong> — 원천+표시 동시 전달은 몇 필드의 비용이다. 그 비용이 아까워 역파싱을
+  택하는 것은, 명시적 계약(필드)을 아끼고 암묵적 계약(포맷 전체)을 사는 거래 — 언제나 밑지는 쪽이다.</li>
+</ul>
+
+<h2>★ 언어별 대조 — "내가 만든 표현을 내가 파싱하는" 함정의 언어별 형태</h2>
+<p>
+역파싱 함정은 언어마다 단골 표현이 다르다 — 각 언어에서 "파싱하고 싶어지는 파생값"이 무엇인지, 그리고 "계약된 표현"과의 경계가
+어디 있는지를 본다.
+</p>
+<table>
+  <tr><th></th><th>JS·TS</th><th>Java</th><th>Python</th><th>C++</th></tr>
+  <tr><td>단골 역파싱 대상</td><td>DOM 텍스트·표시 문자열</td><td><code>toString()</code> 출력</td><td><code>str()</code>/<code>repr()</code> 출력</td><td>텍스트 로그·부동소수점 문자열</td></tr>
+  <tr><td>올바른 원천 통로</td><td><code>data-*</code>·상태/프롭스</td><td>getter·DTO 필드</td><td>속성 접근·<code>isoformat()</code> 계약</td><td>구조체 전달·바이너리/계약 직렬화</td></tr>
+  <tr><td>계약 여부의 경계</td><td>표시 문자열은 무계약</td><td>toString은 명시적 무계약</td><td>repr 왕복은 관례일 뿐</td><td>to_chars 왕복은 보장</td></tr>
+</table>
+
+<h3>JS·TS — DOM은 표시 계층이지 데이터베이스가 아니다</h3>
+<p>
+프론트엔드의 역파싱은 거의 항상 DOM에서 일어난다 — 상태 관리가 엉킨 코드일수록 "진실이 DOM에만 있는" 상황이 생기고,
+<code>textContent</code> 파싱·클래스명 검사(<code>el.classList.contains("status-done")</code>으로 도메인 상태 판별)가 그 증상이다.
+교정은 2·3절의 <code>data-*</code> 패턴, 그리고 더 근본적으로는 <strong>상태를 JS 쪽에 두고 DOM은 투영으로만</strong> 쓰는 프레임워크
+모델이다(상태→DOM 단방향이 A2 반응성의 전제이기도 하다). TS는 이 원칙에 드물게 실질적인 무기를 준다 — <strong>브랜드 타입</strong>으로
+"표시 문자열"과 "원천"을 타입 수준에서 갈라 놓으면, 표시값을 데이터 자리에 넘기는 코드가 컴파일 에러가 된다:
+</p>
+<pre><code>type Won = number &amp; { readonly __brand: "Won" };          // 원천: 원 단위 정수
+type DisplayPrice = string &amp; { readonly __brand: "Disp" }; // 파생: 표시 전용
+
+function formatPrice(v: Won): DisplayPrice { /* … */ }
+function submitPayment(amount: Won) { /* … */ }
+
+submitPayment(formatPrice(price));   // 컴파일 에러 — 파생을 원천 자리에 못 넣는다
+// 구조적 타이핑 세계에서 "의미가 다른 같은 원시형"을 가르는 표준 기법</code></pre>
+<p>
+런타임 통찰 하나: <code>Number("12,340")</code>은 <code>NaN</code>이지만 <code>parseInt("12,340")</code>은 <strong>12</strong>다 —
+JS 파싱 함수들의 관대함(멈출 때까지 읽기)은 역파싱의 "조용히 그럴듯한 오값" 죄질(2절 ③)을 언어 차원에서 증폭시킨다.
+</p>
+
+<h3>Java — toString()은 계약이 아니라고 문서가 명시한다</h3>
+<p>
+Java의 단골은 <code>toString()</code> 파싱이다. <code>toString()</code>의 명세는 "간결하고 유익한, <strong>사람이 읽기 쉬운</strong>
+표현"을 권할 뿐 형식을 계약하지 않는다 — 실제로 표준 라이브러리 클래스들의 toString 출력은 버전에 따라 바뀌어 왔고
+(레코드 도입, 내부 표현 변경), 그것은 파괴적 변경으로 취급되지 않는다. 즉 toString 출력을 파싱하는 코드는 <strong>명시적으로
+무계약인 표면</strong> 위에 세운 건물이다:
+</p>
+<pre><code>// 나쁨: 디버그 표현의 역파싱 — 형식은 언제든 바뀔 수 있는 무계약 표면
+String s = order.toString();          // "Order[id=123, status=DONE]"
+long id = Long.parseLong(s.replaceAll(".*id=(\\d+).*", "$1"));
+
+// 옳음: 원천은 getter로 — 컴파일러가 지켜 주는 계약
+long id = order.getId();</code></pre>
+<p>
+JVM 생태계 특유의 변종이 <strong>정밀도 역파싱</strong>이다 — 금액을 <code>double</code>로 계산해 문자열로 포맷한 뒤, 필요해지자 다시
+파싱하는 경로는 이진 부동소수점의 표현 오차와 포맷 반올림을 이중으로 통과한다. 금액의 원천은 처음부터 <code>BigDecimal</code>
+(십진 정밀 타입)로 유지하고 표시 포맷은 말단에서만 — "원천을 원천인 채로 전달"의 타입 선택판이다. 직렬화 관점의 경계도 Java가
+명확한 편이다: JSON 직렬화(계약된 교환 표현)와 toString(무계약 디버그 표현)이 별도 메커니즘으로 갈라져 있어, "파싱해도 되는
+표현"의 경계를 프레임워크가 그어 준다 — 그 경계를 무시하고 로그 문자열을 파싱하는 순간 경계 밖이다.
+</p>
+
+<h3>Python — repr의 왕복 관례는 계약이 아니다, isoformat은 계약이다</h3>
+<p>
+Python에는 "<code>eval(repr(x)) == x</code>가 되도록 <code>__repr__</code>을 쓰라"는 오랜 관례가 있어, repr이 왕복 가능한 표현처럼
+보인다. 그러나 이것은 <strong>권고이지 보장이 아니다</strong> — 표준 타입 상당수가 지키지만 서드파티·커스텀 클래스는 제각각이고,
+지키더라도 eval 기반 복원은 보안·의존성 문제로 실무 금기다. 반면 같은 객체가 <strong>계약된 왕복 표현</strong>을 따로 제공하는 경우가
+있다 — 이 구분이 파이썬판 경계선이다:
+</p>
+<pre><code>from datetime import datetime
+d = datetime(2026, 3, 15, 9, 0)
+
+str(d)              # "2026-03-15 09:00:00" — 사람용. 파싱하고 싶어지는 함정
+d.isoformat()       # "2026-03-15T09:00:00" — 계약된 교환 표현 (ISO 8601)
+datetime.fromisoformat(d.isoformat()) == d    # True — 왕복이 API로 보장된 쌍
+
+f"{amount:,}원"     # "12,340원" — 표시 파생. 이것을 다시 int로 파싱하는 순간 역파싱</code></pre>
+<p>
+같은 값의 <code>str()</code>과 <code>isoformat()</code>이 다른 지위를 갖는다는 것 — "형식이 무엇인가"가 아니라 <strong>"왕복이 약속돼
+있는가"</strong>가 경계라는 4절(헷갈리는 지점)의 원칙을 표준 라이브러리가 몸소 보여 주는 사례다. 덕 타이핑 통찰: 파이썬에서 원천
+전달의 최대 적은 "일단 문자열로 만들어 넘기는" 습관이다 — 타입 강제가 없으니 dict·튜플에 원천을 담아 넘기는 비용이 어느 언어보다
+싼데도, 문자열 조합이 더 손에 익어 파생이 통로를 점령한다. 타입 힌트(<code>Won = NewType("Won", int)</code>)가 TS 브랜드 타입의
+연성 버전으로 쓰인다.
+</p>
+
+<h3>C++ — 텍스트 왕복의 정밀도 문제, 그리고 로그 재파싱이라는 유혹</h3>
+<p>
+C++에서 이 원칙이 첨예해지는 첫 지점은 <strong>부동소수점의 텍스트 왕복</strong>이다 — 이진 <code>double</code>을 십진 문자열로 쓰고
+다시 읽는 경로는 자릿수가 모자라면 <strong>다른 비트의 값</strong>으로 돌아온다. 표시용 포맷(<code>%.2f</code>)을 데이터 통로로 쓰면
+정밀도 손실이 계약이 되는 것이다. 현대 C++은 이 경계를 API로 갈라 놓았다:
+</p>
+<pre><code>double v = 0.1 + 0.2;
+// 표시 파생: 사람용, 손실 있음 — 데이터 통로 금지
+printf("%.2f", v);                        // "0.30"  → 재파싱하면 0.30 ≠ v
+
+// 계약된 왕복: to_chars는 "다시 읽으면 같은 값"을 보장하는 최단 표현 (C++17)
+char buf[32];
+auto [p, ec] = std::to_chars(buf, buf + sizeof buf, v);
+// from_chars(buf, p, v2) → v2의 비트가 v와 동일 — 왕복이 명세에 있는 쌍</code></pre>
+<p>
+둘째 지점은 <strong>텍스트 로그의 재파싱</strong>이다 — 구조화 직렬화 없이 <code>printf</code>식 로그만 남기는 오랜 관행 아래서,
+나중에 그 로그를 정규식으로 긁어 지표·상태를 복원하는 도구가 자란다. 로그 문구는 표시 파생의 전형이라(개발자가 자유롭게 고치는
+층) 이 도구들은 문구 수정 한 번에 무너진다 — 기계가 소비할 데이터는 처음부터 구조화 필드(구조화 로깅·바이너리 레코드)로 내보내고,
+사람용 문구는 별도 층으로 두는 것이 교정이다. 메모리 관점의 마지막 통찰: C++에서 "원천을 원천인 채로 전달"의 가장 순수한 형태는
+<strong>구조체를 그대로 넘기는 것</strong>이고(복사·이동 의미론이 명시적이라 비용도 계약된다), 문자열 조합으로 값을 실어 나르는 순간
+타입·정밀도·수명 계약이 전부 문자열이라는 가장 약한 매체로 강등된다 — 강타입 언어에서 문자열 통로는 이중으로 아까운 선택이다.
+</p>
+
+<h2>함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>정규화(normalization)</strong> — "모든 사실은 한 곳에"라는 DB 설계 원칙. 이 문서의 원칙을 저장 계층에서 강제하는
+  장치이며, 비정규화(파생 저장)를 택할 때의 동기화 규율(원천 변경 시 파생 재계산)이 5절 파생 컬럼 논의의 본체다.</li>
+  <li><strong>이벤트 소싱(event sourcing)</strong> — "원천 = 일어난 사건들의 불변 목록, 현재 상태 = 그로부터의 파생"으로 구조 전체를
+  이 원칙 위에 세우는 아키텍처. 파생(현재 상태 테이블)을 언제든 원천에서 재구축할 수 있다는 성질이 핵심 이득이다.</li>
+  <li><strong>스크레이핑의 본질적 취약성</strong> — 남의 화면(표시 파생)을 파싱하는 웹 스크레이핑은 구조적으로 역파싱이다. 상대가
+  계약하지 않은 표현 위에 서 있으므로 마크업 변경마다 깨지는 것이 정상 상태 — API(계약된 표현)가 제공되면 갈아타는 이유다.</li>
+  <li><strong>계약된 교환 표현의 목록화</strong> — 팀 차원에서 "파싱해도 되는 형식"(ISO 8601, 자체 API 스키마, 구조화 로그 필드)을
+  명시해 두면, 역파싱 판별("이 형식은 약속인가?")이 개인 판단에서 문서 조회로 바뀐다.</li>
+  <li><strong>파생의 계산 위치</strong> — 같은 파생을 클라이언트·서버 중 어디서 계산할지(권위는 어디에), 그리고 프론트 안에서의 파생
+  체인 설계는 <a href="../A 프론트엔드/A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a>이 다룬다.</li>
+</ul>
+
+<h2>한 장 요약</h2>
+<ul>
+  <li>값의 계보는 <strong>원천 → 파생(표시)</strong> 한 방향 — 파생은 목적 맞춤 손실 압축이라 원천의 대체물이 못 된다.</li>
+  <li><strong>역파싱 금지</strong>: 자기 시스템이 포맷한 표시값에서 원천을 추출하는 순간, 자유로워야 할 표현이 문서화되지 않은 데이터 계약으로 승격되고, 실패는 조용한 오값으로 온다.</li>
+  <li>올바른 재활용: <strong>원천을 원천인 채로 필요 지점까지 전달</strong>(표시 옆에 <code>data-*</code>·필드로 병행 탑재)하고, <strong>계산은 원천에서 한 번</strong> — 비용은 캐시로 풀지 역파싱으로 풀지 않는다.</li>
+  <li>판별 질문 둘: "이 값의 원천을 내가 갖고 있는가?"(있다면 파싱은 통로 단절의 증상) / "이 형식은 왕복이 약속돼 있는가?"(ISO 8601·<code>isoformat</code>·<code>to_chars</code>는 계약, <code>toString</code>·표시 문구는 무계약).</li>
+  <li>DRY와는 형제 관계 — DRY는 지식 중복, 이 원칙은 값의 계보 방향을 겨눈다(상세 경계는 I2).</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="I1 응집도와 결합도.html">I1 응집도와 결합도.html</a> — 표현을 계약으로 승격시키는 것이 만드는 최악 부류의 결합</li>
+  <li><a href="../A 프론트엔드/A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a> — 원천→파생 나무를 선언적으로 유지하는 프론트엔드 구현</li>
+  <li><a href="I2 DRY 원칙과 범위.html">I2 DRY 원칙과 범위.html</a> — 지식 중복 제거 원칙의 정확한 범위와 오적용</li>
+</ul>
+
+</body>
+</html>
