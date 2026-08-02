@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M1 패키지 의존성 3층 구조</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>M1 패키지 의존성 3층 구조</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>프로젝트의 의존성은 하나의 목록이 아니라 <strong>세 개의 층</strong>이다: <strong>선언</strong>(manifest — 의도와 허용 범위),
+  <strong>고정</strong>(lockfile — 범위를 해석한 정확한 결과), <strong>실물</strong>(설치 디렉터리 — 디스크에 실제로 있는 코드).</li>
+  <li>선언이 범위 표기(semver의 <code>^</code>·<code>~</code>)를 쓰는 순간 "무엇이 설치되는가"는 <strong>해석의 문제</strong>가 되고, 그 해석 결과를 시점 무관하게 고정하는 장치가 lockfile이다.</li>
+  <li>실행 시 실제로 동작하는 것은 오직 <strong>실물 층</strong>이다 — 선언·고정이 무엇이라 말하든, 프로세스가 로드하는 코드는 디스크의 그것이다.</li>
+  <li>"내 로컬에선 되는데"류 사건의 표준 원인은 <strong>층 사이의 어긋남</strong>이다: 선언↔고정(lock 갱신 누락·병합 충돌), 고정↔실물(브랜치 전환 후 미설치·수동 조작·유령 의존성).</li>
+  <li><code>install</code>과 <code>ci</code>(frozen 설치)는 층을 동기화하는 <strong>방향이 다른</strong> 명령이다 — install은 선언 기준으로 고정을 <em>갱신할 수 있고</em>, ci는 고정을 정본으로 실물을 재구성하며 <strong>어긋나면 실패</strong>한다. 자동화 환경의 정답은 후자다.</li>
+</ul>
+
+<h2>1. 왜 세 층인가 — 선언·고정·실물</h2>
+<p>
+새 프로젝트에서 HTTP 클라이언트 라이브러리 하나를 추가하는 순간을 해부해 보자. 명령 한 줄이지만 실제로는 세 곳에 다른 것이 기록된다.
+</p>
+<div class="flow">선언 (manifest)          고정 (lockfile)                실물 (설치 디렉터리)
+package.json 등          package-lock.json 등           node_modules 등
+"http-lib": "^2.4.0"     http-lib 2.4.7 (해시·URL 포함)  실제 2.4.7의 코드 파일들
++ 그 의존성 전체 트리의 정확한 버전
+─ 사람이 편집하는 의도    ─ 도구가 계산한 해석 결과        ─ 프로세스가 로드하는 진실</div>
+<p>
+<strong>선언 층</strong>은 사람의 언어다 — "이 라이브러리가 필요하고, 2.4 계열이면 어떤 패치든 좋다"는 의도를 적는다.
+직접 의존성만 적으며, 그 의존성의 의존성(전이 의존성)은 적지 않는다.
+<strong>고정 층</strong>은 도구의 계산 결과다 — 선언의 범위를 특정 시점에 해석해, 전이 의존성까지 <strong>전체 트리의 정확한 버전</strong>
+(대개 무결성 해시와 다운로드 위치까지)을 기록한다. <strong>실물 층</strong>은 디스크의 코드 그 자체다 — 런타임이 <code>import</code>를
+해석할 때 보는 것은 선언도 고정도 아닌 이 층뿐이다.
+</p>
+<p>
+세 층이 다 필요한 이유는 각자가 다른 질문에 답하기 때문이다. "이 프로젝트는 무엇에 의존하기로 했는가"(선언 — 리뷰와 의도의 단위),
+"정확히 어떤 버전 조합으로 동작이 검증되었는가"(고정 — 재현의 단위), "지금 이 기계에서 실제로 무엇이 실행되는가"(실물 — 동작의 단위).
+층이 하나라도 없으면 어느 질문 하나가 답 불가능해진다 — 그리고 세 층이 있다는 것은, <strong>서로 어긋날 수 있는 틈이 두 개</strong>
+생겼다는 뜻이기도 하다. 그 틈으로 가기 전에, 애초에 선언이 왜 "정확한 버전"이 아니라 "범위"를 적는지부터 보자.
+</p>
+
+<h2>2. 범위 표기 — 자유도를 주는 규약, semver</h2>
+<p>
+선언 층의 <code>^2.4.0</code> 같은 표기는 유의적 버전(semantic versioning, semver) 규약 위에 서 있다. 버전을
+<code>주.부.패치</code>(major.minor.patch)로 쓰고, <strong>주 버전은 호환성이 깨지는 변경</strong>, 부 버전은 하위 호환 기능 추가,
+패치는 하위 호환 수정만을 의미하기로 한 약속이다. 이 약속이 있어야 범위 표기가 의미를 가진다:
+</p>
+<table>
+  <tr><th>표기</th><th>허용 범위</th><th>실린 의도</th></tr>
+  <tr><td><code>2.4.0</code></td><td>정확히 2.4.0</td><td>해석의 여지 없음 — 고정을 선언에서 직접 함</td></tr>
+  <tr><td><code>~2.4.0</code></td><td>2.4.x (패치만)</td><td>"수정은 받겠다, 기능 추가도 불안하다"</td></tr>
+  <tr><td><code>^2.4.0</code></td><td>2.x.y (주 버전 고정)</td><td>"호환 깨지는 것만 아니면 받겠다" — JS 생태계 기본값</td></tr>
+</table>
+<p>
+범위는 트레이드오프다. 넓게 열면 보안 패치·버그 수정이 재설치만으로 흘러들어 오고, 전이 의존성 충돌의 해소 여지도 커진다.
+대신 <strong>"오늘의 설치와 내일의 설치가 다른 결과"</strong>가 될 수 있다 — 범위 안에서 새 버전이 나오면 해석이 달라지기 때문이다.
+게다가 semver는 <strong>규약이지 보증이 아니다</strong>: 부 버전 업데이트가 실제로는 동작을 바꾸는 사고가 현실에 존재한다.
+그래서 "범위의 유연함"과 "결과의 재현성"을 동시에 얻는 구조가 필요했고, 그 답이 <strong>해석 결과를 별도 층에 고정</strong>하는
+lockfile이다 — 선언은 넓게, 고정은 정확하게, 갱신은 의도적으로. 그런데 이 우아한 구조는 층들이 <strong>실제로 동기화될 때만</strong>
+성립한다. 이제 어긋남의 목록으로 가자.
+</p>
+
+<h2>3. 층이 어긋나는 경우들 — 두 개의 틈</h2>
+<p>
+틈은 두 곳이다: 선언↔고정, 그리고 고정↔실물. 각 틈의 전형적 사고를 알아 두면 "내 로컬에선 되는데"의 조사 순서가 정해진다.
+</p>
+<p>
+<strong>선언↔고정의 어긋남.</strong> manifest를 손으로 편집하고(버전 범위 수정, 항목 추가) 설치 명령을 안 돌리면, lockfile은
+옛 해석을 그대로 담고 있다. 더 교묘한 것은 <strong>병합 충돌</strong>이다 — 두 브랜치가 각각 다른 패키지를 추가하면 manifest는
+깔끔히 병합되어도 lockfile은 기계 생성 파일이라 충돌이 나거나, 충돌 해소 과정에서 한쪽 갱신이 유실되기 쉽다.
+lockfile 충돌은 손으로 고치지 말고 <strong>manifest를 먼저 정리한 뒤 도구로 재생성</strong>하는 것이 정석이다.
+</p>
+<p>
+<strong>고정↔실물의 어긋남.</strong> lockfile은 저장소를 따라 움직이지만 실물 디렉터리는 <strong>내 기계에 남는다</strong> —
+브랜치를 전환하면 lockfile은 바뀌는데 실물은 이전 브랜치의 것 그대로다("브랜치 바꾸고 나서 이상해요"의 표준 원인).
+실물 디렉터리를 직접 건드리는 디버깅(설치된 패키지 코드를 임시 수정)도 이 틈을 만든다 — 다음 설치까지 그 수정은 lockfile 어디에도
+없는 유령 상태로 산다.
+</p>
+<blockquote class="warn">
+<p><strong>가장 교묘한 어긋남 — 유령 의존성(phantom dependency):</strong> 실물 층의 배치 방식 때문에, <strong>선언한 적 없는 패키지가
+import 가능한</strong> 상태가 생긴다. 전이 의존성이 실물 디렉터리 최상위로 끌어올려져(hoisting) 놓이면, 내 코드가 그것을 직접
+import해도 <em>지금은</em> 동작한다. 그러나 그 패키지는 내 선언에 없으므로 — 중간 의존성이 그것을 버리는 순간, 내 코드는
+아무 선언도 바꾸지 않았는데 깨진다. "실물에서 되는 것"과 "선언이 보증하는 것"의 차이를 보여 주는 대표 사례이자,
+최근 도구들이 실물 배치를 엄격 격리로 바꿔 온 이유다(6절 JS 항목).</p>
+</blockquote>
+
+<h2>4. install vs ci — 같은 "설치"가 아니다</h2>
+<p>
+어긋남의 목록을 봤으니, 동기화 명령이 <strong>어느 층을 정본으로 삼는가</strong>라는 질문이 자연스럽다. 여기서 install과 ci
+(각 도구의 frozen/immutable 설치)가 갈라진다.
+</p>
+<table>
+  <tr><th></th><th>install (개발용 동기화)</th><th>ci / frozen 설치 (재현용 동기화)</th></tr>
+  <tr><td>정본</td><td><strong>선언</strong> — manifest를 만족하도록</td><td><strong>고정</strong> — lockfile 그대로</td></tr>
+  <tr><td>lockfile</td><td>필요 시 <strong>갱신한다</strong> (해석을 다시 함)</td><td><strong>절대 갱신 안 함</strong> — 선언과 어긋나면 실패</td></tr>
+  <tr><td>실물</td><td>증분 갱신(있는 것 재활용)</td><td>삭제 후 재구성(클린 설치)</td></tr>
+  <tr><td>쓰는 곳</td><td>개발 기계 — 의존성을 바꾸는 순간</td><td>자동화 빌드·배포 — 검증된 조합을 재현하는 순간</td></tr>
+</table>
+<p>
+install은 <strong>양방향</strong> 명령이다 — 선언을 읽고, 고정을 (필요하면 다시 계산해) 쓰고, 실물을 맞춘다. 개발 중 의존성을 바꾸는
+바로 그 순간에 필요한 동작이지만, 자동화 환경에서 쓰면 위험해진다: lockfile이 낡아 있어도 에러 없이 <strong>조용히 새로 해석</strong>해
+버리므로, "빌드 서버가 나와 다른 버전을 설치했다"는 어긋남이 감지 없이 지나간다. ci류 명령은 <strong>단방향</strong>이다 —
+고정 층을 유일한 정본으로 실물을 재구성하고, 선언과 고정이 어긋나 있으면 <strong>고치는 대신 실패</strong>한다. 이 "실패해 주는 것"이
+핵심 가치다: 3절의 선언↔고정 어긋남이 배포 산출물에 스며드는 대신 빌드 단계에서 시끄럽게 드러난다.
+</p>
+<blockquote class="info">
+<p><strong>최근 관행(2020년대 중반 기준):</strong> 주요 JS 패키지 매니저 전부가 frozen 설치를 지원하며
+(<code>npm ci</code>·<code>pnpm install --frozen-lockfile</code>·<code>yarn install --immutable</code>), "저장소에는 lockfile을
+<strong>정확히 하나만</strong> 커밋하고, 자동화 환경의 설치 명령은 그 lockfile의 frozen 모드로"가 표준 수칙으로 정착했다.
+lockfile을 여러 개(서로 다른 도구의 것) 커밋하는 것은 "로컬은 되는데 빌드가 깨진다"의 단골 원인으로 꼽힌다.
+frozen 설치는 보안 관점의 방어이기도 하다 — 외부 기여 PR이 lockfile의 다운로드 위치를 변조하는 공격(lockfile 변조)은
+lockfile 검증 설치가 막는 대표 사례다.</p>
+</blockquote>
+<p>
+동기화 명령까지 갖췄으면 "같은 lockfile이면 어디서나 같은 결과가 나오는가"라는 다음 질문이 남는데 — 도구 버전·플랫폼별 바이너리·
+빌드 스크립트가 끼어드는 그 재현성의 영역은 <a href="M12 빌드 재현성과 환경 독립성.html">M12 빌드 재현성과 환경 독립성.html</a>의
+소관이다. 이 문서는 "3층이 어긋나지 않게 유지한다"까지를 책임진다.
+</p>
+
+<h2>흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"lockfile은 기계 생성 파일이니 커밋하지 않는다?"</strong> — 반대다. 고정 층은 <strong>저장소를 따라 움직여야</strong>
+  모두가 같은 해석을 공유한다. 커밋하지 않은 lockfile은 각자의 기계에서 각자의 시점에 해석된 서로 다른 고정 — 층 구조의 목적 자체를
+  무효화한다. (기계 생성이라 <em>손편집</em>하지 않는 것과, 커밋하지 않는 것은 전혀 다른 이야기다.)</li>
+  <li><strong>"선언에 정확한 버전을 쓰면 lockfile은 필요 없다?"</strong> — 직접 의존성은 고정되지만 <strong>전이 의존성</strong>이 남는다.
+  내 의존성들의 선언에는 여전히 범위 표기가 있으므로, 트리 전체의 해석은 시점에 따라 달라진다. 전이까지 고정하는 층은 lockfile뿐이다.</li>
+  <li><strong>"어제까지 됐고 아무것도 안 바꿨는데 깨졌다 = 내 코드 문제가 아니다?"</strong> — 절반만 위안이 된다. "아무것도 안 바꿨다"는
+  선언 층 이야기이고, frozen이 아닌 설치가 어딘가에서 돌았다면 고정·실물 층은 바뀌었을 수 있다. 조사 순서는 코드 diff가 아니라
+  <strong>"실물에 지금 어떤 버전이 있는가"</strong>부터다.</li>
+  <li><strong>"설치가 성공했으니 세 층은 일치한다?"</strong> — install의 성공은 "선언을 만족시켰다"이지 "고정과 실물이 lockfile 그대로"가
+  아니다. 일치의 보증은 frozen 설치의 성공만이 준다.</li>
+  <li><strong>"import가 되니까 의존성에 있는 것이다?"</strong> — 유령 의존성(3절)의 함정 그 자체. import 가능 여부는 실물 층의 배치
+  우연이고, 보증은 선언 층에만 있다. "쓰는 것은 반드시 직접 선언한다"가 방어 수칙이다.</li>
+</ul>
+
+<h2>★ 언어별 대조 — 각 생태계는 세 층을 어떻게 구현했는가</h2>
+<p>
+3층 구조는 언어 중립 개념이지만, 생태계마다 층의 구현과 기본값이 다르다 — 어느 층이 부실한가를 보면 그 생태계의 단골 사고가 예측된다.
+</p>
+<table>
+  <tr><th></th><th>Java</th><th>JS·TS</th><th>Python</th><th>C++</th></tr>
+  <tr><td>선언</td><td>pom.xml / build.gradle</td><td>package.json</td><td>pyproject.toml / requirements</td><td>vcpkg.json / conanfile (있다면)</td></tr>
+  <tr><td>고정</td><td><strong>관례상 부재</strong> — 정확 버전 명시 문화</td><td>lockfile (기본 생성)</td><td>표준 부재 역사 → 도구별 lock, 최근 표준화</td><td>도구 도입 시에만 존재</td></tr>
+  <tr><td>실물</td><td>전역 캐시(~/.m2 등) 공유</td><td>프로젝트별 node_modules</td><td>가상환경(venv)별</td><td>시스템 전역 or 프로젝트 vendoring</td></tr>
+  <tr><td>단골 사고</td><td>전이 의존성 해석 규칙 오해</td><td>유령 의존성·중복 lockfile</td><td>"내 venv에만 있는" 미고정 환경</td><td>버전 일치 ≠ ABI 일치</td></tr>
+</table>
+
+<h3>Java — lockfile이 없는 대신, 선언이 무겁고 해석 규칙이 독특하다</h3>
+<p>
+Maven에는 lockfile이 없다 — 그런데도 재현성 사고가 JS만큼 잦지 않은 이유가 구조적으로 흥미롭다. 문화적으로 <strong>선언에 정확한
+버전을 명시</strong>하고(범위 표기가 문법상 있지만 관례상 기피), 한 번 받은 산출물은 릴리스 불변(같은 버전 재업로드 금지) 저장소와
+전역 캐시(<code>~/.m2</code>)로 공유하기 때문이다 — 말하자면 <strong>고정 층의 역할을 선언 층에 흡수</strong>시킨 설계다. 그 대가는
+전이 의존성에서 치른다. 같은 라이브러리의 다른 버전이 트리에 여럿 등장할 때 Maven은 "루트에서 가장 가까운 선언이 이긴다"
+(nearest-wins)는 규칙으로 하나를 고르는데, 이는 "최신이 이긴다"가 아니라서 <strong>의존성 하나를 추가했더니 다른 라이브러리의
+전이 버전이 조용히 내려가는</strong> 사고가 가능하다:
+</p>
+<pre><code>&lt;!-- pom.xml: 선언 층. 정확 버전 명시 문화 --&gt;
+&lt;dependency&gt;
+  &lt;groupId&gt;com.example&lt;/groupId&gt;
+  &lt;artifactId&gt;http-lib&lt;/artifactId&gt;
+  &lt;version&gt;2.4.7&lt;/version&gt;          &lt;!-- 범위가 아니라 고정값 --&gt;
+&lt;/dependency&gt;
+
+# 트리 해석 결과 확인 — "실제로 어떤 버전이 이겼는가"
+mvn dependency:tree</code></pre>
+<p>
+JVM 기제 관점의 특기점: 해석에서 진 버전은 클래스패스에 아예 없으므로, 진 버전에만 있는 클래스를 참조하는 코드는
+<strong>런타임 <code>NoSuchMethodError</code>·<code>ClassNotFoundException</code></strong>으로 나타난다 — 컴파일은 한 버전으로,
+실행은 다른 버전으로 되는 층 어긋남의 JVM식 증상이다. Gradle은 버전 카탈로그와 선택적 lockfile 기능으로 고정 층을 도입할 수 있고,
+전이 해석도 "가장 높은 버전" 기본이라 Maven과 규칙이 다르다 — <strong>같은 선언이라도 도구에 따라 해석이 다르다</strong>는 사실
+자체가, 고정 층 없이 선언만으로는 재현이 완결되지 않음을 보여 준다.
+</p>
+
+<h3>JS·TS — 3층 구조의 본산이자, 실물 층 배치가 논쟁의 중심인 생태계</h3>
+<p>
+이 문서의 용어가 그대로 파일명인 생태계다 — <code>package.json</code>(선언), <code>package-lock.json</code>(고정),
+<code>node_modules</code>(실물). 선언 기본값이 <code>^</code>(주 버전만 고정)로 가장 개방적이고, 패키지 수가 극단적으로 많아
+(직접 몇 개가 전이 수백 개를 끌고 온다) 3층 구조의 모든 사고 유형이 가장 먼저, 가장 크게 나타난 곳이기도 하다:
+</p>
+<pre><code>// package.json (선언) — ^ 기본값
+{ "dependencies": { "http-lib": "^2.4.0" } }
+
+# 개발 기계: 양방향 동기화 (lock 갱신될 수 있음)
+npm install
+# 자동화 환경: 단방향 재현 (어긋나면 실패) — 도구별 등가 명령
+npm ci
+pnpm install --frozen-lockfile
+yarn install --immutable</code></pre>
+<p>
+런타임 기제가 유령 의존성의 뿌리다 — Node.js의 모듈 해석은 <code>node_modules</code>를 <strong>상위 디렉터리로 올라가며 탐색</strong>
+하므로, 실물 층에 존재하기만 하면 선언 여부와 무관하게 import가 성공한다. npm의 평탄화(hoisting) 배치가 이 탐색과 만나 유령을
+양산했고, 최근에는(2020년대 중반 기준) pnpm이 심볼릭 링크 기반 <strong>엄격 격리</strong>(선언한 것만 보이는 실물 배치)로 이 문제를
+구조적으로 막는 접근을 주류화했다 — 콘텐츠 주소 저장소로 디스크 중복도 없앤다. TS 관점 한 줄: 타입 선언 패키지(<code>@types/…</code>)는
+<strong>선언 층에만 있고 런타임 실물과 무관</strong>하므로, 타입과 구현의 버전이 어긋나는 "4번째 층" 문제가 TS 프로젝트에만 존재한다 —
+컴파일은 통과하는데 런타임 동작이 다른 고전적 원인이다.
+</p>
+
+<h3>Python — 선언과 고정이 한 형식에 뒤섞여 온 역사, 그리고 최근의 표준화</h3>
+<p>
+Python의 고전적 문제는 <code>requirements.txt</code>가 <strong>선언과 고정을 같은 문법으로</strong> 담는다는 것이었다 —
+<code>requests&gt;=2.28</code>(범위 선언)과 <code>requests==2.31.0</code>(고정)이 같은 파일에 섞이고, 이 파일이 어느 층인지는
+프로젝트 관례에 달려 있었다. 층 구분이 문법에 없으니 "전이 의존성까지 고정됐는가"를 파일만 봐서는 알 수 없다:
+</p>
+<pre><code># 선언 층: requirements.in (의도 — 직접 의존성, 범위 허용)
+fastapi&gt;=0.100
+# ↓ 도구(pip-tools 등)가 해석해 고정 층 생성
+# 고정 층: requirements.txt (전이 포함 전체 트리 ==고정 + 해시)
+fastapi==0.115.2
+starlette==0.40.0        # 전이 의존성까지 명시
+    --hash=sha256:…      # 무결성 해시</code></pre>
+<p>
+이 2파일 관례(pip-tools)와 자체 lockfile을 가진 통합 도구들(Poetry, 최근의 uv)이 층 구분을 도구 차원에서 복원해 왔고,
+<strong>최근에는(2025년 이후)</strong> lockfile 표준 형식(<code>pylock.toml</code>, PEP 751)이 채택되어 도구 간 호환되는 고정 층이
+언어 표준 수준에서 정의되는 단계다. 실물 층의 구현은 가상환경(venv)이다 — 인터프리터의 <code>sys.path</code>가 가리키는
+<code>site-packages</code>가 실물이고, 가상환경을 쓰지 않으면 실물 층이 <strong>시스템 전역에서 모든 프로젝트와 공유</strong>되어
+프로젝트 간 버전 충돌이라는 최악의 어긋남이 된다. 객체 모델 관점의 특기점: Python의 import는 런타임 문장이라 실물에 없는 패키지도
+<strong>그 import 줄이 실행되는 순간까지</strong> 문제가 드러나지 않는다 — 컴파일 시점 검증이 없는 만큼, 층 일치의 책임이 설치 규율로
+전가되는 구조다.</p>
+
+<h3>C++ — 표준 3층이 없는 것이 기본값이고, ABI가 네 번째 축을 얹는다</h3>
+<p>
+C++에는 언어 표준 패키지 매니저가 없다 — 시스템 패키지, git 서브모듈, 소스 복사(vendoring), 직접 빌드가 뒤섞인 것이 역사적
+기본값이다. 3층 개념틀로 보면 <strong>선언·고정 층이 프로젝트 문서와 담당자의 기억에 존재</strong>하는 상태다. vcpkg·Conan 같은
+도구는 이 구조를 복원한다:
+</p>
+<pre><code>// vcpkg.json — 선언 층
+{ "dependencies": [ "fmt", "nlohmann-json" ],
+  "builtin-baseline": "a1b2c3…" }   // 베이스라인 커밋 = 고정 층의 축
+// 레지스트리 스냅샷(커밋)을 고정점으로 삼아 전체 해석을 재현한다</code></pre>
+<p>
+그러나 C++에는 다른 언어에 없는 네 번째 축이 있다 — <strong>ABI(바이너리 호환성)</strong>. 같은 "버전 2.4.7"이라도 컴파일러·표준
+라이브러리·빌드 플래그·예외 설정이 다르면 <strong>바이너리로는 호환되지 않는다</strong>: 구조체 크기·가상 함수 테이블 배치·이름 장식이
+달라져, 링크는 되고 실행에서 깨지는(또는 조용히 오염되는) 어긋남이 된다. 즉 C++의 "실물 층 일치"는 버전 일치를 넘어
+<strong>빌드 구성 일치</strong>까지 요구하며, Conan이 패키지 식별에 버전 + 컴파일러·플래그 프로파일을 함께 넣는 것이 이 축의
+도구화다. 컴파일 타임 관점의 결: 헤더 온리 라이브러리는 실물이 "내 번역 단위 안"으로 들어오므로 배포 층 어긋남 대신
+<strong>중복 정의·버전 혼입</strong>(서로 다른 버전의 같은 헤더가 다른 번역 단위에) 형태로 사고가 이동한다 — 층이 없어지는 게 아니라
+컴파일 안으로 접혀 들어가는 것이다.</p>
+
+<h2>함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>취약점 감사(audit)</strong> — 고정·실물 층의 버전 목록을 공개 취약점 DB와 대조하는 도구(<code>npm audit</code>,
+  <code>pip-audit</code>, OWASP Dependency-Check 등). 3층 구조의 부산물로 "정확히 무엇이 설치돼 있는가"가 기계 판독 가능해졌기에
+  성립하는 검사다 — lockfile 없는 프로젝트는 감사 대상 목록부터 불확실하다.</li>
+  <li><strong>자동 갱신 봇</strong> — 범위 안 새 버전을 감지해 lockfile 갱신 PR을 만들어 주는 도구(Renovate·Dependabot류).
+  "고정 층의 갱신을 의도적·검토 가능하게"라는 이 문서의 원칙을 자동화한 형태다. 최근에는 공급망 공격 대응으로 릴리스 직후 일정
+  기간 갱신을 미루는 냉각기(cooldown) 옵션이 관행에 추가되는 추세다.</li>
+  <li><strong>워크스페이스(monorepo)</strong> — 한 저장소의 여러 패키지가 선언은 각자, 고정·실물은 루트에서 공유하는 구조.
+  층 구조가 "패키지 수 × 층"으로 늘어나며, 내부 패키지 간 참조가 실물 층에서 심볼릭 링크로 구현되는 등 어긋남의 양상도 확장된다.</li>
+  <li><strong>사설 레지스트리와 미러</strong> — 고정 층에는 버전뿐 아니라 <strong>다운로드 위치</strong>도 기록된다. 레지스트리를
+  옮기면 lockfile이 통째로 바뀌는 이유이자, 같은 이름 패키지를 공개 레지스트리에 올려 내부 패키지를 가로채는 의존성 혼동
+  (dependency confusion) 공격의 방어 지점이다.</li>
+  <li><strong>SBOM(software bill of materials)</strong> — 산출물에 포함된 구성요소 전체 목록의 표준 형식. 고정 층을 빌드 산출물
+  차원으로 승격한 것으로, 규제·보안 요구로 최근 비중이 커지고 있다.</li>
+</ul>
+
+<h2>한 장 요약</h2>
+<ul>
+  <li>의존성 = <strong>선언(의도·범위) / 고정(해석 결과 전체 트리) / 실물(디스크의 코드)</strong> 세 층. 실행되는 것은 실물뿐이고, 재현을 보증하는 것은 고정뿐이다.</li>
+  <li>semver 범위 표기(<code>^</code>·<code>~</code>)는 유연함을 주지만 해석을 시점 의존으로 만든다 — 그 해석을 고정하는 장치가 lockfile이고, 따라서 <strong>lockfile은 반드시 커밋</strong>한다(손편집은 금지).</li>
+  <li>어긋남의 틈은 둘: 선언↔고정(lock 갱신 누락·병합 충돌), 고정↔실물(브랜치 전환 후 미설치·수동 조작·유령 의존성). "내 로컬에선 되는데"는 코드 diff가 아니라 <strong>실물 층 확인부터</strong>.</li>
+  <li><code>install</code>은 선언 정본의 양방향 동기화(개발용), <code>ci</code>/frozen은 고정 정본의 단방향 재구성 — <strong>어긋나면 실패해 주는 것이 가치</strong>(자동화 환경 표준). lockfile은 저장소에 정확히 하나만.</li>
+  <li>생태계별 층 구현: Java는 고정을 선언에 흡수(대신 전이 해석 규칙 함정), JS는 3층 원형(유령 의존성·엄격 격리 논쟁), Python은 선언·고정 혼재의 역사에서 표준 lockfile로 수렴 중, C++은 도구 도입 시에만 3층 + <strong>ABI라는 네 번째 축</strong>.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="M2 빌드 방식 vs dev 서버.html">M2 빌드 방식 vs dev 서버.html</a> — 설치된 의존성이 두 실행 경로에서 다르게 소비되는 지점</li>
+  <li><a href="M3 빌드 번들 검사 방법론.html">M3 빌드 번들 검사 방법론.html</a> — "실물이 산출물에 실제로 들어갔는가"를 확인하는 절차</li>
+  <li><a href="M12 빌드 재현성과 환경 독립성.html">M12 빌드 재현성과 환경 독립성.html</a> — 3층 일치 이후의 재현성(도구·환경 축)</li>
+</ul>
+
+</body>
+</html>
