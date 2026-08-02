@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>A2 Vue 반응성 시스템 원리</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>A2 Vue 반응성 시스템 원리</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>반응성(reactivity)의 본질은 <strong>"읽기를 기록하고, 쓰기에 통지한다"</strong>다 — 어떤 계산(effect)이 실행되는 동안 무엇을 읽었는지 추적해 의존성 그래프를 만들고, 그 값이 바뀌면 해당 계산만 다시 돌린다.</li>
+  <li>Vue 3의 추적 장치는 <strong>Proxy</strong>다 — 객체를 프록시로 감싸 속성 <strong>읽기(get)와 쓰기(set)를 가로채는</strong> 것이 track/trigger의 전부다.</li>
+  <li><code>reactive</code>는 객체를 깊은 프록시로 감싸고, <code>ref</code>는 <strong>프록시가 가로챌 수 없는 원시값</strong>을 <code>.value</code>라는 속성 접근으로 바꿔 주는 상자다 — 둘의 존재 이유가 곧 추적 기제의 제약이다.</li>
+  <li>"반응 안 되는 경우"는 신비가 아니라 전부 한 문장으로 환원된다: <strong>추적기가 못 보는 읽기, 또는 트랩을 지나지 않는 쓰기</strong> — 구조 분해로 값이 프록시 밖으로 나갔거나, 원본 객체를 직접 만졌거나, effect 바깥(비추적 컨텍스트)에서 읽었거나, 프록시 참조 자체를 갈아 끼웠거나.</li>
+  <li>이 기반 위에 파생 상태(computed) 파이프라인이 선다 — 파생 설계는 <a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a>이 잇는다.</li>
+</ul>
+
+<h2>1. 반응성이 풀려는 문제 — 상태와 화면의 수동 동기화</h2>
+<p>
+반응성 없는 세계부터 상상하자. 장바구니 수량이 바뀌면 합계 표시·배송비 문구·결제 버튼 활성화를 <strong>일일이 찾아서</strong> 갱신해야
+한다 — "상태를 바꾸는 모든 코드"가 "그 상태를 보여 주는 모든 화면"을 알아야 하는 N×M 결합이고, 하나라도 빠뜨리면 화면이 낡는다.
+고전적 해법은 옵저버 패턴(관찰자 등록 → 변경 시 통지)이지만, 등록·해제를 손으로 관리하는 비용이 크다.
+</p>
+<p>
+반응형 프레임워크의 약속은 이 배선을 <strong>자동화</strong>하는 것이다: "합계 = 수량 × 단가"라고 선언만 하면, 수량이 바뀔 때 합계가
+따라온다. 자동화가 성립하려면 시스템이 두 가지를 스스로 알아내야 한다 — <strong>① 이 계산이 무엇을 읽는가</strong>(의존성 수집),
+<strong>② 그 값이 언제 바뀌는가</strong>(변경 감지). 이 두 질문에 대한 Vue의 답이 각각 다음 두 절이고, 그 답의 <strong>사각지대</strong>가
+4절("반응 안 되는 경우")이다 — 즉 함정까지 포함해 이 문서 전체가 두 질문의 변주다.
+</p>
+
+<h2>2. 의존성 추적의 기제 — 읽기를 가로채 기록한다</h2>
+<p>
+"이 계산이 무엇을 읽는가"를 아는 가장 정직한 방법은 <strong>읽는 순간을 목격하는 것</strong>이다. Vue의 구조를 최소 모형으로 줄이면:
+</p>
+<pre><code>// 반응성 코어의 최소 모형 (개념 축약)
+let activeEffect = null;                 // "지금 실행 중인 계산"
+
+function effect(fn) {                    // 화면 렌더링·watch가 전부 이것
+  activeEffect = fn;
+  fn();                                  // 실행하는 동안의 모든 읽기가 목격된다
+  activeEffect = null;
+}
+const deps = new Map();                  // (객체, 속성) → 이 값을 읽었던 effect 집합
+
+function track(target, key) {            // 읽기 목격: "지금 그 계산이 이 값을 읽었다"
+  if (activeEffect) depsOf(target, key).add(activeEffect);
+}
+function trigger(target, key) {          // 쓰기 발생: 그 값을 읽었던 계산만 재실행
+  depsOf(target, key).forEach(fn =&gt; effect(fn));
+}</code></pre>
+<p>
+남은 문제는 <code>track</code>·<code>trigger</code>를 <strong>언제 호출되게 만드는가</strong>다 — 사용자 코드는 그냥
+<code>state.count</code>를 읽고 <code>state.count = 3</code>을 쓸 뿐인데. 여기서 JS의 Proxy가 등장한다. 프록시는 객체를 감싸
+속성 접근을 <strong>트랩(trap)</strong>으로 가로채는 언어 기능이다:
+</p>
+<pre><code>function reactive(target) {
+  return new Proxy(target, {
+    get(t, key) { track(t, key); return Reflect.get(t, key); },   // 읽기 → 기록
+    set(t, key, v) {
+      const changed = t[key] !== v;
+      Reflect.set(t, key, v);
+      if (changed) trigger(t, key);                               // 쓰기 → 통지
+      return true;
+    }
+  });
+}</code></pre>
+<p>
+이게 전부다 — 렌더링을 <code>effect</code>로 실행하면, 템플릿이 읽은 속성들이 자동으로 기록되고, 그중 하나가 바뀌면 그 컴포넌트만
+다시 렌더링된다. 주목할 성질 하나: 의존성은 <strong>실행할 때마다 다시 수집</strong>된다. <code>if (state.loggedIn) show(state.name)</code>
+같은 분기가 있으면, 이번 실행에서 안 읽힌 <code>state.name</code>은 이번 그래프에 없다 — 조건이 바뀌기 전까지 <code>name</code> 변경은
+이 effect를 깨우지 않는다. 낭비를 없애는 정확한 동작이지만, "어제는 반응했는데 오늘은 안 한다"처럼 보이는 현상의 원리이기도 하다.
+</p>
+
+<h2>3. ref와 reactive — 두 API의 존재 이유는 추적 기제의 제약이다</h2>
+<p>
+2절의 기제에는 태생적 구멍이 있다: 프록시는 <strong>객체</strong>만 감쌀 수 있다. 숫자·문자열·불리언 같은 원시값은 속성 접근이라는
+개념 자체가 없으므로 가로챌 지점이 없다 — <code>let count = 0; count = 1</code>이라는 대입은 어떤 트랩도 지나지 않는 순수한 변수
+재할당이다. 그래서 Vue는 원시값을 <strong>객체로 승격</strong>시킨다:
+</p>
+<pre><code>const count = ref(0);      // { value: 0 } 모양의 "상자" — 객체이므로 가로챌 수 있다
+count.value;               // 읽기 = .value 속성 get → track
+count.value = 1;           // 쓰기 = .value 속성 set → trigger
+// 템플릿 안에서는 {{ count }} 로 자동 언래핑 — .value는 컴파일러가 붙여 준다
+
+const state = reactive({ user: { name: "kim" }, items: [] });
+state.user.name;           // 중첩 객체도 접근 시점에 재귀적으로 프록시화(깊은 반응성)</code></pre>
+<p>
+<code>ref</code>의 <code>.value</code>가 번거로움이 아니라 <strong>추적 지점 그 자체</strong>라는 것 — 이것이 두 API를 관통하는 이해다.
+<code>reactive</code>는 객체를 직접 프록시로 감싸므로 점 표기 그대로 쓰지만 원시값·재할당에 못 쓰고, <code>ref</code>는 무엇이든
+담지만 <code>.value</code>라는 명시적 문이 필요하다. 실무 관례가 "기본은 ref, 관련 필드 묶음은 reactive"로 수렴한 것도 이 제약
+지도의 반영이다. 그리고 이 지도를 뒤집으면 그대로 다음 절이 된다 — <strong>프록시를 통과하지 않는 경로가 곧 반응성이 끊기는
+경로</strong>다.
+</p>
+
+<h2>4. 반응 안 되는 경우 — 추적기가 못 보는 읽기와 쓰기</h2>
+<p>
+"왜 화면이 안 바뀌지?"의 사례들은 전부 2·3절 기제의 사각지대로 환원된다. 네 부류로 정리한다.
+</p>
+<p>
+<strong>① 값이 프록시 밖으로 나갔다 — 구조 분해·복사.</strong> 프록시의 마법은 <strong>프록시를 통해 접근할 때만</strong> 작동한다.
+구조 분해는 그 순간의 값을 꺼내 평범한 지역 변수에 담는 행위다:
+</p>
+<pre><code>const state = reactive({ count: 0, user: { name: "kim" } });
+
+const { count } = state;   // 이 순간 count는 그냥 숫자 0 — 프록시와의 연결 절단
+// 이후 state.count가 바뀌어도 이 count는 영원히 0
+
+const n = state.count;     // 같은 문제의 명시형 — "스냅샷"을 뜬 것
+// 단, 객체 속성은 다르다: const u = state.user 의 u는 (중첩 프록시라) 여전히 반응형
+// — "원시값은 끊기고 객체 참조는 살아 있다"는 비대칭이 혼란의 진원지</code></pre>
+<p>
+반응성을 유지한 채 풀어 쓰려면 연결을 보존하는 변환(<code>toRefs</code>·<code>toRef</code> — 각 속성을 원본과 연결된 ref로)이 필요하다.
+"프롭스를 구조 분해하면 반응성을 잃는다"는 유명한 주의도 이 부류의 특수형이다.
+</p>
+<p>
+<strong>② 쓰기가 트랩을 지나지 않았다 — 원본 직접 조작과 참조 교체.</strong> <code>reactive(target)</code>는 원본을 바꾸는 게 아니라
+<strong>감싼 별개의 객체</strong>를 돌려준다. 어딘가에 남아 있던 원본 참조로 <code>target.count = 5</code>를 하면 트랩이 없으니 통지도
+없다 — 값은 바뀌었는데(프록시로 읽어도 5다) <strong>아무도 깨어나지 않는</strong>, 가장 헷갈리는 상태가 된다. 참조 교체도 같은 부류다:
+<code>state = reactive({...})</code>로 <strong>변수 자체를 재할당</strong>하면, 템플릿·effect가 쥐고 있는 것은 여전히 옛 프록시다 —
+reactive 객체는 변이(mutate)하거나, 교체가 필요하면 ref에 담아 <code>.value</code>를 갈아 끼운다.
+</p>
+<p>
+<strong>③ 읽기가 비추적 컨텍스트에서 일어났다.</strong> track은 <code>activeEffect</code>가 있을 때만 기록한다(2절 모형의
+<code>if (activeEffect)</code>). effect 바깥 — 컴포넌트 셋업의 일반 코드, <code>setTimeout</code>·이벤트 핸들러의 콜백 —
+에서 읽은 값은 <strong>그 시점의 스냅샷</strong>일 뿐 의존성이 되지 않는다. "이 함수 안에서 최신 값을 읽는 것"과 "이 값에 반응해
+함수가 다시 도는 것"은 다른 요구이며, 후자를 원하면 그 읽기를 computed·watch·렌더링 같은 추적 컨텍스트 안으로 옮겨야 한다.
+2절 끝의 "분기로 이번 실행에 안 읽힌 의존성"도 여기 속한다 — 추적은 <strong>실제로 일어난 읽기</strong>에만 붙는다.
+</p>
+<p>
+<strong>④ 역사적 한계 — 지금은 대부분 해소.</strong> Vue 2는 프록시가 아니라 속성별 getter/setter 변환(defineProperty)을 썼기 때문에
+<strong>객체에 속성을 추가</strong>하거나 <strong>배열 인덱스에 직접 대입</strong>하는 변경을 원리적으로 못 봤다(변환 시점에 존재하던 속성만
+감쌌으므로). Vue 3의 프록시는 이를 해소했다 — 다만 낡은 자료의 "배열 인덱스는 반응 안 된다"는 경고를 현재 시제로 기억하는 것
+자체가 새로운 혼란원이 됐다. 컬렉션(Map·Set)까지 포함해, 현행 한계는 위 ①~③의 구조적 사각지대로 좁혀졌다고 정리하면 된다.
+</p>
+<blockquote class="warn">
+<p><strong>진단 규칙 한 줄:</strong> "반응이 안 된다"를 만나면 — 그 값의 <strong>읽기</strong>가 추적 컨텍스트 안에서, <strong>프록시를
+통해</strong> 일어나는가? 그 값의 <strong>쓰기</strong>가 프록시 트랩을 지나는가? 두 질문에 전부 "예"인데 안 되는 경우는 사실상 없다.</p>
+</blockquote>
+
+<h2>흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"ref vs reactive는 취향 문제?"</strong> — 제약이 다르다(3절): reactive는 원시값·재할당 불가 + 구조 분해에 취약,
+  ref는 만능이지만 <code>.value</code> 명시 필요. "기본 ref"가 관례가 된 것은 함정 표면적이 작기 때문이지 문체 선호가 아니다.</li>
+  <li><strong>"computed는 그냥 함수 호출과 같다?"</strong> — computed는 <strong>캐시되는 반응형 값</strong>이다: 의존성이 안 바뀌면
+  재계산 없이 저장값을 돌려준다. 매 렌더마다 도는 메서드 호출과의 차이는 성능만이 아니라 "언제 다시 계산되는가"라는 의미론이다
+  (파생 체인 설계는 A12).</li>
+  <li><strong>"값을 바꿨는데 DOM이 아직 옛것이다 = 반응성 고장?"</strong> — 갱신은 동기가 아니다. Vue는 변경을 모아 다음 틱에 한 번
+  렌더링한다(배치). 변경 직후 DOM을 읽어야 하면 <code>nextTick</code>을 기다린다 — 이 배치·틱의 무대가 브라우저 이벤트 루프다
+  (<a href="../B 웹 플랫폼·브라우저/B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a>).</li>
+  <li><strong>"watch에 객체를 줬는데 내부 변경에 안 울린다?"</strong> — 프록시 참조 자체는 안 바뀌었기 때문이다. 내부까지 보려면
+  깊은 감시(<code>deep</code>) 또는 게터로 구체 속성을 지정한다 — "무엇의 변경을 듣고 싶은가"를 참조/내용 수준에서 명시하는 문제다.</li>
+  <li><strong>"반응형으로 감싸면 다 좋다?"</strong> — 깊은 프록시화는 비용이다. 수만 행의 읽기 전용 데이터를 reactive에 넣으면
+  접근마다 트랩·재귀 래핑 비용을 낸다 — 갱신 통지가 필요 없는 대형 데이터는 얕은 래핑(<code>shallowRef</code>류)이나 비반응 보관이
+  옳다. 반응성은 공짜 기본값이 아니라 예산이 드는 기능이다.</li>
+</ul>
+
+<h2>★ 언어별 대조 — "속성 접근을 가로챌 수 있는가"가 반응성 설계를 결정한다</h2>
+<p>
+Vue 반응성의 뼈대(읽기 기록·쓰기 통지)는 옵저버 패턴의 자동화이고, 자동화의 관건은 <strong>언어가 속성 접근 가로채기를 허용하는가</strong>다.
+이 한 축으로 네 언어의 반응성 지형이 갈린다.
+</p>
+<table>
+  <tr><th></th><th>JS·TS</th><th>Java</th><th>Python</th><th>C++</th></tr>
+  <tr><td>속성 접근 가로채기</td><td>Proxy(언어 내장, 전면적)</td><td>불가 — 필드 접근은 고정 바이트코드</td><td>가능 — 디스크립터·<code>__setattr__</code>(객체 모델 내장)</td><td>런타임 불가 — 컴파일 타임 우회만</td></tr>
+  <tr><td>반응성의 형태</td><td>암묵(그냥 읽고 쓰면 됨)</td><td>명시적 Observable 타입</td><td>암묵 가능(프레임워크 취향에 따라)</td><td>명시적 시그널/옵저버 등록</td></tr>
+  <tr><td>대표 구현</td><td>Vue·Signals 계열</td><td>JavaFX Property, 리스너 패턴</td><td>디스크립터 기반 관찰 필드</td><td>Qt 시그널/슬롯, dirty flag</td></tr>
+</table>
+
+<h3>JS·TS — Proxy라는 전면 가로채기, 그리고 타입이 못 지켜 주는 것</h3>
+<p>
+2·3절이 곧 JS 심화이므로 여기서는 런타임·타입 관점을 보탠다. 런타임 기제: Proxy 트랩은 편리하지만 <strong>모든 속성 접근에 함수
+호출 한 겹</strong>을 얹는다 — 엔진의 인라인 캐시(같은 모양 객체의 속성 접근을 기계어 수준으로 최적화하는 장치)가 프록시 경유
+접근에는 덜 듣는다는 것이 깊은 반응성의 비용 구조이고, "대형 데이터는 얕게"(5절)의 엔진 수준 근거다. Vue 2의 defineProperty
+방식(속성별 getter/setter 재정의)과 Proxy의 차이는 <strong>가로채기의 범위</strong>다 — 전자는 "변환 시점에 알던 속성"만,
+후자는 "미래의 어떤 접근이든" 잡는다(4절 ④의 원리). TS 관점의 경고 하나: 타입은 반응성 절단을 <strong>감지하지 못한다</strong> —
+</p>
+<pre><code>const { count } = state;   // TS 타입: number — 완벽히 유효한 코드
+// 반응성 상실은 타입 오류가 아니다. Ref&lt;number&gt;와 number의 구분이 타입에 있는
+// ref 계열이 그나마 낫다: .value를 빼먹으면 타입 에러가 나 주니까.
+// reactive의 구조 분해는 타입 세계에서 완전히 합법 — 규율·린트의 영역으로 남는다</code></pre>
+<p>
+<code>Ref&lt;T&gt;</code>가 타입으로 존재해 <code>.value</code> 누락을 컴파일에서 잡아 주는 것 — ref 관례의 숨은 이점이 여기에도 있다.
+</p>
+
+<h3>Java — 필드 접근을 가로챌 수 없는 언어의 답: 명시적 프로퍼티 객체</h3>
+<p>
+Java에서 <code>obj.field</code> 접근은 고정된 바이트코드 명령이라 런타임에 가로챌 수 없다(동적 프록시는 <strong>인터페이스 메서드
+호출</strong>만 감싼다 — 필드는 못 본다). 그래서 JVM 세계의 반응성은 "값을 관찰 가능한 <strong>객체로 승격</strong>"하는 명시적 설계로
+간다 — Vue의 ref가 원시값을 상자에 담은 것과 정확히 같은 이유, 다른 강제 수준이다:
+</p>
+<pre><code>// JavaFX Property — "관찰 가능한 값 상자"를 타입으로 강제
+IntegerProperty count = new SimpleIntegerProperty(0);
+count.addListener((obs, oldV, newV) -&gt; label.setText("count: " + newV));
+count.set(5);                          // set()이 트랩 역할 — 리스너 통지
+
+// 파생값 바인딩: computed의 수동 대응물
+NumberBinding total = count.multiply(price);   // 의존성을 "선언"해야 한다</code></pre>
+<p>
+Vue와의 결정적 차이가 마지막 줄에 있다 — <strong>의존성 수집이 자동이 아니다</strong>. 무엇에 의존하는지를 개발자가 바인딩 API로
+선언해야 하고, 빠뜨리면 그게 곧 "반응 안 되는 경우"다(Vue에서는 읽기만 하면 수집되는 것이 자동화의 핵심 이득임이 대비로
+선명해진다). 리스너 등록의 짝인 <strong>해제 관리</strong>도 수동 세계의 비용이다 — 해제를 잊은 리스너는 참조를 붙들어 메모리 누수가
+된다(GC는 "듣고 있는" 객체를 회수하지 않는다). 서버 Java 쪽 생태계에 UI식 반응성이 드문 것도 구조적이다 — 요청-응답 모델은
+상태-화면 동기화 문제 자체가 없고, 유사 개념은 리액티브 스트림(Flux/Mono — 비동기 데이터 흐름)이라는 다른 축으로 발달했다.
+이름이 같은 "reactive"지만 푸는 문제(배압 있는 비동기 파이프라인)가 다르다는 것도 알아 둘 구분이다.
+</p>
+
+<h3>Python — 객체 모델에 가로채기가 내장된 언어: 디스크립터로 만드는 미니 Vue</h3>
+<p>
+Python은 속성 접근 가로채기가 <strong>객체 모델의 공식 기능</strong>이다 — 모든 속성 접근이 <code>__getattribute__</code>를 지나고,
+디스크립터 프로토콜(<code>__get__</code>/<code>__set__</code>을 가진 클래스 속성)이 특정 속성의 읽기·쓰기에 훅을 건다.
+Vue 2의 defineProperty 방식과 개념적으로 동일한 장치가 언어 표준에 있는 셈이다:
+</p>
+<pre><code>class Observable:                      # 디스크립터 — 속성 하나를 관찰 가능하게
+    def __set_name__(self, owner, name): self.name = "_" + name
+    def __get__(self, obj, type=None):  # 읽기 훅 (track의 자리)
+        return getattr(obj, self.name)
+    def __set__(self, obj, value):      # 쓰기 훅 (trigger의 자리)
+        setattr(obj, self.name, value)
+        for fn in obj._listeners.get(self.name, ()): fn(value)
+
+class Cart:
+    count = Observable()               # 클래스 선언만으로 훅 장착</code></pre>
+<p>
+과학 컴퓨팅·설정 관리 생태계의 관찰 가능 속성 라이브러리들(traitlets류 — 노트북 위젯의 기반)이 이 패턴의 실전형이다.
+Vue 2와 같은 방식이므로 한계도 같이 물려받는다 — 디스크립터는 <strong>클래스에 선언된 속성</strong>에만 붙으므로 동적으로 추가된
+속성은 못 본다(Proxy 상당물로는 <code>__getattr__</code>/<code>__setattr__</code> 전면 재정의가 있다). GIL 관점 한 줄:
+통지 콜백이 동기로 도는 단순 구현은 스레드 환경에서 "쓰기 중 콜백" 경합이 있으므로, 서버 파이썬에서 반응성 스타일을 쓸 때는
+이벤트 루프(asyncio) 단일 스레드 위에 얹는 것이 정합적이다. 덕 타이핑 통찰: "관찰 가능한가"가 타입이 아니라 <strong>객체의 구성</strong>에
+달려 있어, Java처럼 타입으로 강제되지도 Vue처럼 프레임워크가 전담하지도 않는 중간 지대 — 규약 문서화가 그만큼 중요해진다.
+</p>
+
+<h3>C++ — 런타임 가로채기가 없는 세계: 코드 생성과 명시적 신호</h3>
+<p>
+C++에서 멤버 접근은 컴파일 시점에 오프셋 계산으로 굳는다 — 런타임 가로채기 지점이 원리적으로 없다. 그래서 C++ UI 프레임워크의
+반응성은 <strong>언어 밖의 도구</strong>가 만든다. 대표가 Qt의 시그널/슬롯이다 — 전용 전처리기(moc)가 클래스 선언을 읽어 통지
+배선 코드를 <strong>생성</strong>하고, 값 변경은 반드시 setter를 지나며 setter가 시그널을 쏜다:
+</p>
+<pre><code>class Cart : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(int count READ count WRITE setCount NOTIFY countChanged)
+public:
+    void setCount(int v) {
+        if (m_count == v) return;      // 변경 없으면 통지 생략 (trigger의 동등성 검사)
+        m_count = v;
+        emit countChanged(v);          // 쓰기 통지 — 코드 생성이 배선한 신호
+    }
+signals:
+    void countChanged(int);
+};</code></pre>
+<p>
+"프레임워크가 요구하는 매크로·전처리"가 곧 <strong>가로채기 불가를 코드 생성으로 우회한 흔적</strong>이라는 것 — Vue의 컴파일러가
+템플릿에 <code>.value</code>와 track을 심는 것과 같은 자리의 해법이다. 게임 엔진 쪽 관용구는 더 원시적이고 더 성능 지향적이다:
+<strong>더티 플래그(dirty flag)</strong> — 값 변경 시 플래그만 세우고, 프레임마다 플래그 선 것만 재계산한다. 통지 즉시 전파(push)가
+아니라 소비 시점 일괄 확인(pull)이라는 대극의 설계로, 반응성의 push/pull 스펙트럼을 보여 주는 좋은 대조다. 메모리·수명 관점의
+고유 함정: 옵저버 목록에 등록된 객체가 먼저 파괴되면 <strong>댕글링 포인터 호출</strong>이 된다 — GC 언어의 "누수"가 C++에서는
+"해제 후 사용"으로 격상되므로, 연결의 수명 관리(Qt는 QObject 소유권 트리로 자동 해제) 자체가 반응성 설계의 반이다.
+</p>
+
+<h2>함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>파생 상태 파이프라인</strong> — computed의 연쇄로 원천→파생을 설계하는 방법론. 이 문서의 기제 위에 서는 다음 층으로,
+  <a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a>이 전담한다.</li>
+  <li><strong>배치 갱신과 nextTick</strong> — 변경→렌더링이 동기가 아니라 틱 단위로 모이는 구조. DOM 측정·포커스 이동처럼 "갱신된
+  DOM"이 필요한 코드의 표준 관용구이며, 그 틱의 실체(마이크로태스크)는 B2의 영역이다.</li>
+  <li><strong>얕은 반응성 도구들</strong> — <code>shallowRef</code>·<code>shallowReactive</code>·<code>markRaw</code>: 깊은 프록시화
+  비용을 통제하는 손잡이. "반응성은 예산"이라는 5절 관점의 실전 도구다.</li>
+  <li><strong>시그널(Signals) 수렴 흐름</strong> — Vue의 ref와 같은 "값 상자 + 자동 의존성 추적" 모델이 프레임워크들의 공통 원리로
+  수렴하고, JS 표준(TC39 Signals 제안)으로 올리려는 흐름이 진행 중이다 — 프레임워크가 달라도 이 문서의 원리는 이식된다는 뜻이다.</li>
+  <li><strong>최근에는(2026년 중반 기준)</strong> — Vue 3.6이 반응성 코어를 alien-signals 기반으로 재작성해(푸시-풀 지연 평가로
+  computed 효율 개선) RC 단계에 있고, 가상 DOM 없이 컴파일러가 반응성-DOM 배선을 직접 생성하는 <strong>Vapor 모드</strong>가 이
+  버전에서 완성 단계에 이르렀다. 주목할 점은 이 변화들이 <strong>이 문서의 원리(읽기 추적·쓰기 통지)를 바꾸는 게 아니라 그 구현을
+  최적화하는 것</strong>이라는 사실이다 — 렌더링 경로(가상 DOM diff → 직접 배선)가 바뀌어도 track/trigger 모델은 그대로다.</li>
+</ul>
+
+<h2>한 장 요약</h2>
+<ul>
+  <li>반응성 = <strong>effect 실행 중의 읽기를 기록(track)하고, 쓰기에 통지(trigger)해 그 effect만 재실행</strong>. 의존성은 실행마다 재수집된다(분기로 안 읽힌 것은 이번 그래프에 없다).</li>
+  <li>가로채기 장치는 Proxy — 그래서 <strong>객체만</strong> 감쌀 수 있고, 원시값은 <code>ref</code>의 <code>.value</code> 상자로 승격해야 한다. <code>.value</code>는 번거로움이 아니라 추적 지점이다.</li>
+  <li>반응 안 되는 경우 = 추적기의 사각지대 네 부류: <strong>① 구조 분해·원시값 복사</strong>(프록시 밖으로 탈출 — <code>toRefs</code>로 연결 보존) <strong>② 원본 직접 조작·참조 교체</strong>(트랩 미통과) <strong>③ 비추적 컨텍스트의 읽기</strong>(스냅샷일 뿐) <strong>④ Vue 2 시대 한계</strong>(속성 추가·인덱스 — 현행은 해소, 낡은 경고 주의).</li>
+  <li>진단은 두 질문: 읽기가 추적 컨텍스트 안에서 프록시를 통해 일어나는가 / 쓰기가 트랩을 지나는가.</li>
+  <li>언어 대조의 축은 "속성 접근 가로채기 가능 여부": JS는 Proxy 내장(암묵 반응성), Java는 불가라 명시적 Property+수동 의존 선언, Python은 디스크립터로 중간 지대, C++은 코드 생성(Qt)·더티 플래그로 우회 — Vue의 자동 의존성 수집이 얼마나 큰 편의인지가 대조에서 드러난다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a> — 이 기반 위에 서는 파생 상태 설계</li>
+  <li><a href="../B 웹 플랫폼·브라우저/B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a> — 배치 갱신·nextTick이 올라타는 실행 모델</li>
+</ul>
+
+</body>
+</html>
