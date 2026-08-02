@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C20 날짜·시간·타임존 처리</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>C20 날짜·시간·타임존 처리</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>시간에는 두 종류가 있다 — 물리적 순간인 <strong>시각(instant)</strong>과, 사람의 달력·시계 표현인 <strong>벽시계 시간(wall-clock time)</strong>. 대부분의 시간 버그는 이 둘을 한 타입에 뭉뚱그린 데서 나온다.</li>
+  <li>벽시계 시간을 시각으로 바꾸려면 <strong>타임존</strong>이 필요하다 — 그리고 타임존은 고정 오프셋이 아니라 <strong>규칙의 집합</strong>(DST 전환·역사적 변경 포함, tzdb에 수록)이다.</li>
+  <li>"저장은 UTC, 표시는 로컬"은 <strong>과거·현재의 시각</strong>에 대한 표준 수칙으로서 옳다 — 정본이 하나가 되고, 표시만 관점 변환이 된다.</li>
+  <li>그러나 이 수칙이 깨지는 세 지점이 있다: <strong>① DST 경계</strong>(존재하지 않는/두 번 존재하는 시각, 미래 예약의 어긋남) <strong>② 날짜만 있는 값</strong>(UTC 변환하는 순간 하루가 밀린다) <strong>③ 기간 계산</strong>(물리 시간과 달력 시간은 다른 연산이다).</li>
+  <li>따라서 정밀한 규칙은: <strong>과거 시각은 UTC로, 미래의 벽시계 약속은 "로컬 시간 + 타임존 ID"로, 날짜만인 값은 날짜 그대로</strong> 저장한다. 직렬화는 ISO 8601로 오프셋을 명시한다.</li>
+  <li>DB의 날짜 타입은 방언 차가 크다 — 특히 Oracle <code>DATE</code>는 이름과 달리 <strong>시각(시분초)까지 담는다</strong>는 것부터가 함정이다.</li>
+</ul>
+
+<h2>1. 두 종류의 시간 — 시각과 벽시계</h2>
+<p>
+"2026년 3월 15일 오전 9시"라는 문장은 시각이 아니다 — 서울의 9시와 뉴욕의 9시는 물리적으로 다른 순간이기 때문이다.
+반대로 "유닉스 기점(epoch)으로부터 1,773,540,000초"는 지구 어디서 읽어도 같은 <strong>하나의 물리적 순간</strong>이다.
+이 구분이 이 문서 전체의 축이다:
+</p>
+<table>
+  <tr><th></th><th>시각 (instant)</th><th>벽시계 시간 (wall-clock / civil time)</th></tr>
+  <tr><td>정체</td><td>물리적 타임라인 위의 한 점</td><td>달력과 시계가 보여 주는 사람의 표현</td></tr>
+  <tr><td>타임존</td><td><strong>무관</strong> — 전 지구 공통</td><td><strong>필수 문맥</strong> — 존이 있어야 시각으로 확정</td></tr>
+  <tr><td>대표 표현</td><td>epoch 초·밀리초, UTC 기준 ISO 문자열</td><td>"3월 15일 09:00", 생일, 마감일</td></tr>
+  <tr><td>어울리는 용도</td><td>발생한 사건의 기록(로그·결제·생성 시각)</td><td>사람과의 약속(회의·알림·영업시간)</td></tr>
+</table>
+<p>
+둘을 잇는 다리가 <strong>타임존</strong>이다 — 벽시계 시간 + 타임존 = 시각. 여기서 흔한 오해 하나를 바로잡아야 한다:
+타임존은 "+09:00" 같은 고정 오프셋이 아니다. <code>Asia/Seoul</code>·<code>America/New_York</code> 같은 타임존 식별자는
+<strong>"이 지역의 오프셋이 언제 무엇이었고 언제 바뀌는가"라는 규칙의 집합</strong>을 가리킨다 — 뉴욕은 겨울엔 -05:00, 여름엔
+-04:00(DST, 일광 절약 시간)이고, 그 전환 날짜조차 법 개정으로 바뀌어 온 역사가 있다. 이 규칙들의 전 세계 정본이 IANA
+타임존 데이터베이스(tzdb)이며, 운영체제·언어 런타임이 이것을 내장·갱신한다. "오프셋을 저장하면 타임존을 저장한 것"이 아닌 이유가
+여기 있다 — <strong>오프셋은 특정 순간의 결과값이고, 타임존은 미래에도 적용될 함수</strong>다. 이 구분이 3절에서 결정적으로 중요해진다.
+</p>
+
+<h2>2. 표준 수칙 — "저장은 UTC, 표시는 로컬"이 옳은 이유와 그 범위</h2>
+<p>
+시각을 다루는 표준 수칙은 잘 알려져 있다: <strong>내부 저장·연산은 UTC(협정 세계시)로 통일하고, 사용자에게 보여 줄 때만
+그 사용자의 타임존으로 변환한다.</strong> 근거는 정본의 단일화다 — 서버·DB·서비스가 여럿이어도 타임라인이 하나면 비교·정렬·차이
+계산이 전부 단순 산술이 되고, "어느 존 기준의 값인가"라는 문맥을 데이터에 끌고 다닐 필요가 없다. 표시 변환은 마지막 출력 단계의
+관점 문제로 밀려난다.
+</p>
+<p>
+경계를 넘을 때의 <strong>직렬화 표현</strong>도 이 수칙의 일부다. 시각을 문자열로 내보낼 때는 ISO 8601 형식으로
+<strong>오프셋을 명시</strong>한다 — <code>2026-03-15T00:00:00Z</code>(Z = UTC) 또는 <code>2026-03-15T09:00:00+09:00</code>.
+둘은 같은 시각의 두 표기이며, 어느 쪽이든 수신자가 재해석할 여지가 없다. 최악의 표현은 오프셋 없는
+<code>2026-03-15T09:00:00</code>이다 — 수신자가 자기 로컬로도, UTC로도 읽을 수 있는 <strong>모호한 문자열</strong>로,
+직렬화 경계에서 타입 정보가 깎이는 일반 문제(<a href="C10 직렬화와 역직렬화.html">C10 직렬화와 역직렬화.html</a>)의 시간판이다.
+epoch 밀리초 숫자도 훌륭한 교환 표현이다(모호성 0) — 다만 사람이 못 읽고, 초·밀리초·마이크로초 단위 혼동이 새 함정이 된다.
+</p>
+<blockquote class="info">
+<p><strong>수칙의 적용 범위를 정확히:</strong> 이 수칙이 완벽하게 동작하는 것은 <strong>이미 발생한(또는 지금 발생하는) 사건의
+시각</strong>이다 — 로그, 주문 시각, 갱신 시각. 이런 값은 물리적 순간이 확정돼 있으므로 UTC 한 점으로 환원해도 아무것도 잃지 않는다.
+문제는 아직 오지 않은 시간, 그리고 애초에 시각이 아닌 값들이다 — 다음 절이 그 세 지점이다.</p>
+</blockquote>
+
+<h2>3. 수칙이 깨지는 세 지점</h2>
+<p>
+<strong>① DST 경계 — 벽시계는 연속이 아니다.</strong> DST 전환일에 벽시계에는 구멍과 겹침이 생긴다. 봄 전환(시계를 1시간 앞으로)에는
+<strong>존재하지 않는 시각</strong>이 생긴다 — 그 지역의 그날 02:30은 어떤 물리적 순간에도 대응하지 않는다. 가을 전환(1시간 뒤로)에는
+<strong>두 번 존재하는 시각</strong>이 생긴다 — 그날 01:30은 서로 다른 두 순간이다. 벽시계→시각 변환이 <strong>부분 함수이자 다가
+함수</strong>가 되는 지점으로, 라이브러리마다 처리(예외/보정/이른 쪽 선택)가 달라 명시적 정책이 필요하다.
+더 흔한 실무 사고는 <strong>미래 예약</strong>이다: "매주 월요일 09:00 뉴욕 회의"를 지금 시점의 오프셋(-05:00)으로 UTC 환산해 저장하면,
+DST 전환 후 뉴욕 벽시계로는 <strong>10시 회의가 된다</strong> — 사람과의 약속은 벽시계에 붙어 있는데 저장은 물리 시각에 묶었기 때문이다.
+</p>
+<blockquote class="warn">
+<p><strong>미래의 벽시계 약속은 UTC로 저장하지 않는다.</strong> "로컬 시간 + 타임존 ID"(<code>09:00, America/New_York</code>)를
+저장하고, <strong>시각으로의 확정은 가능한 한 늦게</strong>(알림 발송 직전 등) 그 시점의 tzdb로 계산한다. 오프셋(+09:00)이 아니라
+타임존 ID를 저장하는 이유가 1절의 구분이다 — 오프셋은 전환·법 개정을 모르는 스냅샷이고, ID는 규칙을 가리키는 참조라 미래에도 옳다.</p>
+</blockquote>
+<p>
+<strong>② 날짜만 있는 값 — 타임존이 없는 데이터에 타임존을 입히는 순간 깨진다.</strong> 생일 "1995-05-17"은 시각이 아니다 —
+어느 존의 자정도 아니고, 그냥 달력 위의 하루다. 이것을 "1995-05-17T00:00:00Z" 같은 시각 타입에 욱여넣으면, UTC보다 서쪽 존에서
+로컬 변환하는 순간 <strong>5월 16일로 표시된다</strong> — "생일·기념일이 하루 밀리는" 고전 버그의 전부가 이 한 줄이다.
+날짜만인 값은 <strong>날짜 전용 타입/표현(date-only)</strong>으로 저장·전송하고, 시각 타입과 섞지 않는다.
+</p>
+<p>
+<strong>③ 기간 계산 — 물리 시간과 달력 시간은 다른 연산이다.</strong> "24시간 뒤"와 "내일 같은 시각"은 대개 같지만, DST 전환일에는
+그 지역의 하루가 23시간 또는 25시간이라 <strong>다른 답</strong>이 된다. "한 달 뒤"는 아예 물리 시간으로 정의 불가능하다 —
+1월 31일의 한 달 뒤는? (라이브러리마다 2/28 보정 또는 오류.) 그래서 성숙한 시간 라이브러리는 기간을 두 타입으로 가른다:
+<strong>duration</strong>(물리 시간의 양 — 초·밀리초)과 <strong>period</strong>(달력 단위의 양 — 년·월·일). 청구 주기·구독 갱신 같은
+달력 약속은 period로, 타임아웃·소요 시간은 duration으로 — 섞으면 DST 날과 월말에 어긋난다. 시각끼리의 뺄셈은 duration을 주지만,
+"며칠 차이인가"는 존을 정해 달력에 사영한 뒤에만 답할 수 있다는 것도 같은 구분의 따름정리다.
+</p>
+
+<h2>4. SQL 방언 — DB의 날짜 타입은 이름부터 배신한다</h2>
+<p>
+"저장은 UTC"를 실행하는 곳이 DB인데, 정작 DB의 날짜 타입이 방언 지뢰밭이다. 같은 이름이 엔진마다 다른 것을 담는다:
+</p>
+<table>
+  <tr><th>타입/엔진</th><th>PostgreSQL</th><th>MySQL</th><th>Oracle</th></tr>
+  <tr><td><code>DATE</code></td><td>날짜만</td><td>날짜만</td><td><strong>날짜 + 시분초</strong> (이름 함정 — 사실상 초 정밀 DATETIME)</td></tr>
+  <tr><td>무존 시각</td><td><code>timestamp</code> (벽시계 저장 — 존 해석 없음)</td><td><code>DATETIME</code> (무존 벽시계)</td><td><code>TIMESTAMP</code> (소수점 초 지원)</td></tr>
+  <tr><td>존 인지 시각</td><td><code>timestamptz</code> — <strong>존을 저장하지 않는다</strong>: 입력을 UTC로 정규화해 저장, 표시 때 세션 존으로 변환</td><td><code>TIMESTAMP</code> — 입력을 세션 존→UTC 변환 저장, 조회 시 역변환 (2038 한계 역사)</td><td><code>TIMESTAMP WITH TIME ZONE</code>(오프셋 보존) / <code>WITH LOCAL TIME ZONE</code>(UTC 정규화, 세션 존 표시)</td></tr>
+</table>
+<p>
+가장 널리 퍼진 오해가 PostgreSQL <code>timestamptz</code>다 — 이름은 "with time zone"이지만 <strong>타임존을 저장하는 것이 아니라</strong>,
+입력의 존 정보로 UTC 정규화해 시각(instant)으로 저장하고 원래 존은 버린다. 즉 <code>timestamptz</code> = "시각 타입",
+<code>timestamp</code> = "벽시계 타입"으로 읽는 것이 정확하며, 2·3절의 구분을 그대로 타입 선택에 대응시키면 된다
+(과거 사건 = <code>timestamptz</code>, 미래 벽시계 약속 = 벽시계 값 + 존 ID 별도 컬럼). Oracle 사용자는 <code>DATE</code>가
+시분초를 담는다는 사실을 계약의 첫 줄로 알아야 한다 — "날짜만 저장했다"고 믿은 컬럼에 시각이 섞여 들어와, 같은 날짜끼리의
+동등 비교가 조용히 실패하는(<code>WHERE order_date = DATE '2026-03-15'</code>가 0건) 고전 사고의 뿌리다.
+</p>
+<pre><code>-- 세션 존 의존성: 같은 질의가 세션 설정에 따라 다른 값을 보여 준다
+-- PostgreSQL
+SET TIME ZONE 'Asia/Seoul';  SELECT created_at FROM orders;   -- KST로 표시
+SET TIME ZONE 'UTC';         SELECT created_at FROM orders;   -- 같은 행, 다른 표시
+
+-- Oracle: 현재 시각 함수부터 존 의존이 갈린다
+SELECT SYSDATE FROM dual;            -- DB 서버 OS의 존, DATE 타입(무존)
+SELECT CURRENT_TIMESTAMP FROM dual;  -- 세션 존, TIMESTAMP WITH TIME ZONE
+-- 날짜 절단 비교는 인덱스를 죽인다 (아래 참조)
+SELECT * FROM orders WHERE TRUNC(order_date) = DATE '2026-03-15';   -- 함수 적용 → 인덱스 무력
+SELECT * FROM orders WHERE order_date &gt;= DATE '2026-03-15'
+                       AND order_date &lt;  DATE '2026-03-16';         -- 범위 조건 → 인덱스 사용</code></pre>
+<p>
+마지막 두 줄은 시간 처리와 성능이 만나는 지점이다 — 컬럼에 함수(<code>TRUNC</code>·<code>DATE()</code>)를 씌워 "그날 하루"를 찾는
+직관적 질의는 인덱스를 못 타고 전체 스캔이 된다. <strong>반개구간(<code>&gt;= 그날 0시 AND &lt; 다음날 0시</code>) 범위 조건</strong>으로
+쓰는 것이 표준 관용구이며, 원리는 <a href="../E 데이터베이스(응용+이론)/E1 인덱스 원리와 복합 인덱스.html">E1 인덱스 원리와 복합 인덱스.html</a>의
+"인덱스는 컬럼 원값의 정렬"에서 나온다. 세션 존 의존 함수·표시가 존재한다는 사실 자체도 기억할 것 — "내 클라이언트에선 9시로
+보이는데 배치 서버 로그엔 0시"는 데이터가 아니라 <strong>세션 설정의 차이</strong>일 수 있다.
+</p>
+
+<h2>흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"UTC로 저장하면 타임존 문제는 끝?"</strong> — 과거 시각에만 참이다. 미래 벽시계 약속(①)·날짜만인 값(②)·달력 기간(③)은
+  UTC 환원이 <strong>정보를 파괴</strong>하는 케이스다. 수칙은 만능이 아니라 적용 범위가 있는 도구다.</li>
+  <li><strong>"오프셋(+09:00)을 저장했으니 타임존 정보는 보존됐다?"</strong> — 오프셋은 그 순간의 결과값일 뿐, DST 전환·법 개정을
+  모른다. 미래 계산에 필요한 것은 tzdb 규칙을 가리키는 <strong>타임존 ID</strong>다. (같은 이유로 "+09:00 = Asia/Seoul"이라는 역추론도
+  불가능하다 — 같은 오프셋을 쓰는 존은 여럿이다.)</li>
+  <li><strong>"서버를 UTC로 맞췄으니 코드는 존을 신경 안 써도 된다?"</strong> — 서버 존 설정은 "암묵 변환의 기본값"을 바꿀 뿐이다.
+  암묵 변환에 기대는 코드는 서버·세션·라이브러리 기본값이 하나만 달라져도 깨진다 — 목표는 기본값 통일이 아니라
+  <strong>모든 변환의 명시화</strong>다(존을 인자로 받는 API만 쓰기).</li>
+  <li><strong>"타임스탬프 비교니까 정렬·차이는 항상 안전하다?"</strong> — 시각끼리는 참이다. 그러나 무존 벽시계 값이 섞여 있으면
+  (Postgres <code>timestamp</code> 컬럼에 여러 존 출신 값이 혼입) 정렬 자체가 무의미해진다 — 타입이 시각인지 벽시계인지부터가
+  데이터 계약이다.</li>
+  <li><strong>"기간 = 끝 - 시작, 간단하다?"</strong> — 그 뺄셈이 주는 것은 물리 duration이다. "며칠간", "몇 개월간"이라는 달력 질문은
+  존과 달력을 정한 뒤에만 답이 있고, DST 날·월말·윤년이 전부 분기점이다(③). 청구·구독 로직 리뷰에서 가장 먼저 볼 지점.</li>
+</ul>
+
+<h2>★ 언어별 대조 — 각 언어는 두 종류의 시간을 타입으로 갈랐는가</h2>
+<p>
+이 문서의 축(시각 vs 벽시계)을 기준으로 보면 언어 표준 라이브러리의 세대가 보인다 — 구세대는 한 타입에 뭉뚱그렸고,
+신세대는 타입으로 갈랐다.
+</p>
+<table>
+  <tr><th></th><th>Java</th><th>JS·TS</th><th>Python</th><th>C++</th></tr>
+  <tr><td>구세대</td><td><code>Date</code>/<code>Calendar</code> (가변·존 혼란)</td><td><code>Date</code> (현역 — 최대 지뢰밭)</td><td>naive <code>datetime</code></td><td><code>time_t</code>/<code>struct tm</code></td></tr>
+  <tr><td>신세대</td><td><code>java.time</code> (JSR-310) — 모범</td><td>Temporal (2026 표준 확정)</td><td>aware <code>datetime</code> + <code>zoneinfo</code></td><td>C++20 <code>chrono</code> 확장</td></tr>
+  <tr><td>시각/벽시계 분리</td><td><code>Instant</code> / <code>LocalDateTime</code> / <code>ZonedDateTime</code></td><td><code>Temporal.Instant</code> / <code>PlainDate…</code> / <code>ZonedDateTime</code></td><td>같은 클래스 안의 두 상태(주의)</td><td><code>sys_time</code> / <code>local_time</code> / <code>zoned_time</code></td></tr>
+</table>
+
+<h3>Java — 타입 분리의 모범: java.time이 이 문서를 타입 시스템으로 옮겨 놓았다</h3>
+<p>
+Java 8의 <code>java.time</code>(JSR-310)은 1~3절의 개념 구분을 타입 이름으로 그대로 새긴 설계다 — <code>Instant</code>(시각),
+<code>LocalDate</code>/<code>LocalDateTime</code>(날짜·벽시계 — 존 없음), <code>ZonedDateTime</code>(벽시계+존 ID),
+<code>Duration</code>(물리 기간) vs <code>Period</code>(달력 기간). 모든 객체가 불변이고, 존이 필요한 연산은 존을 인자로 요구하므로
+<strong>암묵 변환이 컴파일 수준에서 봉쇄</strong>된다. 3절의 세 함정이 각각 어느 타입의 소관인지가 API에서 읽힌다:
+</p>
+<pre><code>// ① 미래 벽시계 약속: ZonedDateTime(존 ID 보존) — DST를 넘어도 벽시계 9시 유지
+ZonedDateTime meeting = ZonedDateTime.of(
+    LocalDateTime.of(2026, 11, 2, 9, 0), ZoneId.of("America/New_York"));
+meeting.plusDays(7);          // 다음 주 "벽시계 9시" — 오프셋이 -04→-05로 알아서 전환
+
+// ③ duration vs period가 타입으로 갈라져 있다
+Duration d = Duration.ofHours(24);   // 물리 24시간 — DST 날엔 벽시계 하루와 다름
+Period p = Period.ofDays(1);         // 달력 하루 — 같은 벽시계 시각의 다음 날
+zdt.plus(d);  zdt.plus(p);           // DST 전환일엔 두 결과가 다르다 — 의도를 타입으로 말한다</code></pre>
+<p>
+JVM 기제 관점의 관리 포인트는 <strong>tzdb의 소재</strong>다 — 자바 런타임이 tzdb 사본을 내장하므로, 존 규칙 변경(어느 나라의 DST 폐지 등)의
+반영은 런타임 업데이트(또는 tzdb 갱신 도구)의 문제다. 오래 방치된 JVM은 <strong>낡은 세계 지도로 시각을 계산</strong>하고 있는 셈이다.
+생태계 관행 하나: 구 <code>java.util.Date</code>는 여전히 레거시 API 경계에서 출몰하는데, 정체는 "이름만 Date인 <strong>가변
+Instant</strong>"다 — 경계에서 즉시 <code>toInstant()</code>로 변환해 신세대 타입으로 넘어오는 것이 표준 수순이다.
+</p>
+
+<h3>JS·TS — Date라는 현역 지뢰밭과, 표준이 된 Temporal</h3>
+<p>
+JS의 <code>Date</code>는 정체가 시각(내부는 epoch 밀리초 하나)인데 <strong>API는 로컬 벽시계</strong>로 말하는 — 두 세계를 한 객체에
+붙인 설계라 이 문서의 함정 대부분을 언어 차원에서 재생산한다. 대표 지뢰가 파싱 비대칭이다:
+</p>
+<pre><code>// 악명 높은 파싱 비대칭 (같은 형식처럼 보이는 두 문자열)
+new Date("2026-03-15")            // date-only → UTC 자정으로 해석
+new Date("2026-03-15T00:00")      // datetime  → "로컬" 자정으로 해석
+// → UTC 서쪽 존에서 위 둘은 다른 날짜로 표시된다: ②번 함정(하루 밀림)의 언어 내장판
+
+// 최근에는(2026-03 TC39 Stage 4 — ES2026 표준) Temporal이 타입 분리를 도입:
+Temporal.Instant.from("2026-03-15T00:00:00Z");            // 시각
+Temporal.PlainDate.from("1995-05-17");                    // 날짜만 — 존 개념 자체가 없음
+Temporal.ZonedDateTime.from("2026-11-02T09:00[America/New_York]");  // 벽시계+존 ID</code></pre>
+<p>
+Temporal은 <code>Instant</code>/<code>PlainDate</code>/<code>PlainDateTime</code>/<code>ZonedDateTime</code>/<code>Duration</code>의
+분리, 불변 객체, 존 ID를 문자열 표기에 포함하는 직렬화 형식까지 — java.time 계보의 설계를 JS에 들여온 것이다.
+2026년 3월 표준 확정(Stage 4) 후 Chrome·Firefox·Edge와 Node.js 26에는 기본 탑재됐지만 Safari 등 일부 환경은 지원이 늦어,
+당분간은 폴리필 병행이 현실적 전제다. TS 관점 한 줄: <code>Date</code>는 타입으로 시각/벽시계를 구분해 주지 못하므로
+(<code>Date</code>는 그냥 <code>Date</code>다), Temporal 이전 코드에서는 "이 Date는 어느 세계인가"가 타입이 아니라
+<strong>변수명과 규율</strong>에 있었다 — Temporal 도입의 가치 절반은 그 규율이 타입 검사로 넘어온다는 데 있다.
+런타임 기제 덤: 서버 JS에서 <code>toLocaleString()</code>류의 결과는 프로세스의 존·로케일 설정을 타므로, 컨테이너 존 설정이
+바뀌면 출력이 바뀐다 — "표시는 로컬"의 '로컬'이 사용자가 아니라 <strong>서버의 로컬</strong>이 되는 사고가 SSR에서 잦다.
+</p>
+
+<h3>Python — 같은 클래스 안에 두 세계가 산다: naive vs aware</h3>
+<p>
+Python의 <code>datetime</code>은 타입 분리 대신 <strong>한 클래스의 두 상태</strong>를 택했다 — <code>tzinfo</code>가 없는
+naive(벽시계, 존 미상)와 있는 aware(존 확정). 문제는 상태 구분이 타입에 없어서, 섞이는 사고를 런타임에야(때로는 조용히) 알게
+된다는 것이다:
+</p>
+<pre><code>from datetime import datetime, timezone
+from zoneinfo import ZoneInfo          # 3.9+ 표준 (tzdb 연동)
+
+naive = datetime(2026, 3, 15, 9, 0)                          # 벽시계 — 존 미상
+aware = datetime(2026, 3, 15, 9, 0, tzinfo=ZoneInfo("Asia/Seoul"))
+naive &lt; aware        # TypeError: naive와 aware는 비교 불가 — 그나마 시끄러운 실패
+datetime.utcnow()    # 함정: "UTC 시각"인데 naive로 반환 — aware와 섞으면 위 에러,
+                     # 로컬 벽시계로 오독하면 조용한 9시간 오차. 폐기 예고된 API.
+datetime.now(timezone.utc)             # 올바른 관용구: aware UTC</code></pre>
+<p>
+<code>utcnow()</code>가 상징하는 "UTC 값인데 naive"라는 상태가 파이썬 시간 버그의 진원지였고, 최근 버전들은 이 API를 폐기
+방향으로 정리해 왔다(<code>now(timezone.utc)</code>로 대체). 존 데이터는 3.9부터 표준 <code>zoneinfo</code>가 OS/패키지의 tzdb를
+읽으면서, 구 서드파티 관용구(pytz의 <code>localize</code> 패턴)는 <strong>최근에는 불필요한 역사 유물</strong>이 됐다 — 낡은 블로그
+예제를 그대로 따라 쓰지 않는 것이 곧 함정 회피다. 객체 모델 통찰: naive/aware가 값의 <strong>런타임 상태</strong>라는 것은 덕 타이핑의
+전형적 대가다 — 타입 힌트로는 둘 다 <code>datetime</code>이므로, 팀 차원에서 "경계에서는 aware만, naive는 date-only 대용으로만"
+같은 계약을 문서화·검증(런타임 assert)하는 것이 Java의 타입 분리를 흉내 내는 현실적 수단이다.
+</p>
+
+<h3>C++ — 시각은 오래전부터 정확했고, 달력·존이 C++20에서야 왔다</h3>
+<p>
+C++의 <code>&lt;chrono&gt;</code>는 시각(instant) 쪽은 일찍부터 엄밀했다 — <code>system_clock::time_point</code>(epoch 기준 시각)와
+<code>duration</code>의 타입 안전 산술(단위가 타입 파라미터라 초·밀리초 혼동이 컴파일 에러)은 C++11부터다. 없던 것은 사람 쪽 —
+달력·타임존이었고, C++20이 <code>year_month_day</code>·<code>time_zone</code>·<code>zoned_time</code>으로 채웠다(tzdb 연동 포함):
+</p>
+<pre><code>using namespace std::chrono;
+// 시각 vs 벽시계의 타입 분리 (C++20)
+sys_seconds instant = floor&lt;seconds&gt;(system_clock::now());   // 시각 (UTC 타임라인)
+zoned_time zt{"America/New_York", instant};                   // 벽시계 관점 = 시각 + 존
+
+// 기간 측정의 별도 원칙: 벽시계가 아니라 단조 시계로
+auto t0 = steady_clock::now();        // 단조(monotonic) — 시계 조정·NTP에 안 흔들림
+do_work();
+auto elapsed = steady_clock::now() - t0;   // 타임아웃·소요 시간은 반드시 이쪽</code></pre>
+<p>
+마지막 두 줄이 C++가 이 주제에 보태는 고유한 교훈이다 — <strong>기간 측정용 시계와 시각용 시계는 다른 시계</strong>다.
+<code>system_clock</code>은 NTP 동기화·수동 조정으로 <strong>뒤로도 갈 수 있는</strong> 벽시계라, 타임아웃·성능 측정에 쓰면 음수
+경과 시간 같은 괴현상이 난다. 단조 시계(<code>steady_clock</code>)는 시각을 모르는 대신 전진만 보장한다 — 이 구분은 언어 무관
+원칙이지만(다른 언어들도 monotonic 시계 API를 따로 둔다), 타입으로 강제하는 것은 chrono가 가장 엄격하다. 메모리·배포 관점의
+특이점: <code>zoned_time</code>이 기대는 tzdb는 런타임 환경의 것이라, <strong>tzdb가 아예 없는 임베디드 환경</strong>에서는 존 변환
+자체가 성립하지 않는다 — 기기는 UTC(또는 무존 틱)만 다루고 벽시계 표시는 상위 시스템에 위임하는 설계가 그 환경의 정석이다.
+ABI 덤: <code>time_t</code>가 32비트인 낡은 플랫폼의 2038년 문제는 아직 실물로 남아 있는 제약이다.
+</p>
+
+<h2>함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>tzdb(IANA 타임존 데이터베이스)</strong> — 전 세계 존 규칙의 정본이며, <strong>계속 갱신되는 데이터</strong>라는 사실이
+  핵심이다(연 수차례 릴리스 — 각국의 DST 폐지·오프셋 변경 반영). "시간 계산의 정확성은 코드가 아니라 데이터 버전에도 달려 있다"는
+  드문 부류의 의존성으로, OS·언어 런타임·컨테이너 이미지의 tzdb 나이를 점검 목록에 넣을 가치가 있다. 최근에는 여러 나라에서 DST 폐지가
+  논의·시행되는 흐름이라 갱신의 중요성이 오히려 커졌다.</li>
+  <li><strong>시계 동기화(NTP)와 시계 뒤틀림</strong> — 서버 간 시계는 어긋나며, 동기화 보정으로 시각이 점프·역행할 수 있다.
+  분산 환경에서 "타임스탬프 순서 = 사건 순서"가 성립하지 않는 이유이고, 기간 측정에 단조 시계를 쓰는 이유의 서버판이다.</li>
+  <li><strong>윤초(leap second)</strong> — UTC에 가끔 삽입되던 1초. 대부분의 시스템은 스미어링(주변 시간에 분산 흡수)으로 처리해
+  왔고, 국제 결의로 2035년까지 폐지가 예정된 상태다 — 일반 애플리케이션이 직접 다룰 일은 드물지만 "1분 = 60초"조차 절대 진리가
+  아니었다는 표본으로 알아 둘 가치가 있다.</li>
+  <li><strong>스케줄러와 크론의 존</strong> — 크론 표현식은 벽시계 언어다("매일 03:00"). 실행 환경의 존이 무엇인지, DST 전환일에
+  그 시각이 없거나 두 번이면 어떻게 되는지(건너뜀/중복 실행)는 스케줄러 구현마다 다르다 — 야간 배치가 1년에 두 번 이상하게 도는
+  고전 사고의 원인.</li>
+  <li><strong>생성 시각의 출처 통일</strong> — "지금"을 앱 서버에서 찍는가 DB 기본값(<code>DEFAULT CURRENT_TIMESTAMP</code>)으로
+  찍는가. 여러 서버의 시계 편차·존 설정이 섞이지 않도록 한 출처로 통일하는 것이 정렬·감사 로그 정합의 전제다.</li>
+</ul>
+
+<h2>한 장 요약</h2>
+<ul>
+  <li><strong>시각(물리적 순간) vs 벽시계(달력 표현)</strong> — 이 구분이 전부다. 벽시계 + 타임존 ID = 시각이며, 타임존은 오프셋이 아니라 <strong>tzdb에 수록된 규칙 집합</strong>이다.</li>
+  <li>수칙: 과거·현재의 사건은 <strong>UTC 시각</strong>으로 저장, 표시만 로컬 변환. 직렬화는 ISO 8601 + <strong>오프셋 명시</strong>(무오프셋 문자열 금지).</li>
+  <li>수칙의 예외 셋: <strong>미래 벽시계 약속</strong>은 "로컬 시간 + 존 ID"로 저장하고 시각 확정은 늦게 / <strong>날짜만인 값</strong>은 date-only 타입으로(UTC 변환 = 하루 밀림 버그) / <strong>기간</strong>은 duration(물리)과 period(달력)를 구분.</li>
+  <li>DST 경계에는 존재하지 않는 시각·두 번 존재하는 시각이 있다 — 벽시계→시각 변환에는 명시적 정책이 필요하다.</li>
+  <li>SQL 방언: Postgres <code>timestamptz</code>는 존 저장이 아니라 UTC 정규화, MySQL은 <code>TIMESTAMP</code>(변환)/<code>DATETIME</code>(무존), <strong>Oracle <code>DATE</code>는 시분초 포함</strong>. 날짜 조건은 함수 절단이 아니라 <strong>반개구간 범위</strong>로(인덱스, E1).</li>
+  <li>언어별: java.time이 타입 분리의 모범, JS는 <code>Date</code> 지뢰밭에서 Temporal(2026 표준 확정)로 이행 중, Python은 naive/aware 상태 구분(+<code>zoneinfo</code>), C++20 chrono는 달력·존 합류 + <strong>기간 측정은 단조 시계</strong>라는 교훈.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="C10 직렬화와 역직렬화.html">C10 직렬화와 역직렬화.html</a> — 시간 표현이 경계를 건널 때 깎이는 문제의 일반형</li>
+  <li><a href="../E 데이터베이스(응용+이론)/E1 인덱스 원리와 복합 인덱스.html">E1 인덱스 원리와 복합 인덱스.html</a> — 날짜 범위 조건이 인덱스를 타는 원리</li>
+</ul>
+
+</body>
+</html>
