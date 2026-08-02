@@ -1,0 +1,346 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>O7 에러 재래핑과 진단 경로</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>O7 에러 재래핑과 진단 경로</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>예외는 계층을 건널 때마다 <strong>재래핑(rewrapping)</strong>된다 — 각 계층이 자기 추상화 수준의 예외로 감싸 올리는 것은 정상 설계이지, 사고가 아니다.</li>
+  <li>문제는 재래핑이 대부분 <strong>손실적</strong>이라는 데 있다: 원인 정보는 계층을 오를수록 깎이고, 특히 원격 호출·언어 경계·UI 경계에서 크게 뭉개진다.</li>
+  <li>그 결과 <strong>근본 원인은 원천 계층의 로그에만 남고</strong>, 사용자가 보는 표면에는 일반화된 문구("일시적인 오류가 발생했습니다")만 도달한다.</li>
+  <li>따라서 <strong>표면 문구를 읽고 원인을 추정하는 것은 진단이 아니다</strong> — 서로 다른 수십 가지 원인이 같은 표면 문구 하나로 수렴하기 때문이다.</li>
+  <li>올바른 진단 경로는 표면에서 원인을 "생각해 내는" 것이 아니라, <strong>계층 지도를 따라 원천 로그로 직행</strong>하는 것 — 이를 가능하게 하는 장치가 원인 체인 보존과 상관관계 ID다.</li>
+  <li>설계 규율 한 줄: <strong>재래핑할 때 원인을 버리지 말 것</strong>(cause 연결·원천 식별자 전파). 진단 규율 한 줄: <strong>표면은 출발점일 뿐, 판단은 원천에서.</strong></li>
+</ul>
+
+<h2>1. 예외는 계층을 건널 때마다 다시 포장된다</h2>
+<p>
+주문 저장 버튼을 눌렀더니 화면에 "일시적인 오류가 발생했습니다"가 떴다고 하자. 이 문구가 만들어지기까지의 경로를 거꾸로 추적해 보면,
+이 문서가 다루는 구조 전체가 드러난다. 실제로 벌어진 일은 데이터베이스의 고유 제약 위반(unique constraint violation) 하나였다:
+</p>
+<div class="flow">DB: "duplicate key value violates unique constraint orders_number_key"
+  ↓ 드라이버/ORM 계층 — DB 방언 예외를 프레임워크 표준 예외로 변환
+DataIntegrityViolationException (원본은 cause로 첨부)
+  ↓ 서비스 계층 — 도메인 언어로 재래핑
+OrderConflictException("주문번호 중복")
+  ↓ API 계층 — HTTP 응답으로 직렬화 (여기서 스택·cause 소멸)
+HTTP 409 { "error": "CONFLICT" }
+  ↓ 프론트엔드 — 사용자 언어로 최종 포장
+"일시적인 오류가 발생했습니다"</div>
+<p>
+각 화살표가 하나의 <strong>재래핑</strong>이다. 그리고 짚어야 할 것은, 이 재래핑들 하나하나는 <strong>전부 정당하다</strong>는 점이다.
+ORM이 DB 방언을 감추는 것은 이식성을 위한 추상화 계약이고, 서비스가 도메인 예외로 바꾸는 것은 호출자가 인프라를 몰라도 되게 하기 위함이며,
+API가 내부 예외를 그대로 내보내지 않는 것은 정보 노출을 막는 보안 원칙이고, 프론트가 기술 용어를 감추는 것은 사용자 배려다.
+계층화 아키텍처를 택한 순간 재래핑은 필연이다 — 각 계층은 자기 추상화 수준의 언어로 말해야 하고, 예외도 그 언어의 일부이기 때문이다.
+</p>
+<p>
+문제는 재래핑 자체가 아니라 재래핑의 <strong>손실률</strong>이다. 위 경로에서 정보량이 어떻게 변하는지 보라. DB 메시지에는 어느 제약이
+어떤 값으로 깨졌는지까지 있었다. 서비스 예외에는 "주문번호 중복"이라는 요지만 남았다. HTTP 응답에는 분류 코드 하나만 남았다.
+화면에는 <strong>원인과의 연결 고리가 하나도 없는 문구</strong>만 남았다. 특히 세 종류의 경계에서 손실이 급격하다:
+<strong>원격 호출 경계</strong>(스택 트레이스와 예외 객체는 프로세스를 건너지 못한다 — 직렬화된 요약만 건넌다),
+<strong>언어 경계</strong>(한쪽의 예외 체계가 다른 쪽에 존재하지 않는다), <strong>UI 경계</strong>(기술 정보를 의도적으로 전부 감춘다).
+</p>
+<blockquote class="info">
+<p><strong>핵심 프레임:</strong> 예외 전파를 <strong>손실 압축의 연쇄</strong>로 보라. 각 계층은 아래층의 풍부한 정보를 자기 어휘로 압축해 올린다.
+압축은 필요한 일이지만, 압축된 결과물(표면 문구)에서 원본(근본 원인)을 복원할 수는 없다. 복원이 안 되면 어떻게 하는가 —
+원본이 있는 곳으로 가야 한다. 그것이 3절의 진단 경로다.</p>
+</blockquote>
+
+<h2>2. 표면 문구로 판단하면 안 되는 이유 — 다대일 수렴</h2>
+<p>
+앞 절의 압축 연쇄가 진단에 무엇을 의미하는지부터 정확히 하자. 손실 압축의 수학적 귀결은 <strong>다대일 사상</strong>이다:
+서로 다른 많은 원인이 같은 표면 문구 하나로 수렴한다. "일시적인 오류가 발생했습니다"의 자리에 올 수 있었던 원인을 나열해 보면 —
+주문번호 중복, DB 커넥션 풀 고갈, 원격 결제 서비스 타임아웃, 역직렬화 실패, 배포 직후 스키마 불일치, 메모리 부족…
+전부 <strong>같은 문구</strong>다. 표면 문구가 주는 정보는 "무언가 실패했다"에서 크게 나아가지 않는다.
+</p>
+<p>
+그런데도 표면 문구로 원인을 추정하고 싶은 유혹은 강하다. 이유는 그 문구가 <strong>지금 눈앞에 있는 유일한 단서</strong>이기 때문이다.
+이 유혹이 위험한 것은 두 가지 방향으로 오판을 만들기 때문이다.
+첫째, <strong>과잉 해석</strong>: "타임아웃이라고 떴으니 네트워크 문제겠지" — 하지만 그 문구는 상위 계층이 여러 실패를 뭉뚱그려
+타임아웃으로 <em>번역한</em> 결과일 수 있다. 실제 원인은 아래층의 느린 쿼리였는데 표면에서는 타임아웃으로 보이는 식이다.
+둘째, <strong>익숙한 문구와의 성급한 대조</strong>: "저번에도 이 문구였고 그때는 캐시 문제였으니 이번에도" — 다대일 수렴 구조에서
+같은 표면 문구는 같은 원인을 전혀 보증하지 않는다.
+</p>
+<blockquote class="warn">
+<p><strong>개념 함정:</strong> 표면 문구는 <strong>원인의 요약이 아니라 원인의 "분류 결과"</strong>다.
+그것도 각 계층의 번역 규칙이 몇 단계 누적된 분류다. 분류 결과를 보고 개별 사례를 단정하는 것은,
+우편번호만 보고 그 집의 내부 구조를 단정하는 것과 같다 — 방향은 맞을 수 있어도 판단 근거는 되지 못한다.</p>
+</blockquote>
+<p>
+그렇다면 표면 문구의 올바른 용도는 무엇인가. <strong>검색 키이자 출발점</strong>이다. 문구·에러 코드·발생 시각은
+"어느 계층의 로그부터 뒤질 것인가"를 정하는 좌표로는 유용하다. 판단을 표면에서 내리지 않고 좌표로만 쓴다는 것 —
+이 태도 전환이 다음 절의 진단 경로로 이어진다.
+</p>
+
+<h2>3. 진단 경로 — 원천 로그로 직행하기</h2>
+<p>
+표면에서 판단할 수 없다면 어디서 판단하는가. 1절의 압축 연쇄를 다시 보면 답이 나온다. 정보는 위로 갈수록 깎였으므로,
+<strong>가장 풍부한 기록은 실패가 처음 발생한 원천 계층에 있다</strong>. 진단이란 압축의 연쇄를 거슬러 내려가 그 기록에 도달하는 일이고,
+잘 설계된 시스템은 이 하강을 몇 번의 조회로 끝나게 만든다. 하강을 빠르게 만드는 장치가 두 가지 있다.
+</p>
+<p>
+<strong>첫째, 원인 체인 보존.</strong> 재래핑이 손실적이 되는 이유의 절반은 습관 문제다 — 감쌀 때 원본 예외를 버리는 것.
+대부분의 언어는 예외에 원인(cause)을 연결하는 표준 수단을 제공하며(5절에서 언어별로 본다), 원인을 연결해 두면
+<strong>한 계층의 로그 안에서</strong> 표면 예외부터 근본 원인까지의 전체 체인이 한 번에 남는다.
+"감쌀 때는 반드시 원인을 첨부한다"는 한 줄 규율이, 진단 시 계층을 하나하나 파 내려가는 수고를 로그 한 화면으로 줄여 준다.
+</p>
+<pre><code>// 나쁜 재래핑 — 원인을 버린다 (진단 경로 절단)
+catch (DataIntegrityViolationException e) {
+    throw new OrderConflictException("주문번호 중복");
+}
+// 좋은 재래핑 — 원인을 연결한다 (체인이 로그에 함께 남는다)
+catch (DataIntegrityViolationException e) {
+    throw new OrderConflictException("주문번호 중복", e);   // cause 첨부
+}</code></pre>
+<p>
+<strong>둘째, 상관관계 ID(correlation ID) 전파.</strong> 원인 체인은 한 프로세스 안에서만 유효하다 — 예외 객체는 원격 경계를 건너지
+못하기 때문이다. 경계 너머까지 진단 경로를 잇는 표준 장치가, 요청 진입 시점에 고유 ID를 발급해 모든 계층·모든 서비스의 로그에
+함께 찍는 상관관계 ID다. 이제 표면에서 출발하는 하강은 "각 계층에서 시각과 정황으로 짐작해 뒤지기"가 아니라
+<strong>ID 하나로 전 계층 로그를 꿰어 보기</strong>가 된다:
+</p>
+<div class="flow">표면 문구 + 발생 시각 + (응답에 실린) 상관관계 ID
+  → 로그 시스템에서 ID로 검색
+  → 전 계층의 기록이 시간순으로 정렬됨
+  → 체인의 가장 아래(원천 계층 기록)에서 판단</div>
+<p>
+로그를 어떻게 남기고 모아 검색 가능하게 만드는가 — 구조화 로깅과 수집 파이프라인 — 는
+<a href="../P 관측성·모니터링/P1 로깅과 관측성 기초.html">P1 로깅과 관측성 기초.html</a>의 소관이다. 이 문서의 요지는 그 인프라를
+전제로 한 <strong>경로의 방향</strong>이다: 표면 → ID → 원천, 그리고 판단은 원천에서. 장애 상황에서 이 경로를 어떤 절차와 우선순위로
+밟는가(영향 파악·전파·복구 우선 판단)는 <a href="O5 장애 대응 기초.html">O5 장애 대응 기초.html</a>이 다루며,
+O5가 "원인 조사는 원천 로그에서"라고 위임한 그 구조적 근거가 바로 이 문서다.
+</p>
+<blockquote class="ok">
+<p><strong>설계·진단 규율 요약:</strong> ① 재래핑할 때 원인을 버리지 않는다(cause 연결). ② 경계를 건널 때는 상관관계 ID를 전파한다.
+③ 원천 계층에서는 판단에 필요한 문맥(어느 제약·어느 값·어느 자원)을 로그에 남긴다. ④ 진단은 표면 문구 해석이 아니라
+원천 로그 직행으로 한다. 앞의 셋이 설계 시점의 투자, 마지막이 그 투자를 회수하는 순간이다.</p>
+</blockquote>
+
+<h2>4. 흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"재래핑이 나쁜 것이니 원본 예외를 그대로 위로 던지면 된다?"</strong> — 반대편 함정이다. 원본을 그대로 관통시키면
+  상위 계층이 하위 구현에 결합되고(ORM 예외가 컨트롤러까지 올라오면 ORM 교체가 전 계층 수정이 된다), API 경계에서는
+  내부 구조 노출이라는 보안 문제가 된다. 정답은 "래핑하지 않기"가 아니라 <strong>"손실 없이 래핑하기"</strong>다.</li>
+  <li><strong>"cause를 연결했으니 어디서든 원인을 볼 수 있다?"</strong> — cause 체인은 <strong>프로세스 안</strong>에서만 산다.
+  HTTP 응답·메시지 큐로 직렬화되는 순간 체인은 끊긴다. 경계 밖으로는 체인이 아니라 <strong>식별자(상관관계 ID)</strong>가 건너가야 한다.</li>
+  <li><strong>"에러 메시지를 상세하게 쓰면 표면에서도 판단할 수 있게 되지 않나?"</strong> — 표면 문구를 상세화하는 데는 천장이 있다.
+  사용자에게 스택을 보여 줄 수 없고, 공개 API 응답에 내부 구조를 실을 수 없다. 상세함은 <strong>로그에</strong>, 표면에는
+  <strong>분류와 추적 식별자</strong>에 — 정보의 목적지를 나누는 것이 정답이지, 한쪽을 다른 쪽 용도로 확장하는 것이 아니다.</li>
+  <li><strong>"로그에 스택 트레이스가 있으면 근본 원인이 있는 것이다?"</strong> — 스택 트레이스는 "그 예외가 던져진 지점까지의 호출 경로"이지
+  근본 원인의 서술이 아니다. cause 없는 래핑 예외의 스택은 <strong>래핑한 지점</strong>을 가리킬 뿐이며, 근본 원인은 몇 계층 아래의
+  다른 기록에 있을 수 있다. 스택의 최상단이 아니라 <strong>체인의 최하단</strong>을 봐야 한다.</li>
+  <li><strong>"같은 문구가 여러 건 쌓이면 같은 장애다?"</strong> — 다대일 수렴의 재판이다. 표면 문구 기준의 집계는 서로 다른
+  원인들을 한 버킷에 섞는다. 집계·알림의 기준 키는 표면 문구가 아니라 <strong>원천 계층의 에러 분류</strong>여야 한다.</li>
+</ul>
+
+<h2>5. ★ 언어별 대조 — 원인 체인과 경계 손실은 어떻게 나타나는가</h2>
+<p>
+"감쌀 때 원인을 보존하는 표준 수단"과 "경계에서 무엇이 깎이는가"는 언어마다 도구와 함정이 다르다.
+</p>
+<table>
+  <tr><th></th><th>Java</th><th>JS·TS</th><th>Python</th><th>C++</th></tr>
+  <tr><td>원인 연결 수단</td><td>생성자 <code>cause</code> 인자 (1.4부터 표준)</td><td><code>Error</code> options의 <code>cause</code> (ES2022)</td><td><code>raise ... from</code> + 암묵 체인(자동)</td><td>표준 체인 없음 — <code>std::nested_exception</code>으로 수동</td></tr>
+  <tr><td>체인 출력</td><td><code>Caused by:</code> 연쇄가 스택에 자동 출력</td><td>로거가 <code>cause</code>를 따라가야 출력됨</td><td>traceback이 체인 전체를 자동 출력</td><td><code>rethrow_if_nested</code> 재귀로 수동 출력</td></tr>
+  <tr><td>대표 경계 손실</td><td>직렬화 시 체인 소멸, 예외 변환 계층에서 누락 실수</td><td><code>await</code> 없는 비동기 틈, 압축 배포 스택</td><td><code>except: raise NewError()</code>식 from 누락은 문맥 오해 유발</td><td>C ABI·스레드 경계는 예외 자체가 못 건넘</td></tr>
+</table>
+
+<h3>5.1 Java — 체인은 표준이 갖췄고, 함정은 변환 계층의 습관에 있다</h3>
+<p>
+Java는 원인 체인이 언어 표준에 가장 깊이 들어간 언어다. 모든 예외 생성자가 <code>cause</code>를 받을 수 있고,
+로그에 찍히는 스택 트레이스는 <code>Caused by:</code> 연쇄로 체인 전체를 자동 출력한다. 검사 예외(checked exception)의 존재는
+재래핑을 <strong>문법적으로 강제</strong>하는 효과가 있다 — 하위 계층의 검사 예외를 처리하거나 감싸지 않으면 컴파일이 안 되므로,
+Java 코드에는 래핑 지점이 유난히 많고, 그만큼 "cause 누락" 실수가 발생할 표면적도 넓다.
+</p>
+<pre><code>try {
+    repository.save(order);
+} catch (SQLException e) {
+    // 검사 예외라 반드시 처리해야 함 — 이 강제된 래핑 지점이 cause 누락의 최다 발생지
+    throw new OrderPersistenceException("주문 저장 실패", e);  // e를 빼먹는 순간 경로 절단
+}</code></pre>
+<p>
+생태계 차원의 특기 사항은 <strong>예외 변환 계층</strong>이다. Spring의 데이터 접근 예외 변환이 대표적인데, DB 드라이버·ORM마다 다른
+DB 예외를 공통 계층(<code>DataAccessException</code> 하위 분류)으로 번역하면서 <strong>원본을 cause로 보존</strong>한다 —
+1절에서 본 "손실 없는 재래핑"을 프레임워크가 규약화한 사례다. JVM 내부 기제로는, JIT 컴파일러가 같은 지점에서 반복 발생하는
+예외의 스택 트레이스 생성을 생략하는 최적화가 있어(핫 루프에서 스택이 빈 예외가 관찰되는 원인), "로그에 스택이 없다"가
+코드 문제가 아니라 런타임 최적화일 수 있다는 점도 진단 시 알아 둘 가치가 있다.
+</p>
+
+<h3>5.2 JS·TS — 체인보다 먼저, 비동기 틈으로 새는 예외를 막아야 한다</h3>
+<p>
+JavaScript의 <code>Error</code>에 표준 원인 연결(<code>cause</code> 옵션)이 들어온 것은 ES2022로 비교적 최근이다(2020년대 초반 표준화).
+그 전까지는 커스텀 속성으로 흉내 냈기 때문에 로거·에러 수집기가 체인을 따라가 주는지가 제각각이었고, 지금도
+<code>console.log</code>가 아닌 로거를 쓴다면 <code>cause</code>를 재귀 출력하는지 확인이 필요하다.
+</p>
+<pre><code>try {
+  await saveOrder(order);
+} catch (e) {
+  throw new Error("주문 저장 실패", { cause: e });   // ES2022 표준 체인
+}
+
+// 함정: await를 빼먹으면 catch가 잡지 못한다
+try {
+  saveOrder(order);        // Promise가 떠 있는 채로 try를 벗어남
+} catch (e) { /* 도달 불가 */ }
+// → 거부는 unhandledrejection으로 새어나감 — 진단 경로 바깥의 실패</code></pre>
+<p>
+JS 특유의 함정은 <strong>이벤트 루프가 만드는 비동기 틈</strong>이다. 예외 전파는 호출 스택을 따라가는데, 비동기 콜백·미대기 Promise의
+실패 시점에는 원래의 호출 스택이 이미 사라져 있다. <code>await</code>로 이어진 경로는 엔진이 비동기 스택 트레이스를 이어 붙여 주지만,
+<code>await</code> 누락·콜백 API 혼용 지점에서는 "어디서 시작된 요청인지"가 스택에서 사라진다 — 프로세스 안인데도 원격 경계처럼
+손실이 일어나는 셈이라, 상관관계 ID를 요청 문맥에 실어 두는 장치가 서버 JS에서 특히 값지다. 마지막으로 브라우저 배포 환경에서는
+압축(minification)이 스택의 함수명·행 번호를 뭉개므로, 소스 맵을 에러 수집기에 연결해야 프론트 표면의 스택이 진단 가능한 형태로 복원된다.
+</p>
+
+<h3>5.3 Python — 체인이 자동이라 편하지만, 자동이라서 생기는 오독이 있다</h3>
+<p>
+Python은 원인 체인을 <strong>자동으로</strong> 남기는 유일한 축이다. <code>except</code> 블록 안에서 새 예외를 던지면
+언어가 앞 예외를 <code>__context__</code>로 붙여 traceback에 "During handling of the above exception, another exception occurred"로
+출력한다. 의도적 재래핑은 <code>raise ... from e</code>로 <code>__cause__</code>를 명시한다:
+</p>
+<pre><code>try:
+    repository.save(order)
+except IntegrityError as e:
+    raise OrderConflictError("주문번호 중복") from e   # 명시적 체인(__cause__)
+    # from을 빼도 __context__로 자동 연결은 되지만, 의미가 달라진다:
+    # "이것 때문에 던졌다"(cause)가 아니라 "처리 중에 우연히 겹쳤다"(context)로 읽힌다</code></pre>
+<p>
+함정은 그 자동성의 이면이다. <code>__context__</code> 자동 연결은 <strong>의도한 재래핑</strong>과 <strong>에러 처리 중의 2차 사고</strong>를
+같은 모양으로 출력하므로, <code>from</code>을 생략하는 습관은 로그 독자에게 "원인인가, 우연인가"라는 불필요한 해석 부담을 넘긴다.
+반대로 <code>raise ... from None</code>은 체인을 의도적으로 절단하는 문법인데, "로그를 깔끔하게"라는 이유로 남용하면 1절의 손실적
+재래핑을 언어 차원에서 실행하는 것이 된다. 객체 모델 관점의 통찰 하나: Python의 traceback은 예외 객체에 붙은 일급 데이터라
+(<code>e.__traceback__</code>), 로깅 프레임워크가 체인 전체를 구조화해 남기기 쉽다 — <code>logging.exception()</code> 한 줄이
+체인 포함 전체 기록을 남기는 표준 관용구다.
+</p>
+
+<h3>5.4 C++ — 체인도 수동, 경계는 예외가 아예 못 건너는 벽</h3>
+<p>
+C++에는 자동 원인 체인이 없다. 표준이 주는 도구는 <code>std::throw_with_nested</code>·<code>std::rethrow_if_nested</code>로,
+현재 예외를 안에 품은 예외를 던지고 잡는 쪽에서 재귀적으로 풀어내는 <strong>수동 체인</strong>이다. 스택 트레이스조차 표준 예외에는
+실리지 않아(문자열 <code>what()</code>이 전부), 발생 지점 기록부터가 라이브러리·수동 구현의 몫이다:
+</p>
+<pre><code>void save_order(const Order&amp; o) {
+    try {
+        repo.save(o);
+    } catch (...) {
+        std::throw_with_nested(OrderError("주문 저장 실패"));  // 수동 체인
+    }
+}
+void log_chain(const std::exception&amp; e, int depth = 0) {
+    log(depth, e.what());
+    try { std::rethrow_if_nested(e); }              // 안쪽 예외를 다시 던져서
+    catch (const std::exception&amp; inner) { log_chain(inner, depth + 1); }  // 재귀로 풀기
+}</code></pre>
+<p>
+C++의 진짜 특이점은 <strong>경계의 경도</strong>다. 예외는 C ABI(바이너리 호출 규약)를 건널 수 없다 — C 콜백이나 <code>extern "C"</code>
+함수 밖으로 예외가 전파되면 미정의 동작 또는 즉시 종료(<code>std::terminate</code>)다. 스레드 경계도 마찬가지여서, 다른 스레드로 예외를
+넘기려면 <code>std::exception_ptr</code>로 캡처해 명시적으로 운반해야 한다. 그래서 C++ 시스템의 경계 계층은 예외를
+<strong>에러 코드·결과 타입으로 번역하는 층</strong>을 반드시 갖게 되는데, 이 번역이 1절에서 본 손실 압축의 가장 급격한 형태다 —
+풍부한 예외 객체가 정수 코드 하나로 깎인다. 번역 지점에서 원천 정보를 로그로 남기는 규율이 다른 언어보다 한층 절실한 이유다.
+수명 관점의 주의 하나: 예외 객체가 소멸된 뒤의 <code>what()</code> 포인터를 로그 큐에 넘기는 식의 실수는 진단 기록 자체를
+오염시키므로, 경계에서는 문자열을 값으로 복사해 남긴다.
+</p>
+
+<h2>6. 함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>분산 트레이싱(distributed tracing)</strong> — 상관관계 ID를 표준화·자동화한 생태계. W3C Trace Context 헤더와
+  OpenTelemetry가 2020년대의 사실상 표준으로, 요청이 거친 전 서비스·전 구간을 하나의 트레이스로 이어 준다. 이 문서의 "ID로 꿰기"를
+  수작업에서 플랫폼 기능으로 올려 주는 도구.</li>
+  <li><strong>구조화된 에러 응답 표준</strong> — HTTP API의 에러 본문을 기계 판독 가능하게 규격화한 RFC 9457(Problem Details,
+  구 RFC 7807). "표면에는 분류와 추적 식별자"라는 3절의 원칙을 응답 포맷 차원에서 실현한다.</li>
+  <li><strong>에러 분류 체계(taxonomy)</strong> — 재시도 가능/불가, 클라이언트 잘못/서버 잘못 같은 분류 축을 예외 계층에 새기는 설계.
+  재래핑이 "정보를 깎는 일"에서 "판단에 필요한 분류를 부여하는 일"로 바뀐다. 예외 계층 설계 전반은
+  <a href="../C 백엔드/C16 예외 처리 전략.html">C16 예외 처리 전략.html</a> 소관.</li>
+  <li><strong>에러 수집기(error tracker)</strong> — 표면까지 올라온 에러를 스택·문맥과 함께 자동 수집·집계하는 서비스류.
+  집계 키가 표면 문구가 아니라 스택 지문(fingerprint)이라는 점이 4절의 "표면 문구 집계 금지"와 정확히 같은 통찰이다.</li>
+  <li><strong>로그 레벨과 이중 기록 문제</strong> — 같은 실패를 모든 계층이 ERROR로 찍으면 한 장애가 수십 건으로 부풀어 노이즈가 된다.
+  관례는 "처리(래핑)하는 곳은 낮은 레벨로, 최종 미처리 지점 한 곳만 ERROR로" — 체인 보존과 짝을 이루는 로깅 규율이다.</li>
+</ul>
+
+<h2>7. 한 장 요약</h2>
+<ul>
+  <li>재래핑은 계층화의 필연 — 각 계층은 자기 추상화 수준의 예외로 말한다. 문제는 래핑이 아니라 <strong>원인을 버리는 래핑</strong>이다.</li>
+  <li>정보는 위로 갈수록 깎여, <strong>근본 원인은 원천 계층 로그에만, 표면에는 일반 문구만</strong> 남는다 — 특히 원격·언어·UI 경계에서 급락한다.</li>
+  <li>표면 문구는 다대일 수렴의 결과라 <strong>판단 근거가 못 된다</strong> — 검색 좌표(출발점)로만 쓴다.</li>
+  <li>진단 경로: 표면 → 상관관계 ID → <strong>원천 로그 직행</strong>, 판단은 체인의 최하단에서.</li>
+  <li>설계 투자 세 가지: cause 연결(프로세스 안), 상관관계 ID 전파(경계 너머), 원천 계층의 문맥 로깅.</li>
+  <li>언어별: Java는 체인 표준·변환 계층 관례가 성숙, JS는 비동기 틈이 추가 손실원, Python은 자동 체인(대신 <code>from</code> 규율 필요), C++은 체인 수동·경계는 예외 불통과라 번역층 로깅이 사활적.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="O5 장애 대응 기초.html">O5 장애 대응 기초.html</a> — 이 진단 경로를 장애 상황의 절차 안에 배치하는 상위 문서</li>
+  <li><a href="../P 관측성·모니터링/P1 로깅과 관측성 기초.html">P1 로깅과 관측성 기초.html</a> — 원천 로그 직행을 가능하게 하는 로깅 인프라</li>
+  <li><a href="../C 백엔드/C16 예외 처리 전략.html">C16 예외 처리 전략.html</a> — 어디서 잡고 어디서 던질 것인가, 예외 계층 설계</li>
+</ul>
+
+</body>
+</html>
