@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C1 서버사이드 렌더링 vs 클라이언트 렌더링</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: center;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>C1 서버사이드 렌더링 vs 클라이언트 렌더링</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>SSR(server-side rendering)과 CSR(client-side rendering)의 구분 기준은 단 하나 — <strong>"완성된 HTML이 어디서 만들어지는가"</strong>(서버에서 조립 vs 브라우저에서 JS로 구축)다.</li>
+  <li>이 위치 선택이 <strong>초기 로딩의 형태</strong>를 가른다: SSR은 첫 응답에 내용이 실려 오고, CSR은 빈 껍데기 + JS 다운로드·실행 후에야 내용이 그려진다.</li>
+  <li>더 미묘한 귀결은 <strong>"보이는 시점"과 "눌리는 시점"의 분리</strong>다 — SSR 화면은 일찍 보이지만 하이드레이션(hydration) 전까지는 상호작용이 안 되고, CSR은 늦게 보이지만 보이는 순간부터 상호작용된다.</li>
+  <li>SEO·링크 미리보기처럼 <strong>"JS를 실행해 주지 않는 독자"</strong>가 있는 한, 그 독자에게 내용을 보여야 하는 페이지는 서버가 HTML을 만들어야 한다.</li>
+  <li>2020년대 중반 기준, 실무 선택지는 양자택일이 아니라 <strong>페이지·컴포넌트 단위의 하이브리드</strong>(정적 생성·스트리밍 SSR·아일랜드 등)로 이동했다 — 그러나 하이브리드를 이해하는 열쇠도 결국 이 문서의 기본 축이다.</li>
+</ul>
+
+<h2>1. 기준은 하나 — HTML이 만들어지는 곳</h2>
+<p>
+상품 상세 페이지를 예로 잡자. 사용자가 <code>/products/42</code>를 열었을 때 브라우저에 도착하는 첫 응답이 무엇인지가 두 방식의 전부를 가른다.
+</p>
+<p>
+<strong>SSR</strong>에서 서버는 요청을 받으면 DB에서 상품 42를 조회하고, 템플릿·컴포넌트에 데이터를 끼워 <strong>완성된 HTML 문자열</strong>을
+만들어 응답한다. 브라우저는 받은 HTML을 파싱해 그리면 끝이다 — 브라우저 입장에서는 1990년대 정적 문서와 다를 것이 없다.
+</p>
+<p>
+<strong>CSR</strong>에서 서버가 주는 첫 응답은 거의 빈 HTML이다 — <code>&lt;div id="app"&gt;&lt;/div&gt;</code>와 스크립트 태그 하나.
+내용을 만드는 주체는 그 스크립트다: 브라우저가 JS 번들을 내려받아 실행하면, JS가 API로 상품 42를 조회하고(<code>fetch</code>),
+받은 JSON으로 DOM을 구축한다. 즉 <strong>렌더링이라는 계산이 서버 CPU에서 사용자 기기의 CPU로 이동</strong>한 것이다.
+</p>
+<div class="flow">SSR:  요청 → [서버: 데이터 조회 + HTML 조립] → 내용 있는 HTML → 브라우저는 그리기만
+CSR:  요청 → 빈 껍데기 HTML → JS 다운로드·실행 → [브라우저: API 호출 + DOM 구축] → 내용</div>
+<p>
+왜 CSR이라는 우회로가 생겼는지도 이 그림에서 읽을 수 있다. 전통 SSR은 <strong>페이지 이동마다</strong> 이 전체 사이클을 반복한다 —
+화면 전체가 지워지고 다시 그려진다. 앱처럼 매끄러운 화면 전환·즉각적 피드백을 원하면, 첫 로드 이후의 렌더링 권한을 브라우저 쪽 JS가
+쥐고 있어야 한다. 그것이 SPA(single-page application)이고, SPA의 렌더링 방식이 CSR이다. 즉 두 방식은 "옛날 방식 vs 요즘 방식"이
+아니라 <strong>렌더링 계산을 어느 쪽에 둘 때 각자 무엇을 얻고 잃는가</strong>의 트레이드오프다. 다음 두 절이 그 청구서다.
+</p>
+
+<h2>2. 첫 화면의 경제학 — 초기 로딩</h2>
+<p>
+1절의 두 경로를 시간축에 놓으면 초기 로딩의 차이가 정확해진다. 중요한 것은 "SSR이 빠르다" 같은 뭉뚱그린 명제가 아니라,
+<strong>각 방식이 어느 구간에서 시간을 쓰는가</strong>다.
+</p>
+<div class="flow">SSR:  |--- 서버 작업(조회+조립) ---|--- HTML 전송 ---|-- 파싱·그리기 --|   ← 내용 표시
+CSR:  |- 껍데기 -|--- JS 번들 다운로드 ---|-- JS 실행 --|-- API 왕복 --|-- DOM 구축 --|   ← 내용 표시</div>
+<p>
+SSR의 비용은 <strong>첫 바이트가 늦어지는 것</strong>이다 — 서버가 조회·조립을 끝내야 응답이 시작되므로, 서버 작업이 무거우면
+사용자는 흰 화면으로 기다린다(첫 바이트까지의 시간, TTFB). 대신 도착한 응답에는 이미 내용이 있으므로, 도착 후 표시까지는 짧다.
+CSR의 비용은 <strong>도착 후의 연쇄</strong>다 — 껍데기는 즉시 오지만, 번들 다운로드(회선 속도) → JS 실행(기기 성능) → API 왕복(다시 네트워크)
+→ DOM 구축이 직렬로 이어진 뒤에야 내용이 뜬다. 특히 번들 크기와 기기 성능이 변수로 들어오므로, <strong>저사양 기기·느린 회선에서
+격차가 가장 크게 벌어지는 쪽이 CSR</strong>이다.
+</p>
+<p>
+반면 <strong>두 번째 화면부터는 형세가 뒤집힌다.</strong> CSR(SPA)은 번들·프레임워크가 이미 로드돼 있으므로 다음 화면은 API 호출 + 부분
+갱신으로 끝난다 — 전체 페이지 리로드가 없다. SSR은 이동마다 서버 왕복 + 전체 재그리기다. 그래서 선택 기준은 방문 패턴과 맞물린다:
+검색·링크로 유입돼 한두 페이지 보고 떠나는 콘텐츠성 페이지는 첫 화면이 전부(SSR 유리)이고, 로그인 후 오래 머물며 조작하는
+대시보드·도구는 첫 로드 비용을 상각할 시간이 충분하다(CSR 유리).
+</p>
+<blockquote class="info">
+<p><strong>캐시가 끼어들면:</strong> 서버가 조립한 HTML은 (개인화가 없다면) CDN에 캐시될 수 있어 SSR의 TTFB 비용이 사라지기도 한다.
+그 극단이 아예 빌드 시점에 HTML을 만들어 두는 정적 생성(SSG)이다 — "서버에서 만든다"의 시점을 요청 시에서 빌드 시로 옮긴 변형으로,
+6절에서 다시 만난다.</p>
+</blockquote>
+
+<h2>3. 보이는 것과 눌리는 것 — 상호작용 가능 시점의 분리</h2>
+<p>
+앞 절의 시간축에는 사실 눈금이 하나 더 필요하다. "내용이 보인다"와 <strong>"조작에 반응한다"는 다른 사건</strong>이기 때문이다.
+이 분리를 이해하면 SSR의 숨은 비용이 드러난다.
+</p>
+<p>
+SSR이 보낸 HTML은 <strong>정적인 그림</strong>이다. 버튼 태그는 있지만 클릭 핸들러는 없다 — 핸들러는 JS 안에 있고, JS는 아직
+내려오는 중이다. 현대 프레임워크의 SSR(SPA 프레임워크로 서버 렌더링)에서는 JS가 도착한 뒤 <strong>하이드레이션</strong>이라는 단계가 돈다:
+프레임워크가 이미 그려진 DOM을 순회하며 자기 컴포넌트 트리와 대조하고, 이벤트 리스너를 붙여 정적 그림을 살아 있는 앱으로 바꾼다
+(Vue가 이 대조를 위해 컴포넌트 상태를 어떻게 추적하는지는 <a href="../A 프론트엔드/A2 Vue 반응성 시스템 원리.html">A2 Vue 반응성 시스템 원리.html</a>과
+이어진다). 문제는 <strong>보이는 시점(첫 페인트)과 하이드레이션 완료 시점 사이의 틈</strong>이다 — 화면은 떠 있는데 버튼이 안 눌리는,
+사용자 입장에서 가장 어리둥절한 구간이 여기서 생긴다. 번들이 클수록 이 틈은 벌어진다.
+</p>
+<div class="flow">          첫 페인트           하이드레이션 완료
+SSR:  ────┃ 보임(정적) ──────────┃ 눌림 ──────▶   틈 = "보이는데 안 눌리는" 구간
+CSR:  ──────────────── (흰 화면) ┃ 보임 = 눌림 ──▶   틈 없음, 대신 전부 늦음</div>
+<p>
+CSR은 이 틈이 없다 — DOM을 JS가 만들었으므로 만들어지는 순간 핸들러도 함께 붙는다. 보이는 것과 눌리는 것이 동시에, 다만 <strong>둘 다
+늦게</strong> 온다. 정리하면: SSR은 "일찍 보여 주는 대신 잠시 안 눌리는" 방식, CSR은 "늦게 보여 주는 대신 보이면 바로 눌리는" 방식이다.
+측정 지표로는 첫 콘텐츠 표시(FCP)와 상호작용 가능 시점(TTI)의 간극이 이 틈을 수치화한다.
+</p>
+<blockquote class="warn">
+<p><strong>개념 함정:</strong> "SSR을 도입하면 빨라진다"는 절반의 문장이다. SSR이 앞당기는 것은 <strong>보이는 시점</strong>이고,
+<strong>눌리는 시점</strong>은 여전히 JS 번들에 묶여 있다 — 같은 번들을 그대로 두고 SSR만 얹으면 "빨리 뜨는데 한동안 안 눌리는" 앱이 된다.
+상호작용 시점까지 앞당기려면 번들 자체를 줄이는 설계(코드 분할, 6절의 아일랜드·서버 컴포넌트)가 함께 가야 한다.</p>
+</blockquote>
+
+<h2>4. JS를 실행해 주지 않는 독자 — SEO와 미리보기</h2>
+<p>
+지금까지의 독자는 사람(브라우저)이었다. 그런데 페이지에는 다른 부류의 독자가 있다 — 검색엔진 크롤러, 그리고 메신저·SNS가 링크
+미리보기를 만들 때 쓰는 스크래퍼다. 이들에게 CSR 페이지의 첫 응답은 <strong>내용이 없는 빈 껍데기</strong>라는 사실이, 렌더링 위치
+선택을 성능 너머의 문제로 만든다.
+</p>
+<p>
+검색엔진 쪽부터. 주요 검색엔진은 JS를 실행해 CSR 페이지를 렌더링<em>할 수는</em> 있다 — 그러나 렌더링은 크롤링보다 훨씬 비싼 작업이라
+<strong>별도 대기열로 미뤄진다</strong>(HTML 수집과 JS 렌더링의 2단계 색인). 색인이 늦어지거나, 렌더링 예산이 큰 사이트에서 일부만
+색인되거나, 렌더링 중 API 실패로 빈 내용이 색인되는 위험이 CSR에는 구조적으로 존재한다. 모든 크롤러가 JS를 실행하는 것도 아니다.
+한편 <strong>링크 미리보기 스크래퍼는 대부분 JS를 실행하지 않는다</strong> — 메신저에 상품 링크를 붙였을 때 제목·이미지가 뜨려면,
+그 메타 태그는 <strong>첫 HTML 응답에</strong> 있어야 한다. 이쪽은 "될 수도 있는" 문제가 아니라 명확한 제약이다.
+</p>
+<p>
+그래서 판단 규칙은 이렇게 선다: <strong>"JS 없는 독자에게 보여야 하는 내용인가?"</strong> 검색 유입이 생명인 상품·문서·글 페이지는
+서버가 내용을 만들어야 한다(SSR 또는 정적 생성). 로그인 뒤에만 보이는 대시보드는 크롤러가 볼 일 자체가 없으므로 CSR로 충분하다.
+2020년대 중반 기준으로는 프레임워크들이 이 판단을 <strong>라우트 단위로</strong> 내리게 해 준다 — 같은 앱 안에서 공개 페이지는 서버
+렌더링, 내부 화면은 CSR로 섞는 것이 표준 관행이 됐다(최근 동향은 6절).
+</p>
+
+<h2>흔히 헷갈리는 지점</h2>
+<ul>
+  <li><strong>"SPA = CSR, SSR = 옛날 템플릿 방식?"</strong> — 축이 다르다. SPA는 "첫 로드 후 화면 전환을 JS가 담당한다"는
+  <strong>내비게이션 모델</strong>이고, SSR/CSR은 <strong>첫 HTML의 생산지</strong> 문제다. 현대 프레임워크의 SSR은 "첫 페이지는 서버가
+  렌더링, 이후 전환은 SPA처럼"의 조합 — 두 축이 독립임을 보여 주는 산 증거다.</li>
+  <li><strong>"SSR은 서버 부하 때문에 무조건 비싸다?"</strong> — 렌더링 계산이 서버로 온 것은 맞지만, 개인화 없는 페이지는 조립 결과를
+  CDN·캐시에 태울 수 있어 요청당 비용이 0에 수렴하기도 한다. 진짜 비싼 것은 <strong>캐시 불가능한 개인화 페이지의 SSR</strong>이다 —
+  이때는 요청마다 조립이 돌고, 부하 산정에 렌더링 CPU를 넣어야 한다.</li>
+  <li><strong>"하이드레이션은 다시 그리는 것이다?"</strong> — 아니다. 정상적인 하이드레이션은 <strong>그리지 않는다</strong> — 이미 있는 DOM에
+  상태·리스너를 연결할 뿐이다. 서버가 만든 HTML과 클라이언트가 기대한 결과가 어긋날 때(시각·난수·로케일처럼 양쪽에서 다르게 평가되는 값이
+  단골) 비로소 불일치 경고와 함께 다시 그리기가 일어난다 — 이 불일치는 하이드레이션의 실패 모드이지 정의가 아니다.</li>
+  <li><strong>"크롤러가 JS를 실행하니 SEO 문제는 끝났다?"</strong> — "실행할 수 있다"와 "즉시·항상·전부 실행한다"의 간극이 4절의 요지다.
+  색인 지연·부분 색인·미리보기 스크래퍼는 여전히 실재하는 제약이다.</li>
+  <li><strong>"API 서버와 렌더링 서버는 같은 것?"</strong> — CSR의 서버는 정적 파일 서빙 + JSON API만 하면 되지만, SSR을 도입하는 순간
+  <strong>HTML을 조립하는 실행 환경</strong>이 서버 어딘가에 필요해진다. SPA 프레임워크로 SSR을 하려면 그 컴포넌트 코드를 실행할
+  JS 런타임이 서버에 있어야 한다는 뜻이고 — 이것이 다음 절 JS·TS 항목과 <a href="C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a>의 접점이다.</li>
+</ul>
+
+<h2>★ 언어별 대조 — 렌더링 위치 문제는 각 언어에서 어떻게 성립하는가</h2>
+<p>
+"HTML을 어디서 만드는가"는 언어 중립 질문이지만, 각 언어가 이 질문과 맺는 관계는 상당히 다르다 — 한쪽 끝에는 SSR의 원조(Java·Python
+템플릿 전통)가, 다른 끝에는 양쪽을 같은 코드로 오가는 유일한 언어(JS)가 있다.
+</p>
+<table>
+  <tr><th></th><th>Java</th><th>JS·TS</th><th>Python</th><th>C++</th></tr>
+  <tr><td>전형적 위치</td><td>서버 — 템플릿 엔진 SSR의 원조</td><td>양쪽 — 같은 컴포넌트를 서버·브라우저에서</td><td>서버 — 템플릿 전통 + 서버 주도 회귀</td><td>양쪽의 "아래" — 브라우저 엔진과 고성능 서버</td></tr>
+  <tr><td>SPA 시대의 역할</td><td>JSON API 원천으로 후퇴</td><td>렌더링 주도권 독점</td><td>JSON API 원천 or 서버 주도 갱신</td><td>WASM으로 클라이언트 계산 참여</td></tr>
+  <tr><td>하이드레이션</td><td>개념 없음(전통 SSR은 전체 리로드)</td><td>핵심 개념</td><td>개념 없음</td><td>해당 없음(DOM은 JS 경유)</td></tr>
+</table>
+
+<h3>Java — 템플릿 엔진 SSR의 원조, 그리고 API 원천으로의 후퇴</h3>
+<p>
+Java 웹의 출발점이 곧 SSR이다 — 서블릿이 HTML 문자열을 쓰고, JSP·Thymeleaf 같은 템플릿 엔진이 "데이터 + 템플릿 → HTML"의 조립을
+구조화했다. JVM 관점에서 SSR은 요청당 문자열 조립 작업이며, JIT로 데워진 템플릿 렌더링은 매우 빠르고 스레드 풀 모델로 자연스럽게
+병렬화된다 — 렌더링 부하가 스레드를 얼마나 점유하는지가 용량 산정의 축이 된다.
+</p>
+<pre><code>// Spring MVC + 템플릿 엔진: 고전적이고 여전히 유효한 SSR
+@GetMapping("/products/{id}")
+public String detail(@PathVariable Long id, Model model) {
+    model.addAttribute("product", service.find(id));
+    return "product-detail";   // 템플릿 이름 → 서버가 HTML로 조립해 응답
+}
+
+// SPA 시대의 같은 컨트롤러: HTML 대신 JSON — 렌더링 권한을 프론트에 넘긴 형태
+@GetMapping("/api/products/{id}")
+public ProductDto detail(@PathVariable Long id) { return service.findDto(id); }</code></pre>
+<p>
+위 두 시그니처의 대비가 이 문서 전체의 축을 Java 문법으로 요약한다 — 반환이 "템플릿(HTML)"인가 "DTO(JSON)"인가가 곧 렌더링 위치
+선언이다. 특기할 점 하나: Java 진영의 전통 SSR에는 하이드레이션 개념이 없다. 페이지는 정적 HTML + 필요한 만큼의 수동 JS였고,
+상호작용이 커지자 렌더링을 통째로 JS에 넘기는(SPA + JSON API) 쪽으로 이동한 것이 지난 흐름이다. 최근에는 반대 방향의 실험 —
+서버가 HTML 조각을 계속 밀어 주고 클라이언트 JS는 최소화하는 서버 주도 방식 — 도 JVM 생태계에 존재하지만, 주류 조합은 여전히
+"Java는 JSON 원천, 렌더링은 JS 프레임워크"다.
+</p>
+
+<h3>JS·TS — 같은 코드를 양쪽에서 돌릴 수 있는 유일한 언어, 그래서 생긴 하이드레이션</h3>
+<p>
+브라우저의 언어는 JS뿐이다. 따라서 CSR의 렌더링 코드는 무조건 JS이고 — SSR을 <strong>같은 컴포넌트 코드로</strong> 하고 싶다면 서버에도
+JS 런타임이 필요하다. Node.js가 이것을 가능하게 했고(유니버설 렌더링), 하이드레이션이라는 개념 자체가 "서버와 클라이언트가 같은
+컴포넌트 정의를 공유한다"는 이 전제에서만 성립한다:
+</p>
+<pre><code>// Vue 유니버설 렌더링의 뼈대 — 같은 App을 두 곳에서
+// 서버 (Node.js): 컴포넌트 → HTML 문자열
+const html = await renderToString(createSSRApp(App));
+
+// 브라우저: 같은 App으로 기존 DOM에 "접속" — 다시 그리지 않고 리스너만 연결
+createSSRApp(App).mount('#app');   // SSR HTML이 있으면 하이드레이션 모드로 동작</code></pre>
+<p>
+런타임 기제의 함정이 하나 있다. Node.js의 이벤트 루프는 단일 스레드이고 <code>renderToString</code>은 <strong>동기적 CPU 작업</strong>이다 —
+무거운 페이지의 SSR이 도는 동안 그 프로세스의 다른 모든 요청이 멈춘다(이벤트 루프 블로킹). Java의 스레드 풀과 정반대 특성이라,
+JS SSR 서버의 용량 산정은 "렌더링 한 건이 루프를 몇 ms 잡는가"로 한다(상세 구조는 <a href="C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a>).
+TS 관점 한 가지: 타입은 컴파일 시 소거되므로 SSR/CSR 어느 쪽 동작도 바꾸지 않지만, 서버 전용 코드(파일·DB 접근)가 클라이언트 번들에
+섞여 들어가는 사고를 <strong>모듈 경계 타입·린트로 조기 검출</strong>하는 데는 실질적 가치가 있다 — 유니버설 코드베이스의 고유 위험(비밀 값이
+번들에 실려 나가는 것)에 대한 정적 방어선이다.
+</p>
+
+<h3>Python — 템플릿 전통 위에, "JS를 줄이는" 서버 주도 흐름이 얹히는 중</h3>
+<p>
+Python도 Java처럼 서버 템플릿 전통이 깊다 — Django 템플릿·Jinja가 "컨텍스트 딕셔너리 + 템플릿 → HTML"을 표준화했다:
+</p>
+<pre><code># Flask + Jinja: 데이터가 서버에서 HTML로 굳는 지점이 명확하다
+@app.get("/products/&lt;int:pid&gt;")
+def detail(pid):
+    product = repo.find(pid)
+    return render_template("detail.html", product=product)  # SSR</code></pre>
+<p>
+인터프리터 기제 관점에서 Python SSR의 변수는 실행 모델이다 — GIL(전역 인터프리터 락: 한 프로세스에서 바이트코드를 한 번에 한
+스레드만 실행) 때문에 렌더링 같은 CPU 작업의 병렬화는 스레드가 아니라 <strong>다중 프로세스</strong>(prefork 워커)로 한다. 워커 수 = 동시
+렌더링 수라는 단순한 산식이 나오는 대신, 프로세스당 메모리가 곱해진다. 생태계 흐름도 특기할 만하다: Python 진영은 SPA 시대에
+"JSON API 원천" 역할로 물러났다가, 최근에는(2020년대 중반) 서버가 HTML 조각을 응답하고 브라우저 쪽은 선언적 속성만으로 부분
+교체하는 경량 서버 주도 방식(htmx류)이 "복잡한 JS 없이 상호작용"이라는 절충으로 자리를 얻고 있다 — 렌더링 위치 축에서 보면
+<strong>"상호작용까지도 서버 렌더링으로"</strong>라는, CSR과 정반대 극단의 부활이다. 덕 타이핑 통찰 하나: 템플릿에 무엇이든 넘길 수 있는
+유연함은 "템플릿이 기대한 속성이 없는 객체"라는 런타임 사고로 되돌아온다 — 템플릿 경계에서의 컨텍스트 스키마 검증이 Python SSR의
+숨은 규율이다.
+</p>
+
+<h3>C++ — 렌더링 논쟁의 "무대 아래"에 있는 언어</h3>
+<p>
+C++에는 주류 웹 템플릿 생태계가 없다 — 이 언어에서 "SSR vs CSR" 선택이 일상 문제로 성립하지 않는 이유부터가 통찰이다.
+개발 생산성이 지배하는 웹 애플리케이션 계층에서 C++의 컴파일 타임 안전·수동 메모리 관리는 비용 대비 이득이 없기 때문이다.
+대신 C++은 이 논쟁의 <strong>무대 자체</strong>를 만든다: "클라이언트 렌더링"의 실체 — HTML 파싱, DOM 트리, 스타일 계산, 페인트 — 는
+브라우저 엔진(C++로 작성)이 수행하는 작업이고, CSR이란 결국 <strong>JS가 C++ 엔진의 DOM API를 호출해 트리를 조작하는 것</strong>이다.
+</p>
+<pre><code>// C++이 클라이언트 계산에 참여하는 현대적 경로 — WebAssembly
+extern "C" {                       // 이름 장식을 꺼서 JS에서 찾을 수 있는 심벌로
+  int price_with_tax(int cents) {  // 계산은 WASM(C++)에서 —
+    return cents + cents / 10;
+  }
+}
+// 단, DOM 조작 API는 WASM에 직접 노출되지 않는다:
+// 화면 갱신은 여전히 JS를 경유한다. "렌더링은 JS, 무거운 계산만 C++" 분업.</code></pre>
+<p>
+서버 쪽에서 C++은 극한 처리량이 필요한 자리(프록시·게이트웨이·엣지 서버)에 있고, 그 자리에서 HTML을 조립하는 일은 결국
+문자열 버퍼 조작이다 — 메모리 관점에서는 요청당 할당을 아레나·버퍼 재사용으로 억제하는 것이 성능의 관건이며, 수명 관점에서는
+응답 버퍼가 소켓 쓰기 완료 전에 해제되지 않게 하는 소유권 설계가 곧 정확성이다. 클라이언트 쪽 WASM은 "CSR의 JS 실행 비용"
+절에서 본 병목 중 <strong>계산 구간만</strong>을 네이티브 속도로 치환하는 수단이지, 렌더링 위치 문제의 답이 아니라는 경계 —
+DOM은 여전히 JS 경유 — 를 이해하는 것이 핵심이다.
+</p>
+
+<h2>함께 알면 좋은 것</h2>
+<ul>
+  <li><strong>정적 생성(SSG)과 증분 재생성</strong> — "서버에서 만든다"의 시점을 요청 시가 아니라 <strong>빌드 시</strong>로 옮긴 변형.
+  내용이 요청자와 무관한 페이지의 종착지이며, 갱신 주기 문제는 배포 후 백그라운드 재생성(ISR류)으로 절충한다.</li>
+  <li><strong>스트리밍 SSR</strong> — 서버가 페이지 전체 조립을 끝내고 보내는 대신, <strong>완성되는 부분부터 순서대로 흘려보내는</strong> 방식.
+  2절의 "TTFB vs 완성도" 트레이드오프를 "껍데기는 즉시, 느린 부분은 도착하는 대로"로 재구성한다. 2020년대 중반 기준 주요
+  프레임워크들이 표준 지원한다.</li>
+  <li><strong>아일랜드 아키텍처</strong> — 페이지 대부분을 정적 HTML로 두고, 상호작용이 필요한 <strong>섬(컴포넌트)에만</strong> JS를 실어
+  개별 하이드레이션하는 접근. 3절의 "보이는데 안 눌리는 틈"을 페이지 전체가 아니라 섬 단위로 좁힌다 — 콘텐츠 중심 사이트에서
+  최근 채택이 빠르게 느는 패턴이다.</li>
+  <li><strong>서버 컴포넌트</strong> — 컴포넌트 단위로 "이 컴포넌트는 서버에서만 실행, JS를 클라이언트에 아예 보내지 않음"을 선언하는
+  모델(React 진영 주도, 2020년대 중반 기준 주요 프레임워크에서 실용 단계). 렌더링 위치 선택의 입도가 페이지에서 <strong>컴포넌트</strong>로
+  내려온 것 — 이 문서의 축이 더 잘게 쪼개져 적용되는 최신 형태다.</li>
+  <li><strong>측정 지표(Core Web Vitals)</strong> — 첫 콘텐츠 표시(FCP)·최대 콘텐츠 표시(LCP)·상호작용 응답성(INP) 등 표준 지표.
+  2·3절의 트레이드오프 논의를 감이 아니라 측정으로 하게 해 주는 공통 언어이며, 검색 순위에도 반영된다.</li>
+</ul>
+
+<h2>한 장 요약</h2>
+<ul>
+  <li>구분 기준은 하나: <strong>완성된 HTML의 생산지</strong> — 서버(SSR) vs 브라우저의 JS(CSR). 렌더링 계산을 어느 CPU에 두는가의 선택이다.</li>
+  <li>초기 로딩: SSR은 서버 작업만큼 첫 바이트가 늦지만 도착하면 바로 보인다. CSR은 껍데기만 빨리 오고, 번들 다운로드→실행→API 왕복의 직렬 연쇄 뒤에 보인다 — 저사양·저속 환경에서 가장 불리하다. 단 <strong>두 번째 화면부터는 CSR(SPA)이 유리</strong>하다.</li>
+  <li>상호작용: SSR은 <strong>보이는 시점과 눌리는 시점이 분리</strong>된다(하이드레이션 전까지 정적 그림). CSR은 보이면 바로 눌리지만 둘 다 늦다. "SSR = 빠름"이 아니라 "무엇을 앞당기는가"를 물어야 한다.</li>
+  <li>SEO·링크 미리보기: <strong>JS를 실행해 주지 않는 독자</strong>(미뤄지는 크롤러 렌더링, JS 없는 스크래퍼)에게 보여야 할 내용은 첫 HTML에 있어야 한다 — 공개 콘텐츠는 서버 렌더링이 안전한 기본값.</li>
+  <li>실무 선택은 페이지·컴포넌트 단위 하이브리드(SSG·스트리밍·아일랜드·서버 컴포넌트)로 이동했지만, 전부 이 문서의 축 — 생산지·시점·독자 — 의 조합이다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="C6 SSR·SPA 통합.html">C6 SSR·SPA 통합.html</a> — 서버 렌더 페이지 위에 SPA가 얹힐 때의 통합 문제(인증·권한 흐름 포함)</li>
+  <li><a href="C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a> — JS SSR 서버의 실행 기반인 Node.js의 내부 구조</li>
+  <li><a href="../A 프론트엔드/A2 Vue 반응성 시스템 원리.html">A2 Vue 반응성 시스템 원리.html</a> — 하이드레이션이 연결하는 클라이언트 측 상태 추적의 원리</li>
+</ul>
+
+</body>
+</html>
