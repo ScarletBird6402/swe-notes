@@ -223,8 +223,8 @@ API는 배포 후에도 진화한다. 문제는 <strong>이미 배포된 클라�
 
 <h2>★ 8. 언어별 대조</h2>
 <p>
-"멱등한 요청만 자동 재시도한다", "상태 코드 클래스로 분기한다" 같은 계약의 성질은 각 언어의 HTTP 클라이언트·서버 도구에 그대로 새겨져 있다.
-도구가 왜 그렇게 만들어졌는지를 보면 계약의 의미가 역으로 확인된다.
+7절까지 다룬 계약의 성질 — 메서드 선택, 상태 코드 분류, 리다이렉트의 캐시 가능성 — 은 언어마다 다른 도구·관용구로 번역된다.
+서버가 계약을 <em>선언</em>하는 방식과 클라이언트가 계약을 <em>해석</em>하는 방식이 언어마다 어디까지 강제되고 어디부터 개발자 재량인지를 보면, "계약"이라는 개념 자체가 더 뚜렷해진다.
 </p>
 <table>
   <tr><th>언어</th><th>서버 쪽 표현</th><th>클라이언트 쪽 표현</th><th>비고</th></tr>
@@ -232,34 +232,162 @@ API는 배포 후에도 진화한다. 문제는 <strong>이미 배포된 클라�
     <td>Java</td>
     <td>Spring <code>@GetMapping</code>/<code>@PostMapping</code>·<code>ResponseEntity.status(...)</code></td>
     <td><code>HttpClient</code>·RestTemplate — 재시도 라이브러리가 멱등 메서드 기본 대상</td>
-    <td>표 + 8.3 요약</td>
+    <td>아래 8.1</td>
   </tr>
   <tr>
     <td>JS·TS</td>
     <td>Express <code>app.get/post(...)</code>·<code>res.status(...)</code></td>
-    <td><code>fetch</code>(리다이렉트 자동 추적)·Axios(4xx/5xx를 예외로 승격)</td>
-    <td>표 + 8.3 요약</td>
+    <td><code>fetch</code>(4xx/5xx도 정상 resolve)·Axios(비2xx를 자동으로 예외 승격)</td>
+    <td>아래 8.2</td>
   </tr>
   <tr>
     <td>Python</td>
-    <td>FastAPI 데코레이터가 메서드·상태 코드를 선언부에 명시</td>
+    <td>FastAPI 데코레이터가 메서드·상태 코드·본문 형태를 타입 힌트로 선언</td>
     <td><code>requests</code> — <code>resp.history</code>로 리다이렉트 추적 확인, <code>raise_for_status()</code></td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>아래 8.3</td>
   </tr>
   <tr>
     <td>C++</td>
     <td>표준 웹 프레임워크 없음(Crow·Drogon 등 서드파티)</td>
     <td>libcurl — <code>CURLOPT_FOLLOWLOCATION</code>으로 리다이렉트 추적을 직접 제어</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>아래 8.4</td>
   </tr>
 </table>
 
-<h3>8.1 C++ — 계약 해석이 전부 손으로 드러나는 자리</h3>
+<h3>8.1 Java — 관례가 계약을 제도화하는 언어</h3>
 <p>
-고수준 클라이언트가 "알아서" 해 주던 일들 — 리다이렉트 따라가기, 상태 코드 분류, 재시도 — 은 사실 전부 계약 해석 코드다.
-C++에서 libcurl로 HTTP를 다루면 그 코드가 <strong>옵션 하나하나로 눈에 보인다</strong>.
+Java 쪽 생태계에서는 개별 개발자의 선택이 아니라 <strong>프레임워크 관례</strong>가 계약을 강제한다.
+Spring MVC의 <code>@GetMapping</code>·<code>@PostMapping</code> 같은 어노테이션(annotation — 코드에 붙이는 메타데이터 주석. 컴파일 후에도 남아 있다가 프레임워크가 실행 시점에 읽어 동작을 결정한다)은
+"이 메서드는 이 URI와 이 HTTP 메서드에 응답한다"는 2절의 REST 매핑을 <strong>선언부 한 줄</strong>로 못박는다.
+애플리케이션이 기동될 때 스프링 컨테이너는 이 어노테이션들을 읽어 라우팅 표(HandlerMapping)를 만드는데, 이 과정에서 같은 URI·메서드 조합이 중복 선언되면 <strong>기동 자체가 실패</strong>한다 —
+계약 위반이 요청이 들어온 뒤 조용히 드러나는 대신, 배포 이전 단계에서 걸러지는 구조다.
 </p>
-<pre><code>CURL* curl = curl_easy_init();
+<p>
+상태 코드도 같은 방식으로 코드에 새겨진다. <code>ResponseEntity</code>는 4절의 상태 코드 클래스를 반환 타입 수준에서 명시하도록 강제하고,
+<code>PUT</code>·<code>PATCH</code>를 어노테이션으로 구분해 두면 3절의 멱등성 구분이 라우팅 표에 그대로 드러난다.
+</p>
+<pre><code>@RestController
+@RequestMapping("/orders")
+class OrderController {
+
+    @GetMapping("/{id}")
+    ResponseEntity&lt;Order&gt; get(@PathVariable Long id) {
+        return orderService.find(id)
+            .map(ResponseEntity::ok)                 // 200
+            .orElseGet(() -&gt; ResponseEntity.notFound().build()); // 404
+    }
+
+    @PostMapping
+    ResponseEntity&lt;Order&gt; create(@RequestBody OrderRequest req) {
+        Order created = orderService.create(req);    // 비멱등 — 반복 호출 시 여러 건 생성
+        return ResponseEntity
+            .created(URI.create("/orders/" + created.getId())) // 201 + Location
+            .body(created);
+    }
+
+    @PutMapping("/{id}")
+    ResponseEntity&lt;Void&gt; replace(@PathVariable Long id, @RequestBody OrderRequest req) {
+        orderService.replace(id, req);                // 멱등 — 여러 번 보내도 결과 동일
+        return ResponseEntity.noContent().build();     // 204
+    }
+}</code></pre>
+<p>
+클라이언트 쪽에서도 같은 원칙이 확인된다. Spring Retry 같은 재시도 도구는 예외 없이 "멱등한 연산에만 적용하라"고 안내하는데,
+이는 프레임워크가 <code>POST</code> 안에 담긴 <em>업무 의미</em>까지는 알 수 없기 때문이다 — 어떤 <code>POST</code>가 안전하게 재시도해도 되는지는 계약을 설계한 사람만 아는 정보다.
+</p>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> 어노테이션 기반 라우팅의 진짜 이점은 코드가 짧아지는 것이 아니라, <strong>계약 위반의 발견 시점을 앞당긴다</strong>는 데 있다. URI·메서드 중복은 런타임 첫 요청이 아니라 애플리케이션 기동 시점에 예외로 터진다. 다만 이 안전망은 "선언부에 적을 수 있는 것"에만 적용된다 — 어떤 <code>POST</code>가 멱등하게 설계됐는지 같은 <em>업무 의미</em>는 어노테이션이 대신 검증해 주지 않으므로, 관례가 계약의 형식은 강제해도 계약의 의도까지 강제하지는 못한다.</p>
+</blockquote>
+
+<h3>8.2 JS·TS — 계약 해석이 라이브러리 옵션으로 갈리는 언어</h3>
+<p>
+JS·TS 진영은 정반대의 그림을 보여준다. 같은 HTTP 요청을 다루는 브라우저 내장 <code>fetch</code>와 서드파티 라이브러리 Axios가
+"무엇을 실패로 볼 것인가"를 서로 다르게 정의한다는 사실 자체가, 4절에서 말한 "상태 코드는 계약이다"를 소비자 쪽에서 뒤집어 보여주는 사례다.
+</p>
+<p>
+<code>fetch</code>가 반환하는 프로미스(Promise — 비동기 작업의 결과를 나중에 담을 상자 역할을 하는 객체)는 <strong>네트워크 자체가 실패했을 때만</strong> reject된다.
+서버가 <code>404</code>나 <code>500</code>을 응답해도 그것은 "정상적으로 도착한 응답"이므로 프로미스는 resolve되고, 실패 여부는 <code>response.ok</code>(상태 코드가 200~299인지)를 개발자가 직접 확인해야 한다.
+Axios는 이 판정을 라이브러리가 대신 맡아, 2xx 밖의 응답을 자동으로 예외로 승격시켜 <code>catch</code>로 보낸다.
+</p>
+<pre><code>// fetch: 4xx/5xx도 정상 resolve — "실패"의 판정을 소비자가 직접 내려야 한다
+const res = await fetch('/orders/42');
+if (!res.ok) {                                    // res.ok === (200 &lt;= status &lt; 300)
+  throw new Error(`요청 실패: ${res.status}`);      // 404여도 여기서 명시적으로 예외가 된다
+}
+const order = await res.json();
+
+// axios: 2xx 밖이면 라이브러리가 알아서 reject — try/catch로 실패가 자동 분리된다
+try {
+  const { data } = await axios.get('/orders/42');
+} catch (err) {
+  if (err.response) console.log(err.response.status); // 404 등 — 여기 도달했다는 것 자체가 판정 결과
+}
+</code></pre>
+<p>
+TS를 얹어도 이 간극은 메워지지 않는다. TS의 구조적 타이핑(structural typing — 타입 이름이 아니라 멤버 구성이 같으면 호환으로 판정하는 방식)은
+컴파일 시점에만 존재하고 컴파일 결과물에서는 완전히 사라진다(타입 소거). 즉 <code>await res.json()</code>의 반환값에 <code>Order</code> 타입을 붙여도,
+그것은 "실제로 그런 모양이라는 보장"이 아니라 개발자의 <strong>선언일 뿐</strong>이다 — 상태 코드를 검사하지 않고 지나간 <code>404</code> 응답의 본문(에러 메시지 JSON)도 컴파일러는 <code>Order</code>로 믿고 통과시킨다.
+</p>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> "상태 코드로 성공·실패를 가른다"는 4절의 원칙이 실제로 지켜지는지는 프로토콜이 아니라 <strong>클라이언트 라이브러리의 기본 옵션</strong>에 달려 있다(Axios에도 이 판정 기준을 바꾸는 <code>validateStatus</code> 옵션이 있다). TS 타입은 이 판정을 대신해 주지 않는다 — 컴파일 타임에 사라지는 주석이므로, 상태 코드 검사를 생략하면 "타입은 맞는데 실제로는 에러 응답"인 값이 아무 경고 없이 흘러간다. 계약 검증은 결국 런타임 코드로 명시해야 한다.</p>
+</blockquote>
+
+<h3>8.3 Python — 타입 힌트가 계약이 되고, 흔적이 눈에 남는 언어</h3>
+<p>
+Python은 서버·클라이언트 양쪽에서 대조적인 모습을 보인다. 서버 쪽 FastAPI는 원래 정적 타입이 없는 언어에 타입 힌트(type hint — 변수·매개변수의 예상 타입을 주석처럼 표시하는 문법으로, 그 자체로는 강제력이 없다)를 붙여
+이를 <strong>런타임 검증 규칙</strong>으로 승격시킨다. 클라이언트 쪽 <code>requests</code>는 반대로, 5절·5.1절에서 다룬 리다이렉트·멱등성 문제를 코드로 직접 확인해 볼 수 있게 흔적을 남겨 준다.
+</p>
+<pre><code>from fastapi import FastAPI, status
+from pydantic import BaseModel
+
+class OrderIn(BaseModel):
+    item: str
+    quantity: int
+
+class OrderOut(OrderIn):
+    id: int
+
+app = FastAPI()
+
+@app.post("/orders", response_model=OrderOut, status_code=status.HTTP_201_CREATED)
+def create_order(order: OrderIn):
+    # 타입 힌트가 곧 계약 — 요청 본문이 이 모양과 안 맞으면
+    # 함수가 실행되기도 전에 422로 자동 응답된다
+    ...
+</code></pre>
+<p>
+<code>response_model</code>은 반환값을 인터프리터가 실행 중에 다시 한 번 검사하게 만든다 — 함수가 실수로 계약에 없는 필드를 내보내면, 컴파일 언어라면 타입 오류로 잡힐 일이
+Python에서는 <strong>응답을 내보내는 순간의 검증 실패(서버 오류)</strong>로 나타난다. 정적 타입 검사가 없는 대신 인터프리터가 매 요청마다 이 검사를 대신 치르는 셈이다.
+</p>
+<pre><code>import requests
+
+r = requests.get("https://example.com/old-path")
+print(r.status_code)          # 200  ← 최종 목적지의 코드
+print(r.url)                  # https://example.com/new-path  ← 실제로 도착한 곳
+print(r.history)              # [&lt;Response [301]&gt;]  ← 거쳐 온 리다이렉트의 흔적
+
+r2 = requests.get("https://example.com/old-path", allow_redirects=False)
+print(r2.status_code, r2.headers["Location"])   # 301 /new-path  ← 서버가 실제로 보낸 원본
+
+r2.raise_for_status()         # 4xx/5xx일 때만 HTTPError — 예외 승격은 "요청할 때만" 일어난다
+</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> FastAPI의 타입 힌트는 컴파일 타임 보장이 아니라 <strong>매 요청마다 반복되는 런타임 검사</strong>다 — Java의 제네릭처럼 한 번 컴파일하면 끝나는 것이 아니라, 인터프리터가 요청을 받을 때마다 값을 다시 들여다본다. 그 대신 정적 타입이 못 잡는 것(예: 응답 본문이 실제로 계약과 다른데도 타입만 붙여 놓은 경우)까지 걸러낸다는 이점이 있다. 클라이언트 쪽에서는 <code>allow_redirects=False</code>로 리다이렉트 추적을 끄면 5.1절에서 말한 "POST가 리다이렉트를 타면서 GET으로 둔갑해 본문이 사라지는" 문제를 <code>history</code>에서 눈으로 재현해 볼 수 있다 — 문서로 읽는 것과 직접 확인하는 것은 이해의 깊이가 다르다.</p>
+</blockquote>
+
+<h3>8.4 C++ — 계약이 곧 이진 호환성 경계이기도 한 언어</h3>
+<p>
+C++에는 표준 웹 프레임워크가 없어, 고수준 클라이언트가 "알아서" 해 주던 일들 — 리다이렉트 따라가기, 상태 코드 분류, 재시도 —
+이 전부 계약 해석 코드로 눈앞에 드러난다. 게다가 C++은 계약을 <strong>동적 링크로 배포</strong>하는 경우가 많아, API 설계가 또 하나의 층 — ABI(application binary interface — 소스 코드가 아니라 컴파일된 바이너리끼리 호환되기 위한 저수준 약속. 함수 호출 규약·구조체의 메모리 배치 등을 포함한다) —
+와 맞물린다.
+</p>
+<p>
+libcurl의 <code>CURL*</code> 핸들이 그 예다. 내부 필드가 헤더에 전혀 노출되지 않는 불투명 포인터(opaque pointer — 가리키는 대상의 내부 구조를 호출자에게 감추고 포인터만 넘겨주는 방식)라서,
+libcurl 개발자가 내부 구조체의 레이아웃을 바꿔도 이미 컴파일된 클라이언트 바이너리는 재컴파일 없이 새 버전 라이브러리와 다시 링크만 하면 그대로 동작한다.
+소스 코드 재컴파일이 항상 전제되는 고수준 언어에서는 잘 드러나지 않는 구분이지만, C++에서 라이브러리를 동적 링크로 배포하는 순간 <strong>API(무엇을 호출할 수 있는가)</strong>와
+<strong>ABI(그 호출이 바이너리 수준에서 어떻게 맞물리는가)</strong>를 따로 관리해야 한다.
+</p>
+<pre><code>CURL* curl = curl_easy_init();   // 불투명 포인터 — 내부 구조체 크기·배치는 알 필요도, 알 수도 없다
 curl_easy_setopt(curl, CURLOPT_URL, "https://example.com/orders");
 
 // ① 리다이렉트를 따라갈지 자체가 옵트인 — 기본값은 "따라가지 않음"
@@ -277,36 +405,8 @@ curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &amp;code);   // ③ 상태 코�
 if (code &gt;= 500) { /* 재시도 가치 있음 */ }               //    분류·분기도 내 몫
 curl_easy_cleanup(curl);                                   // ④ 수명 관리도 내 몫</code></pre>
 <blockquote class="info">
-<p><strong>C++ 관점의 통찰(메모리·수명):</strong> 응답 본문은 콜백으로 조각조각 전달되므로, 받아 담을 버퍼의 <strong>수명이 요청 수행 시간 전체보다 길어야</strong> 한다 — 지역 <code>std::string</code>에 담고 스코프를 벗어나면 그 뒤에 도착한 조각이 이미 해제된 메모리를 건드린다. 고수준 언어에서는 GC가 감춰 주던 문제다. 여기서 얻는 개념적 소득은 이것이다: <strong>"리다이렉트를 따라간다", "4xx면 예외를 던진다"는 프로토콜의 성질이 아니라 클라이언트 라이브러리의 <em>정책</em>이다.</strong> 정책은 라이브러리마다 다르므로, 계약(D2의 주제)을 설계할 때 "클라이언트가 알아서 하겠지"를 전제로 삼으면 안 된다.</p>
+<p><strong>C++ 관점의 통찰(메모리·수명·ABI):</strong> 응답 본문은 콜백으로 조각조각 전달되므로, 받아 담을 버퍼의 <strong>수명이 요청 수행 시간 전체보다 길어야</strong> 한다 — 지역 <code>std::string</code>에 담고 스코프를 벗어나면 그 뒤에 도착한 조각이 이미 해제된 메모리를 건드린다. 고수준 언어에서는 GC가 감춰 주던 문제다. 여기에 더해, <code>CURL*</code>처럼 API 경계를 불투명 포인터로 설계하는 것은 단순한 캡슐화 취향이 아니라 <strong>ABI 안정성 전략</strong>이다 — 이 설계 덕분에 라이브러리 내부 구현이 바뀌어도 배포된 바이너리는 재컴파일 없이 계속 호환된다. 정리하면: "리다이렉트를 따라간다", "4xx면 예외를 던진다"는 프로토콜의 성질이 아니라 클라이언트 라이브러리의 <em>정책</em>이며, C++에서는 그 정책을 담은 API 자체가 바이너리 호환성 경계이기도 하다. 계약(D2의 주제)을 설계할 때 "클라이언트가 알아서 하겠지"를 전제로 삼으면 안 되는 이유가 여기서도 확인된다.</p>
 </blockquote>
-
-<h3>8.2 Python — 리다이렉트의 흔적을 눈으로 확인할 수 있는 도구</h3>
-<p>
-반대편 극단이 Python <code>requests</code>다. 기본값이 "리다이렉트 자동 추적"이라 편하지만, 중요한 것은
-<strong>거쳐 온 응답들을 버리지 않고 <code>history</code>에 남겨 준다</strong>는 점 — 5절의 301/302 동작을 실험으로 확인하기에 가장 좋은 도구다.
-</p>
-<pre><code>import requests
-
-r = requests.get("https://example.com/old-path")
-print(r.status_code)          # 200  ← 최종 목적지의 코드
-print(r.url)                  # https://example.com/new-path  ← 실제로 도착한 곳
-print(r.history)              # [&lt;Response [301]&gt;]  ← 거쳐 온 리다이렉트의 흔적
-
-# 추적을 끄면 "서버가 실제로 무엇을 응답했는지" 원본이 보인다
-r2 = requests.get("https://example.com/old-path", allow_redirects=False)
-print(r2.status_code, r2.headers["Location"])   # 301 /new-path
-
-# 상태 코드 → 예외 승격은 "명시적으로 요청할 때만" 일어난다
-r2.raise_for_status()         # 4xx/5xx일 때만 HTTPError</code></pre>
-<blockquote class="info">
-<p><strong>Python 관점의 통찰:</strong> <code>allow_redirects=False</code>로 껐을 때와 켰을 때를 비교해 보면, 3절의 멱등성 논의가 눈앞에서 재현된다 — POST에 리다이렉트가 걸리면 라이브러리·설정에 따라 메서드가 GET으로 바뀌어 <strong>본문이 사라진 채</strong> 목적지에 도착한다. "비멱등 요청이 안전한 조회로 둔갑한다"는 5.1절의 서술을 문서로 읽는 것과 <code>history</code>에서 눈으로 보는 것은 이해의 깊이가 다르다. 또 하나: <code>raise_for_status()</code>가 <em>선택</em>이라는 사실은, 상태 코드 분류가 언어·라이브러리의 기본 동작이 아니라 <strong>개발자가 계약에 따라 붙이는 해석</strong>임을 보여 준다.</p>
-</blockquote>
-
-<h3>8.3 Java / JS·TS — 한 줄 요약</h3>
-<p>
-Java는 Spring의 <code>@GetMapping</code>·<code>ResponseEntity.status(...)</code>처럼 <strong>메서드와 상태 코드가 선언부에 고정</strong>되어 계약이 코드에 그대로 드러나고, 재시도 도구(Spring Retry 등)는 한결같이 "멱등한 연산에만 적용하라"고 경고한다 — 어떤 POST가 안전한지는 프레임워크가 알 수 없고 <strong>계약을 설계한 사람만 아는</strong> 정보이기 때문이다.
-JS·TS 쪽은 계약 해석이 도구마다 갈리는 것이 특징으로, <code>fetch</code>는 4xx·5xx에서 예외를 던지지 않는 반면(네트워크 실패만 거부) Axios는 이를 예외로 승격한다 — 8.2절의 <code>raise_for_status()</code>가 선택이었던 것과 같은 이야기다.
-</p>
 
 <h2>9. 함께 알면 좋은 것</h2>
 <ul>
