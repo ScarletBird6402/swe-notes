@@ -231,57 +231,105 @@ Index Scan using idx_orders_user on orders
 <h2>★ 8. 언어별 대조</h2>
 <p>
 실행 계획 자체는 언어 중립(SQL의 세계)이므로, 언어별로 갈리는 지점은 하나다:
-<strong>내 코드가 만들어 보내는 SQL을 어떻게 꺼내서 EXPLAIN 앞에 세우는가.</strong> ORM을 쓸수록 이 "꺼내는" 단계가 진단 루틴 ①의 관건이 된다.
+<strong>내 코드가 만들어 보내는 SQL을 어떻게 꺼내서 EXPLAIN 앞에 세우는가.</strong> ORM을 쓸수록 이 "꺼내는" 단계가 진단 루틴 ①의 관건이 되고,
+그 방식이 언어·생태계마다 달라서 각자 다른 함정을 남긴다.
 </p>
 <table>
-  <tr><th>언어</th><th>SQL을 꺼내는 방법</th><th>계획 확인 관용구</th><th>비고</th></tr>
+  <tr><th>언어</th><th>SQL을 꺼내는 방법</th><th>확인 시점</th><th>특유의 함정</th></tr>
   <tr>
     <td>Java</td>
-    <td>JPA/Hibernate SQL 로깅 + 바인딩 파라미터 로깅</td>
-    <td>로그의 SQL에 실제 값 대입 → EXPLAIN</td>
-    <td>표 + 8.3 요약</td>
+    <td>Hibernate/JPA SQL 로깅 + 바인딩 파라미터 로깅</td>
+    <td>런타임(쿼리 실행 시 로그로 관찰)</td>
+    <td>지연 로딩·상속 매핑이 JPQL 한 줄을 여러 SQL로 부풀림</td>
   </tr>
   <tr>
     <td>JS·TS</td>
-    <td>Prisma/TypeORM 쿼리 로깅 옵션</td>
-    <td>로깅된 SQL → EXPLAIN. ORM에 raw 쿼리로 EXPLAIN 직접 실행도 가능</td>
-    <td>표 + 8.3 요약</td>
+    <td>쿼리빌더의 <code>.toSQL()</code>/<code>.getSql()</code>류 메서드</td>
+    <td>실행 전(체인을 완성한 뒤 언제든 호출)</td>
+    <td>바인딩 값이 자리표시자로만 보여 별도 치환 필요</td>
   </tr>
   <tr>
     <td>Python</td>
-    <td>SQLAlchemy <code>echo=True</code>·로거로 SQL 노출</td>
-    <td>동일 — 로그 SQL을 EXPLAIN에</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>SQLAlchemy <code>echo=True</code>·<code>compile()</code></td>
+    <td>런타임 로그 또는 실행 전 컴파일</td>
+    <td>개별 SQL은 보여도 반복 횟수(N+1)는 세어 주지 않음</td>
   </tr>
   <tr>
     <td>C++</td>
-    <td>SQL을 직접 쓰므로 이미 손에 있음</td>
-    <td>그대로 EXPLAIN</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>없음 — SQL을 직접 작성하므로 이미 손에 있음</td>
+    <td>작성 시점</td>
+    <td>바인딩 함수 선택 자체가 타입 불일치를 유발</td>
   </tr>
 </table>
 
-<h3>8.1 C++ — 바인딩 타입이 계획을 바꾼다</h3>
+<h3>8.1 Java — 로그를 열어야 보이는 SQL</h3>
 <p>
-C++처럼 SQL을 직접 쓰는 환경에는 "생성된 SQL을 꺼내는" 단계가 없다. 대신 4절 ②(타입 불일치)가
-<strong>가장 날것으로 드러나는</strong> 자리가 된다 — 준비된 문(prepared statement)에 값을 바인딩할 때 어떤 타입으로 넘기는지가 코드에 그대로 적혀 있기 때문이다.
+JPA(Java Persistence API)로 짠 코드에는 SQL 문자열이 아예 등장하지 않는다. 개발자는 엔티티(entity — 테이블에 대응하는 객체)와
+JPQL(JPA 전용 객체 지향 쿼리 언어)만 다루고, 실제 SQL은 Hibernate 같은 구현체가 내부에서 조립한다.
+문제는 이 조립 결과가 기본 설정으로는 어디에도 출력되지 않는다는 점이다 — 진단 루틴 ①("실제로 느린 그 쿼리와 실제 바인딩 값 확보")을
+시작하려면 먼저 로그부터 열어야 한다.
 </p>
-<pre><code>// 컬럼 phone이 VARCHAR인 테이블에 대해
+<pre><code># application.properties — 생성 SQL과 바인딩 값을 함께 로그로 노출
+spring.jpa.properties.hibernate.show_sql=true
+spring.jpa.properties.hibernate.format_sql=true
+logging.level.org.hibernate.orm.jdbc.bind=TRACE   # 바인딩 파라미터는 별도 로거(보안·성능상 기본 비공개)
 
-// ① 숫자로 바인딩 — DB가 컬럼 쪽을 형변환하게 되어 인덱스를 못 탄다
-sqlite3_bind_int64(stmt, 1, 1012345678);        // WHERE phone = 1012345678
-
-// ② 문자열로 바인딩 — 컬럼 타입과 일치, 인덱스 정상 사용
-sqlite3_bind_text(stmt, 1, "01012345678", -1, SQLITE_STATIC);
-//                                            ↑ 문자열 수명 관리 방식을 명시해야 한다</code></pre>
+# 로그 예시
+# select o1_0.id, o1_0.user_id, o1_0.status from orders o1_0 where o1_0.user_id=?
+# binding parameter [1] as [BIGINT] - [42]</code></pre>
+<p>
+SQL과 바인딩 값이 로그에 따로 찍히는 이유는 바인딩 로깅이 기본으로 꺼져 있기 때문이다 — 파라미터에는 개인정보가 실릴 수 있어서다.
+두 줄을 손으로 합쳐야 EXPLAIN 앞에 세울 완성된 쿼리가 나온다.
+</p>
+<p>
+로그를 확보했다고 끝이 아니다. JPQL 한 줄이 실행 시 여러 SQL로 갈라지는 대표 사례가 지연 로딩(lazy loading — 연관 데이터를 실제
+접근하는 시점까지 조회를 미루는 방식)이다. 연관 엔티티를 반복문 안에서 접근하면, EXPLAIN으로는 완벽한 쿼리 하나가 N번 반복되는 형태로
+로그에 찍힌다. 여기에 상속 매핑 전략(JOINED 등)까지 겹치면 반복되는 각 쿼리의 조인 개수까지 늘어나 로그가 한층 방대해진다.
+</p>
 <blockquote class="info">
-<p><strong>C++ 관점의 통찰(메모리·수명):</strong> 마지막 인자에 주목할 만하다 — <code>SQLITE_STATIC</code>은 "이 문자열은 내가 살려 둘 테니 복사하지 말라"는 약속이고, <code>SQLITE_TRANSIENT</code>는 "복사해 두라"는 뜻이다. 지역 버퍼를 넘기면서 전자를 쓰면 <strong>실행 시점에 이미 해제된 메모리를 읽는다</strong> — 고수준 언어에서는 존재하지 않는 종류의 버그다.<br>개념적 소득은 이것이다: <strong>바인딩은 "값을 전달하는 일"이 아니라 "값과 타입과 수명을 함께 전달하는 일"</strong>이다. 고수준 스택에서 <code>?</code> 자리에 변수를 넣는 순간 라이브러리가 대신 결정해 주던 타입이, 여기서는 함수 이름(<code>bind_int64</code> vs <code>bind_text</code>)으로 노출된다. 8.3절에서 "SQL은 같은데 앱에서만 느리다"는 미스터리가 왜 생기는지, 그 결정이 어디서 일어나는지가 이 대조로 분명해진다.</p>
+<p><strong>Java 관점의 통찰:</strong> Hibernate SQL 로그를 켜는 것은 선택 사항이 아니라 습관이어야 한다. JPQL·Criteria API는
+"무엇을 조회할지"의 계약일 뿐 "어떤 SQL이 되는지"를 보장하지 않으므로, 로그 없이는 EXPLAIN에 넣을 대상 자체가 없다.
+로그에서 SQL 한 줄만 세지 말고 <em>같은 모양의 SQL이 몇 번 반복되는지</em>부터 세는 것이 순서다 — 개별 쿼리의 계획이 완벽해도
+반복 횟수가 범인인 경우가 많기 때문이다.</p>
 </blockquote>
 
-<h3>8.2 Python — ORM이 무엇을 만드는지 눈으로 보기</h3>
+<h3>8.2 JS·TS — 실행 전에 SQL을 확인하는 관용구</h3>
 <p>
-진단 루틴 ①("실제로 느린 그 쿼리와 실제 바인딩 값 확보")의 도구가 언어마다 다른데,
-Python은 설정 한 줄로 전체 SQL이 흐르는 것을 볼 수 있어 ORM이 생성하는 SQL의 감각을 기르기에 좋다.
+Java의 SQL 로깅이 "쿼리가 실행된 후 로그를 뒤지는" 수동적 확인이라면, JS·TS의 쿼리빌더(query builder)는 실행 없이 SQL 문자열만
+미리 뽑아내는 메서드를 제공한다는 점이 다르다. Knex·TypeORM·Kysely 같은 라이브러리는 체인으로 조립한 쿼리 객체에
+<code>.toSQL()</code>이나 <code>.getSql()</code>류의 메서드를 호출하면, DB에 보내지 않고도 완성된 SQL과 바인딩 배열을 즉시 돌려준다.
+</p>
+<pre><code>// Knex 예시
+const query = knex('orders').where('user_id', 42).select('*');
+
+const { sql, bindings } = query.toSQL().toNative();
+console.log(sql);       // select * from `orders` where `user_id` = ?
+console.log(bindings);  // [42]
+
+// TypeORM QueryBuilder 예시
+const qb = dataSource.getRepository(Order)
+  .createQueryBuilder('o')
+  .where('o.userId = :uid', { uid: 42 });
+
+console.log(qb.getSql());                 // 자리표시자(:uid)가 남은 SQL
+console.log(qb.getQueryAndParameters());  // [sql, [42]] — EXPLAIN에 넣기 직전 형태</code></pre>
+<p>
+여기서 걸리는 함정은 자리표시자다. <code>toSQL()</code>이 돌려주는 문자열은 <code>?</code>나 <code>:uid</code> 같은 자리표시자를 그대로
+담고 있어서, EXPLAIN 앞에 세우려면 바인딩 배열의 값을 손으로 채워 넣어야 한다. 일부 라이브러리가 제공하는 "값을 문자열에 직접
+끼워 넣는" 변형(값 인라인 옵션)은 진단용으로만 쓸 것 — 실제 실행 경로에 그대로 쓰면 SQL 문자열 조립이 되어 SQL 주입(injection)
+위험을 그대로 되살린다.
+</p>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> 쿼리빌더가 감춘 것은 SQL 자체가 아니라 <em>SQL이 조립되는 순간</em>이다. 메서드 체인은
+최종적으로 실행하기 전까지 SQL 문자열을 만들지 않으므로, "일단 실행해서 로그를 본다"는 Java식 습관 대신
+"실행하기 전에 <code>.toSQL()</code>로 미리 들여다본다"는 습관이 자연스럽게 자리 잡는다. 이 차이 덕분에 JS·TS 쪽에서는
+EXPLAIN 앞에 세울 SQL을 얻는 데 별도 로그 설정이나 실제 실행이 필요 없다는 점이 Java·Python과 갈리는 지점이다.</p>
+</blockquote>
+
+<h3>8.3 Python — ORM이 무엇을 만드는지 눈으로 보기</h3>
+<p>
+JS·TS의 쿼리빌더가 실행 전에 SQL을 미리 보여준다면, Python은 설정 한 줄로 <em>실행되는 모든</em> SQL이 흘러가는 것을 지켜본다는
+점에서 스타일이 다르다. 이 방식은 ORM이 생성하는 SQL의 감각을 기르는 데 좋다.
 </p>
 <pre><code>from sqlalchemy import create_engine, text
 engine = create_engine(url, echo=True)      # 실행되는 모든 SQL과 파라미터를 출력
@@ -295,14 +343,36 @@ with engine.connect() as conn:
                             {"uid": 42}):
         print(row[0])</code></pre>
 <blockquote class="info">
-<p><strong>Python 관점의 통찰:</strong> <code>echo=True</code>로 로그를 켜 보면 대개 두 가지를 동시에 발견한다 — 개별 쿼리가 느린 문제와, <strong>빠른 쿼리가 수백 번 반복되는 문제</strong>(N+1). 실행 계획은 앞의 것만 진단하므로, ORM 스택에서는 "쿼리가 <em>몇 번</em> 나가는가"를 세는 일이 "각 쿼리의 계획을 읽는 일"보다 먼저다.<br>또 하나 유의할 점: 파라미터를 문자열로 이어 붙여 확인하는 <code>literal_binds</code>는 <strong>계획 확인용</strong>일 뿐, 실제 실행에 이 방식을 쓰면 SQL 주입(injection)에 노출된다. 진단 편의와 실행 안전성을 분리해 다뤄야 한다.</p>
+<p><strong>Python 관점의 통찰:</strong> <code>echo=True</code>로 로그를 켜 보면 대개 두 가지를 동시에 발견한다 — 개별 쿼리가 느린
+문제와, <strong>빠른 쿼리가 수백 번 반복되는 문제</strong>(N+1). 실행 계획은 앞의 것만 진단하므로, ORM 스택에서는
+"쿼리가 <em>몇 번</em> 나가는가"를 세는 일이 "각 쿼리의 계획을 읽는 일"보다 먼저다.<br>
+또 하나 유의할 점: 파라미터를 문자열로 이어 붙여 확인하는 <code>literal_binds</code>는 <strong>계획 확인용</strong>일 뿐,
+실제 실행에 이 방식을 쓰면 SQL 주입(injection)에 노출된다. 진단 편의와 실행 안전성을 분리해 다뤄야 한다.</p>
 </blockquote>
 
-<h3>8.3 Java / JS·TS — 한 줄 요약</h3>
+<h3>8.4 C++ — 바인딩 타입이 계획을 바꾼다</h3>
 <p>
-Java(JPA/Hibernate)는 SQL 로깅과 바인딩 파라미터 로깅을 함께 켜야 진단 루틴 ①이 성립하며, 여기서도 개별 쿼리의 계획보다 <strong>N+1 여부를 먼저 세는</strong> 것이 순서다 — 각 쿼리의 계획이 완벽해도 100번의 왕복이면 느리다.
-JS·TS의 ORM 로깅에서는 SQL 문자열만이 아니라 <strong>바인딩된 값의 타입</strong>(<code>params</code>)을 함께 보는 것이 핵심으로, "DB 콘솔에서는 빠른데 앱에서만 느린" 현상의 단골 원인이 8.1절에서 본 타입 불일치이기 때문이다.
+C++처럼 SQL을 직접 쓰는 환경에는 "생성된 SQL을 꺼내는" 단계가 없다. 대신 4절 ②(타입 불일치)가
+<strong>가장 날것으로 드러나는</strong> 자리가 된다 — 준비된 문(prepared statement)에 값을 바인딩할 때 어떤 타입으로 넘기는지가
+코드에 그대로 적혀 있기 때문이다.
 </p>
+<pre><code>// 컬럼 phone이 VARCHAR인 테이블에 대해
+
+// ① 숫자로 바인딩 — DB가 컬럼 쪽을 형변환하게 되어 인덱스를 못 탄다
+sqlite3_bind_int64(stmt, 1, 1012345678);        // WHERE phone = 1012345678
+
+// ② 문자열로 바인딩 — 컬럼 타입과 일치, 인덱스 정상 사용
+sqlite3_bind_text(stmt, 1, "01012345678", -1, SQLITE_STATIC);
+//                                            ↑ 문자열 수명 관리 방식을 명시해야 한다</code></pre>
+<blockquote class="info">
+<p><strong>C++ 관점의 통찰(메모리·수명):</strong> 마지막 인자에 주목할 만하다 — <code>SQLITE_STATIC</code>은 "이 문자열은 내가
+살려 둘 테니 복사하지 말라"는 약속이고, <code>SQLITE_TRANSIENT</code>는 "복사해 두라"는 뜻이다. 지역 버퍼를 넘기면서 전자를 쓰면
+<strong>실행 시점에 이미 해제된 메모리를 읽는다</strong> — 고수준 언어에서는 존재하지 않는 종류의 버그다.<br>
+개념적 소득은 이것이다: <strong>바인딩은 "값을 전달하는 일"이 아니라 "값과 타입과 수명을 함께 전달하는 일"</strong>이다.
+Java·JS·TS·Python 스택에서 <code>?</code> 자리에 변수를 넣는 순간 라이브러리가 대신 결정해 주던 타입이, 여기서는 함수 이름
+(<code>bind_int64</code> vs <code>bind_text</code>)으로 노출된다. 8.1~8.3절에서 본 "SQL은 같은데 앱에서만 느리다"는 미스터리가
+어디서 결정되는지, C++에서는 그 결정 지점이 코드 한 줄로 숨김없이 드러난다.</p>
+</blockquote>
 
 <h2>9. 함께 알면 좋은 것</h2>
 <ul>
