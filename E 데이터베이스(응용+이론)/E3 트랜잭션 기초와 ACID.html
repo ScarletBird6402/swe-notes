@@ -208,29 +208,131 @@ COMMIT</div>
     <td>Java</td>
     <td>Spring <code>@Transactional</code> — 메서드 전체가 하나의 트랜잭션</td>
     <td><strong>낮음</strong>(선언적 — 프록시가 대신 BEGIN/COMMIT)</td>
-    <td>표 + 6.3 요약</td>
+    <td>아래 6.1, 심화는 C15</td>
   </tr>
   <tr>
     <td>JS·TS</td>
-    <td>드라이버 수동(<code>BEGIN</code>/<code>COMMIT</code> 쿼리) 또는 ORM 콜백(예: <code>prisma.$transaction(async tx =&gt; {...})</code>)</td>
+    <td>ORM 콜백(예: <code>prisma.$transaction(async tx =&gt; {...})</code>) 또는 드라이버 수동 쿼리</td>
     <td>높음(콜백 블록 = 경계)</td>
-    <td>표 + 6.3 요약</td>
+    <td>아래 6.2</td>
   </tr>
   <tr>
     <td>Python</td>
     <td>컨텍스트 매니저 — <code>with session.begin():</code> 블록</td>
     <td>높음(들여쓰기 블록 = 경계, 예외 시 자동 롤백)</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>아래 6.3</td>
   </tr>
   <tr>
     <td>C++</td>
     <td>SQL 직접 전송 또는 RAII 가드 객체(소멸자에서 미커밋 시 롤백)</td>
     <td>수동(규율 의존)</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>아래 6.4</td>
   </tr>
 </table>
 
-<h3>6.1 C++ — 롤백을 "잊을 수 없게" 만드는 장치, RAII</h3>
+<h3>6.1 Java — 선언적 트랜잭션이 지운 경계, 그리고 그 대가</h3>
+<p>
+2절의 BEGIN/COMMIT을 Java 생태계는 코드에서 아예 지워 버린다. Spring의 <code>@Transactional</code>을 메서드에 붙이면,
+실제 호출은 원본 객체가 아니라 그 객체를 감싼 프록시(proxy — 원본 대신 호출을 가로채 앞뒤에 부가 작업을 끼워 넣는 대리 객체)를 거치고,
+프록시가 메서드 실행 앞뒤로 BEGIN/COMMIT을 대신 끼워 넣는다.
+경계가 코드에 보이지 않는 만큼 실수도 보이지 않는다는 것이 함정이다 — 대표 사례가 자기 호출(self-invocation): 같은 클래스 안에서
+<code>@Transactional</code> 메서드를 그냥 <code>this.method()</code>로 부르면 호출이 프록시를 거치지 않으므로 애너테이션이 조용히 무시된다.
+</p>
+<pre><code>@Service
+class OrderService {
+    public void placeOrder() {
+        // 프록시가 아니라 this로 직접 호출 -&gt; @Transactional이 조용히 무시된다
+        confirmOrder();
+    }
+
+    @Transactional
+    public void confirmOrder() { /* ... */ }
+}</code></pre>
+<p>
+이 함정을 포함해 전파(propagation) 규칙 — 트랜잭션이 이미 열려 있는 메서드를 다시 호출했을 때 새 트랜잭션을 열지, 기존 것에 올라탈지를 정하는 규칙 —
+과 예외별 롤백 조건까지의 자세한 동작 원리는 이 문서의 범위를 넘는 별도 주제다. 자세한 내용은
+<a href="../C 백엔드/C15 트랜잭션 관리와 전파.html">C15 트랜잭션 관리와 전파</a>에서 다룬다.
+</p>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> "애너테이션을 붙였는데 트랜잭션이 안 걸려 있었다"는 대부분 코드 로직의 버그가 아니라
+<strong>프록시가 개입할 수 없는 호출 경로</strong>를 지나갔다는 신호다. 선언적 방식은 경계를 코드에서 지우는 대신,
+"이 호출이 정말 프록시를 거치는가"라는 새로운 종류의 지식을 요구한다 — 편의와 은닉은 항상 함께 온다.</p>
+</blockquote>
+
+<h3>6.2 JS·TS — 트랜잭션은 커넥션 하나에 귀속된다</h3>
+<p>
+Node 환경의 DB 클라이언트는 대개 커넥션 풀(connection pool — 미리 열어 둔 연결 여러 개를 요청마다 빌려주고 반납받는 재사용 풀)을 통해 쿼리를 실행한다.
+문제는 <code>BEGIN</code>이 <strong>DB 서버가 특정 연결 위에서 기억하는 세션 상태</strong>라는 점이다 — 풀에 아무 쿼리나 던지면 그때그때 비어 있는 아무 연결이나 골라 쓰므로,
+<code>BEGIN</code>을 실행한 연결과 그다음 <code>UPDATE</code>를 실행하는 연결이 다를 수 있다. 그 순간 두 문장은 서로 다른 트랜잭션(혹은 둘 다 자동 커밋 상태)에서 실행되어,
+2절에서 봤던 "묶임"이 애초에 성립하지 않는다.
+</p>
+<pre><code>// 위험: pool.query는 호출마다 풀에서 임의의 연결을 골라 쓴다
+await pool.query('BEGIN');
+await pool.query('UPDATE accounts SET balance = balance - 10000 WHERE id = $1', ['A']);
+// 위 UPDATE가 BEGIN과 다른 연결에서 실행됐다면 이 두 문장은 묶이지 않은 것이다
+await pool.query('COMMIT');
+
+// 안전: 연결 하나를 명시적으로 빌려 그 위에서만 쿼리한다
+const client = await pool.connect();
+try {
+  await client.query('BEGIN');
+  await client.query('UPDATE accounts SET balance = balance - 10000 WHERE id = $1', ['A']);
+  await client.query('UPDATE accounts SET balance = balance + 10000 WHERE id = $1', ['B']);
+  await client.query('COMMIT');
+} finally {
+  client.release();               // 풀에 반납 — 잊으면 커넥션이 서서히 고갈된다
+}
+
+// ORM의 트랜잭션 콜백은 이 규율을 API로 강제한다
+await prisma.$transaction(async (tx) =&gt; {
+  await tx.account.update({ where: { id: 'A' }, data: { balance: { decrement: 10000 } } });
+  await tx.account.update({ where: { id: 'B' }, data: { balance: { increment: 10000 } } });
+  // tx는 콜백이 실행되는 동안 하나의 연결에 고정된다 — 실수로 다른 연결을 쓸 방법이 없다
+});</code></pre>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> Prisma·Knex 같은 도구가 트랜잭션 함수 안에서만 쓸 수 있는 <code>tx</code> 객체를 콜백 인자로 넘기는 설계는
+문서화된 주의사항이 아니라 <strong>타입·API 차원에서 아예 실수를 못 하게 막는</strong> 장치다 — 전역 클라이언트를 계속 쓸 수 있게 열어 두면
+개발자가 "이 쿼리는 트랜잭션 안에서 실행돼야 한다"를 매번 스스로 기억해야 하는데, 그 기억은 반드시 언젠가 깨진다.
+콜백 스코프로 강제하면 "트랜잭션 경계 = 콜백 블록"이라는 등식이 코드 구조로 고정된다.</p>
+</blockquote>
+
+<h3>6.3 Python — <code>with</code> 블록이 곧 트랜잭션 경계</h3>
+<p>
+Python은 같은 문제를 <strong>컨텍스트 매니저</strong>로 해결한다. <code>with</code> 블록에 들어갈 때 <code>__enter__</code>가,
+빠져나올 때 <code>__exit__</code>가 반드시 호출되는데, 이는 인터프리터가 <code>with</code> 문을 만나면 예외 여부와 상관없이
+정해진 두 메서드를 호출하도록 되어 있는 객체 모델 규칙이다. <code>__exit__</code>는 <em>예외가 있었는지 여부</em>를 인자로 받아
+커밋/롤백을 분기하므로, 경계가 <strong>들여쓰기로 눈에 보인다</strong>는 것이 이 방식의 장점이다.
+</p>
+<pre><code>from sqlalchemy.orm import Session
+
+with Session(engine) as session:
+    with session.begin():              # ← BEGIN
+        session.execute(withdraw_stmt)
+        session.execute(deposit_stmt)
+    # 블록을 정상적으로 벗어나면 COMMIT, 예외로 벗어나면 ROLLBACK — 자동 분기
+
+# 직접 만들어 보면 규칙이 그대로 드러난다
+class TxGuard:
+    def __init__(self, conn): self.conn = conn
+    def __enter__(self):
+        self.conn.execute("BEGIN"); return self
+    def __exit__(self, exc_type, exc, tb):
+        self.conn.execute("ROLLBACK" if exc_type else "COMMIT")
+        return False                   # False = 예외를 삼키지 않고 그대로 전파</code></pre>
+<p>
+바깥쪽 <code>with Session(engine)</code>과 안쪽 <code>with session.begin()</code>이 하는 일이 다르다는 점도 눈여겨볼 만하다 —
+바깥쪽은 <strong>커넥션의 수명</strong>(풀에서 연결을 빌리고 반납하는 시점)을, 안쪽은 <strong>트랜잭션의 경계</strong>를 나눠 맡는다.
+6.2절에서 본 JS·TS의 커넥션 귀속 문제와 이유가 같다 — 트랜잭션 상태는 연결 하나에 묶이므로, 세션이 그 연결을 붙들고 있는 동안에만
+<code>begin()</code>이 의미를 갖는다.
+</p>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> <code>__exit__</code>의 반환값이 이 패턴의 미묘한 지점이다 — <code>True</code>를 돌려주면
+<strong>예외가 여기서 삼켜져</strong> 호출자에게 전달되지 않는다. 트랜잭션 가드가 롤백을 해 놓고 예외를 삼키면, 호출한 쪽은
+<em>작업이 성공한 줄 알고</em> 다음 단계로 진행한다 — 데이터는 롤백됐는데 애플리케이션은 성공 경로를 타는 조용한 실패의 전형적 사례다.
+"정리는 하되 실패는 감추지 않는다"는 이 언어의 객체 모델이 요구하는 규율이며, 6.4절 C++의 소멸자 규율에서 정확히 같은 결론이 반복된다.</p>
+</blockquote>
+
+<h3>6.4 C++ — 롤백을 "잊을 수 없게" 만드는 장치, RAII</h3>
 <p>
 트랜잭션의 최대 실수는 예외가 튀어 롤백도 커밋도 못 한 채 함수를 빠져나가는 것이다. C++의 표준 해법은
 <strong>RAII</strong>(resource acquisition is initialization, 자원 획득이 곧 초기화) — 자원의 수명을 객체의 수명에 묶어,
@@ -258,40 +360,8 @@ void transfer(Connection&amp; c, int from, int to, long amount) {
     tx.commit();                       // 여기까지 왔을 때만 확정
 }</code></pre>
 <blockquote class="info">
-<p><strong>C++ 관점의 통찰(수명·예외 안전성):</strong> 이 패턴의 핵심은 <strong>"기본값이 롤백"</strong>이라는 설계다. 커밋은 명시적으로 요청해야만 일어나고, 그 외의 모든 경로(예외, 이른 return, 개발자의 망각)는 자동으로 안전한 쪽으로 떨어진다 — E3 2절의 "커밋 전 변경은 제안일 뿐"이라는 원칙을 언어 장치로 못박은 형태다.<br>소멸자 안에서 예외를 삼키는 <code>catch (...)</code>도 우연이 아니다: 스택 되감기 도중 소멸자가 또 예외를 던지면 프로그램이 즉시 종료되기 때문으로, <strong>"뒷정리 코드는 실패해도 조용해야 한다"</strong>는 규율이 여기서 나온다. 다른 언어의 <code>finally</code>·<code>with</code>·<code>try-with-resources</code>가 모두 같은 문제("정리를 잊으면 안 된다")에 대한 각자의 답이라는 점을 알면, 트랜잭션 경계 코드가 왜 언어마다 그런 모양인지 한 번에 정리된다.</p>
+<p><strong>C++ 관점의 통찰(수명·예외 안전성):</strong> 이 패턴의 핵심은 <strong>"기본값이 롤백"</strong>이라는 설계다. 커밋은 명시적으로 요청해야만 일어나고, 그 외의 모든 경로(예외, 이른 return, 개발자의 망각)는 자동으로 안전한 쪽으로 떨어진다 — 2절의 "커밋 전 변경은 제안일 뿐"이라는 원칙을 언어 장치로 못박은 형태다.<br>소멸자 안에서 예외를 삼키는 <code>catch (...)</code>도 우연이 아니다: 스택 되감기 도중 소멸자가 또 예외를 던지면 프로그램이 즉시 종료되기 때문으로, <strong>"뒷정리 코드는 실패해도 조용해야 한다"</strong>는 규율이 여기서 나온다. 6.1절 Java의 프록시, 6.3절 Python의 컨텍스트 매니저, 그리고 이 소멸자 모두 "정리를 잊으면 안 된다"는 같은 문제에 대한 각 언어 나름의 답이라는 점을 알면, 트랜잭션 경계 코드가 왜 언어마다 그런 모양인지 한 번에 정리된다.</p>
 </blockquote>
-
-<h3>6.2 Python — <code>with</code> 블록이 곧 트랜잭션 경계</h3>
-<p>
-Python은 같은 문제를 <strong>컨텍스트 매니저</strong>로 해결한다. <code>with</code> 블록에 들어갈 때 <code>__enter__</code>가,
-빠져나올 때 <code>__exit__</code>가 반드시 호출되며, <code>__exit__</code>는 <em>예외가 있었는지 여부</em>를 인자로 받아 커밋/롤백을 분기한다.
-경계가 <strong>들여쓰기로 눈에 보인다</strong>는 것이 이 방식의 큰 장점이다.
-</p>
-<pre><code>from sqlalchemy.orm import Session
-
-with Session(engine) as session:
-    with session.begin():              # ← BEGIN
-        session.execute(withdraw_stmt)
-        session.execute(deposit_stmt)
-    # 블록을 정상적으로 벗어나면 COMMIT, 예외로 벗어나면 ROLLBACK — 자동 분기
-
-# 직접 만들어 보면 규칙이 그대로 드러난다
-class TxGuard:
-    def __init__(self, conn): self.conn = conn
-    def __enter__(self):
-        self.conn.execute("BEGIN"); return self
-    def __exit__(self, exc_type, exc, tb):
-        self.conn.execute("ROLLBACK" if exc_type else "COMMIT")
-        return False                   # False = 예외를 삼키지 않고 그대로 전파</code></pre>
-<blockquote class="info">
-<p><strong>Python 관점의 통찰:</strong> <code>__exit__</code>의 반환값이 이 패턴의 미묘한 지점이다 — <code>True</code>를 돌려주면 <strong>예외가 여기서 삼켜져</strong> 호출자에게 전달되지 않는다. 트랜잭션 가드가 롤백을 해 놓고 예외를 삼키면, 호출한 쪽은 <em>작업이 성공한 줄 알고</em> 다음 단계로 진행한다 — 데이터는 롤백됐는데 애플리케이션은 성공 경로를 타는, <a href="K5 조용한 실패와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a>의 전형적 사례다. "정리는 하되 실패는 감추지 않는다"가 6.1절 C++ 소멸자 규율과 정확히 같은 결론에 도달한다.<br>또 하나: <code>with</code> 두 겹(<code>Session</code>과 <code>begin()</code>)이 각각 <strong>커넥션의 수명</strong>과 <strong>트랜잭션의 경계</strong>를 나눠 맡는 구조에 주목할 만하다. 둘이 다른 층위라는 사실이 6.3절 JS의 함정으로 이어진다.</p>
-</blockquote>
-
-<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
-<p>
-Java의 <code>@Transactional</code>은 경계를 <strong>선언으로</strong> 숨겨 주는 대신 함정이 따라온다 — 프록시 기반이라 같은 클래스 안에서의 자기 호출은 애너테이션이 무시되고, 기본 설정은 체크 예외에 롤백하지 않는다("붙였는데 트랜잭션이 안 걸려 있었다"의 두 단골 원인).
-JS·TS에서는 트랜잭션 상태가 <strong>커넥션에 귀속</strong>된다는 점이 관건으로, 풀에서 쿼리마다 다른 커넥션을 받으면 <code>BEGIN</code>과 <code>UPDATE</code>가 서로 다른 커넥션에서 실행되어 아예 묶이지 않는다 — 그래서 콜백에 전달된 트랜잭션 객체만 쓰도록 강제하는 API(<code>prisma.$transaction(async tx =&gt; ...)</code> 등)가 표준 형태로 자리 잡았다.
-</p>
 
 <h2>7. 함께 알면 좋은 것</h2>
 <ul>
