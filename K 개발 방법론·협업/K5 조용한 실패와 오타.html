@@ -270,36 +270,111 @@ const name = user?.profile?.displayName ?? '';
 </blockquote>
 
 <h2>★ 6. 언어별 대조</h2>
-<p>같은 원리지만, 언어마다 "오타가 어디까지 컴파일 타임에 잡히는가"(2절의 방어 범위)와 "실패 신호의 기본 전달 방식"(3절의 전파 수단)이 다르게 조합된다.</p>
+<p>같은 원리지만, 언어마다 "오타가 어디까지 컴파일 타임에 잡히는가"(2절의 방어 범위)와 "실패 신호의 기본 전달 방식"(3절의 전파 수단)이 다르게 조합된다. 네 언어를 나란히 보면, 방어선이 강한 지점과 여전히 사람의 규율에 기대는 지점이 언어마다 다르다는 것이 드러난다.</p>
 <table>
-  <tr><th>언어</th><th>이름 오타가 잡히는 범위</th><th>조용한 실패의 단골 지점</th><th>대표 방어 도구</th></tr>
+  <tr><th>언어</th><th>오타가 잡히는 범위</th><th>조용한 실패의 단골 지점</th><th>대표 방어 도구</th></tr>
   <tr>
     <td>Java</td>
-    <td>변수·메서드·필드 전부 컴파일 타임(강함)</td>
-    <td>무시된 boolean/null 반환값, 빈 catch, 리플렉션·JSON 키</td>
-    <td>예외 우선 설계, 반환값 확인 어노테이션, <code>Optional</code>로 "없음" 명시화</td>
+    <td>변수·메서드·필드 이름은 컴파일 타임(강함) — 다만 검사 예외를 <em>어떻게</em> 처리하는지, <code>Optional</code>을 <em>어떻게</em> 꺼내는지는 강제 밖</td>
+    <td>도장만 찍는 빈 catch, <code>Optional.orElse(null)</code>로 되돌아간 null</td>
+    <td>검사 예외 설계, <code>Optional</code>, 반환값 확인을 경고하는 정적 분석</td>
   </tr>
   <tr>
     <td>JS·TS</td>
-    <td>JS는 속성 오타 무방비(<code>undefined</code>), TS는 타입 선언 범위 내 컴파일 타임</td>
-    <td><code>?.</code> 남용, 이벤트명·키 문자열, 처리 안 된 Promise 거부</td>
-    <td>TS strict 모드, ESLint, 이벤트명 상수화, 스키마 검증</td>
+    <td>JS는 속성 오타 무방비(<code>undefined</code>); TS는 선언된 타입 범위 안에서만 컴파일 타임</td>
+    <td><code>?.</code> 남용, <code>==</code> 느슨한 비교의 암묵적 형변환, <code>as any</code>로 타입 이탈</td>
+    <td>TS strict 모드(특히 <code>strictNullChecks</code>), ESLint의 엄격 비교 규칙</td>
   </tr>
   <tr>
     <td>Python</td>
-    <td>런타임에야 발각(<code>AttributeError</code>/<code>NameError</code>) — 실행 안 된 경로는 무검사</td>
-    <td><code>dict.get()</code> 기본값 뒤에 숨는 키 오타, 광범위 <code>except</code></td>
-    <td>타입 힌트+정적 검사기, 린터, 테스트로 경로 실행 강제</td>
+    <td>이름을 <em>읽을</em> 때는 즉시 런타임 예외(<code>AttributeError</code>/<code>NameError</code>); 속성을 <em>쓸</em> 때는 이름 검사 자체가 없음</td>
+    <td>오타 속성에 값을 대입해 만들어지는 유령 속성, 광범위 <code>except</code></td>
+    <td>타입 힌트+정적 검사기, <code>__slots__</code>, 좁은 예외 타입 지정</td>
   </tr>
   <tr>
     <td>C++</td>
-    <td>이름은 컴파일 타임(강함)</td>
-    <td>무시된 에러 코드 반환값 — C 계열 API의 고질병</td>
-    <td><code>[[nodiscard]]</code>, 컴파일러 경고를 에러로 승격</td>
+    <td>이름은 컴파일 타임(강함); 다만 암묵적 형변환과 대입식의 결과값은 조건식 자리에 그대로 통과</td>
+    <td>무시된 에러 코드 반환값, <code>=</code>/<code>==</code> 오타가 조건식에서 그대로 컴파일됨</td>
+    <td><code>[[nodiscard]]</code>, <code>-Wparentheses</code> 같은 경고를 에러로 승격하는 빌드 설정</td>
   </tr>
 </table>
 
-<h3>6.1 C++ — "무시된 반환값"을 언어 속성으로 봉쇄한 언어</h3>
+<h3>6.1 Java — 컴파일러가 "처리하라"고는 강제해도 "제대로"까지는 강제하지 못하는 언어</h3>
+<p>
+Java는 검사 예외(checked exception — 호출부가 catch로 처리하거나 다시 던지겠다고 선언하지 않으면 컴파일 자체가 안 되는 예외)라는 장치로 3.1의 원칙, 즉 "흡수하려면 명시적 코드가 필요하다"를 언어 차원에서 제도화했다.
+문제는 컴파일러가 강제하는 것이 <strong>catch 블록의 존재</strong>이지 그 안의 <strong>내용</strong>이 아니라는 점이다. 형식적으로 예외를 잡아 로그 한 줄만 남기고 넘어가도, 혹은 아무것도 안 해도 컴파일은 통과한다.
+</p>
+<pre><code>// 컴파일러는 SQLException(검사 예외)을 처리하라고 강제하지만
+// "처리"의 내용까지는 강제하지 못한다
+public Order loadOrder(String id) {
+    try {
+        return repository.find(id);
+    } catch (SQLException e) {
+        return null;             // 컴파일은 통과 — 강제된 건 catch뿐, 내용은 여전히 자유
+    }
+}
+
+Order order = loadOrder(id);
+order.getTotal();                // NPE — 원인은 loadOrder 안인데 신호는 엉뚱한 곳에서 터진다</code></pre>
+<p>
+<code>Optional</code>(값이 없을 수 있음을 타입으로 명시하는 컨테이너)도 같은 함정을 남긴다. "없음"을 반환 타입에 못 박아 호출부가 반드시 분기하게 만드는 것이 설계 의도지만,
+<code>orElse(null)</code>로 다시 null을 꺼내거나 <code>isPresent()</code> 확인 없이 <code>get()</code>을 호출하면 <code>Optional</code>이 감추려 했던 조용한 실패가 그대로 되돌아온다.
+IDE·컴파일러의 경고 계층(빈 블록, 사용되지 않는 변수)은 이런 <em>구조적</em> 허점은 잡아도, "로그만 남기고 넘어간다"처럼 <em>의미상</em> 무책임한 처리는 구분하지 못한다.
+</p>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> 검사 예외와 <code>Optional</code>은 둘 다 "잊을 수 없게 만들기"라는 같은 전략을 쓴다 — 컴파일러가 처리 지점의 존재를 강제한다. 하지만 그 지점에서 무엇을 하느냐는 결국 사람의 규율로 되돌아간다. 그래서 Java의 방어선은 "컴파일이 되면 안전하다"가 아니라 "컴파일이 되는 것과 별개로, catch·orElse 안의 내용을 코드 리뷰에서 봐야 한다"는 지점에서 끝난다.</p>
+</blockquote>
+
+<h3>6.2 JS·TS — "다르지만 같다고 판정"까지 흡수 경로에 더하는 언어</h3>
+<p>
+JS는 없는 속성에 예외 대신 <code>undefined</code>를 값처럼 돌려주는 관대한 언어라는 점은 본문에서 봤다. 옵셔널 체이닝(<code>?.</code>)은 그 관대함을 문법으로 내장한 도구다.
+여기에 JS만의 흡수 경로가 하나 더 있다 — 느슨한 비교(<code>==</code>)의 <strong>암묵적 형변환</strong>(operand의 타입이 다르면 비교 전에 한쪽을 다른 쪽 타입으로 바꿔서 비교하는 규칙)이다.
+타입이 다른데 "같다"고 판정되는 경우가 생기면, 값이 오염되어도 조건문은 침묵한 채 잘못된 분기를 탄다.
+</p>
+<pre><code>function isDisabled(status) {
+  return status == false;      // status가 문자열 '0'이어도 형변환을 거쳐 true
+}
+isDisabled('0');                // true — 서버가 문자열로 보낸 값이 조용히 통과
+isDisabled(undefined);          // false — status를 못 받은 버그인데도 "정상 활성화"로 흐른다</code></pre>
+<p>
+TS의 <code>strict</code> 모드, 그중에서도 <code>strictNullChecks</code>(변수가 null·undefined를 가질 수 있는지를 타입에 명시하도록 강제하는 옵션)는 선언된 타입 범위 안에서 이런 흡수를 다시 컴파일 타임 에러로 되돌린다.
+하지만 보호는 타입 시스템 <em>안</em>에서만 유효하다. <code>as any</code>로 탈출하거나 문자열 키로 객체에 동적 접근하는 순간, 타입 검사는 그 지점부터 손을 뗀다.
+</p>
+<pre><code>interface Config { timeout: number; }
+
+function get(cfg: Config, key: string) {
+  return (cfg as any)[key];     // as any로 스스로 타입 검사를 우회 — strict 모드도 여기선 무력
+}
+get(cfg, 'timeuot');             // 컴파일 통과, 런타임엔 undefined</code></pre>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> <code>?.</code>가 "없음"을 흡수한다면 <code>==</code>는 "다름"을 흡수한다 — 둘 다 언어가 문법·연산자 차원에서 미리 깔아 둔 조용한 실패 경로라는 점이 같다. TS strict 모드는 이 경로들을 타입이 선언된 영역에서 되돌리지만, <code>any</code>로의 탈출이나 문자열 키 동적 접근처럼 <strong>타입 시스템의 관할을 벗어나는 지점</strong>은 여전히 무방비다 — 코드베이스에서 <code>any</code>가 등장하는 자리를 세는 것이 곧 방어선의 구멍 개수를 세는 일이다.</p>
+</blockquote>
+
+<h3>6.3 Python — 읽기는 요란하지만 쓰기는 조용한, 비대칭이 함정인 언어</h3>
+<p>
+본문의 예제처럼 Python은 없는 이름을 <em>읽는</em> 순간 즉시 예외를 던지는 요란한 언어다. 그런데 이 요란함은 <strong>읽기에만</strong> 해당한다.
+Python 객체의 속성은 대부분 인스턴스별 딕셔너리(<code>__dict__</code>)에 저장되는데, 여기에 <strong>쓰기</strong>는 이름 검사를 거치지 않는다 — 없는 이름에 값을 대입하면 오류 대신 그 이름의 <strong>새 속성이 조용히 생성</strong>된다.
+읽기와 쓰기의 이 비대칭이 Python 특유의 함정이다.
+</p>
+<pre><code>class Counter:
+    def __init__(self):
+        self.count = 0
+
+    def increment(self):
+        self.cuont = self.count + 1   # 오타: count가 아니라 새 속성 cuont가 생성됨
+
+c = Counter()
+c.increment()
+print(c.count)   # 여전히 0 — 에러 없음, cuont라는 유령 속성만 하나 늘었을 뿐</code></pre>
+<p>
+읽기 쪽에서도 <code>dict.get(key, default)</code>나 <code>getattr(obj, name, default)</code>처럼 "없으면 기본값"을 돌려주는 API는 본문에서 본 대로 오타를 조용히 삼킨다.
+쓰기 쪽 함정을 막는 도구는 따로 있다 — <code>__slots__</code>(인스턴스가 가질 수 있는 속성 이름을 클래스 선언 시점에 고정하는 지시자)를 쓰면, 목록에 없는 이름에 대입하는 순간 <code>AttributeError</code>가 발생해 유령 속성 생성 자체가 봉쇄된다.
+</p>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> Python의 이름 검사는 "읽을 때는 사전에서 찾아보고 없으면 예외, 쓸 때는 그냥 사전에 새 항목을 넣는다"는 딕셔너리 기반 객체 모델의 자연스러운 결과다 — 오타 방지가 목적이 아니라 동적 확장성이 목적이었던 설계가, 부작용으로 쓰기 쪽 조용한 실패를 만든다. <code>__slots__</code>이나 <code>dataclass</code>처럼 속성 집합을 미리 선언하는 스타일은 이 동적 확장성을 일부 포기하는 대신, 쓰기 오타를 읽기 오타와 같은 수준(즉시 예외)으로 끌어올리는 선택이다.</p>
+</blockquote>
+
+<h3>6.4 C++ — 반환값과 조건식, 두 곳에서 조용히 통과되는 언어</h3>
 <p>
 예외 없이 빌드하는 코드베이스가 많은 C++에서는 에러 코드 반환이 실패 신호의 표준이고, 그만큼 3.1의 "확인되지 않는 반환값" 문제가 수십 년 된 고질병이었다.
 표준의 응답이 <code>[[nodiscard]]</code> 속성(반환값을 버리는 호출에 컴파일 경고를 붙이는 표식)이다 — "이 반환값은 신호이니 무시하면 안 된다"를 시그니처에 명문화한다.
@@ -311,31 +386,16 @@ if (!save_order(order)) {       // 신호를 확인하는 호출만 조용히 �
     notify_failure();
 }</code></pre>
 <p>
-<code>C++ 관점의 통찰: 이 속성은 경고를 에러로 승격하는 빌드 설정과 짝지어야 완성된다 — 아무도 읽지 않는 경고는 아무도 보지 않는 로그(5-③)와 같아서, 빌드를 멈추게 만들어야 비로소 "대응할 수 있는 곳에 닿는 신호"가 된다. "무시하려면 명시적 확인이 필요하고, 방치하면 빌드가 실패한다"는 이 구도는, 반환값 방식에는 확인 강제 장치가 세트여야 한다는 3.1 규율을 언어 차원에서 제도화한 것이다.</code>
+C++에는 반환값과 별개로, <strong>암묵적 형변환</strong>(implicit conversion — 명시적 변환 지시 없이 컴파일러가 타입을 자동으로 바꿔 주는 규칙)이 만드는 또 다른 조용한 실패 지점이 있다. 대입식(<code>=</code>)도 결과값을 갖고, 그 결과값은 <code>bool</code>로 암묵 변환되어 조건식 자리에 그대로 들어갈 수 있다 — 비교 연산자 <code>==</code>를 쓰려다 <code>=</code>로 오타를 내도 컴파일이 그냥 통과되는 이유다.
 </p>
-
-<h3>6.2 Python — 예외가 기본 신호라서, 흡수 지점의 책임이 무거운 언어</h3>
-<p>
-Python은 없는 속성·이름·키에 즉시 예외를 던지는, 기본값이 "요란한" 언어다(<code>AttributeError</code>·<code>NameError</code>·<code>KeyError</code>).
-그래서 조용한 실패는 예외를 우회하는 두 지점에서 만들어진다: "없음"을 기본값으로 눌러 주는 관대한 API(<code>dict.get</code>)와, 예외를 삼키는 광범위한 <code>except</code>다 — 후자는 로직 실패뿐 아니라 <strong>오타가 만든 예외까지</strong> 함께 삼켜 이중의 침묵을 만든다.
-</p>
-<pre><code>config = {"timeout": 30}
-value = config.get("timeuot", 30)   # 키 오타 → 조용히 기본값 30, 영원히 발각 안 됨
-value = config["timeuot"]           # KeyError — 같은 오타가 즉시 요란하게 터진다
-
-try:
-    procss_order(order)             # 함수명 오타 → NameError
-except Exception:
-    pass                            # 오타 예외까지 여기서 소멸: 이중 침묵</code></pre>
-<p>
-<code>Python 관점의 통찰: 이 "요란한 기본값"조차 해당 코드 경로가 실행되어야 성립하므로, 드물게 타는 분기의 오타는 배포 후에야 터진다 — 테스트 커버리지와 타입 힌트+정적 검사기가 "실행 전 발각" 수단인 이유다. 잡을 예외의 타입을 좁혀 명시하는 습관은 "흡수하는 쪽이 처리를 책임진다"(3.1)는 규율의 파이썬 문법이고, 광범위 except는 그 책임의 포기 선언이다.</code>
-</p>
-
-<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
-<p>
-Java는 이름을 컴파일러가 지키므로 조용한 실패의 주 무대는 신호 무시 쪽이다 — 검사 예외는 "처리 또는 전파를 명시하지 않으면 컴파일 불가"라는 무시 봉쇄 장치였으나 빈 catch로 도장만 찍는 형식적 처리로 변질되기도 했고, 반환값 확인을 강제하는 정적 분석 어노테이션과 "없을 수 있음"을 시그니처에 못 박는 <code>Optional</code>이 현대적 보완이다 — 조용한 실패 방어란 결국 "잊을 수 없게 만들기"다.
-JS는 없는 속성에 예외 대신 <code>undefined</code>라는 값을 주는 관대한 설계라, 오타의 결과가 값처럼 여러 함수를 흘러 고장 지점과 증상 지점이 멀어진다(이벤트명 오타는 "아무도 안 듣는 방송"이 된다). TS는 타입이 선언된 구간과, 컴포넌트 emit 타입 정의처럼 <strong>문자열 연결을 타입의 세계로 끌어올린 지점</strong>을 컴파일 타임 검사로 되찾아 온다. 한편 <code>await</code>나 catch 없이 버려진 Promise의 실패(처리되지 않은 거부)는 반환값 무시의 비동기판으로, 린터의 부동 Promise 검사가 그 확인 강제 장치다.
-</p>
+<pre><code>Order* order = repository.find(id);
+if (order = nullptr) {          // 오타: == 자리에 = — 대입식이므로 컴파일 통과, 결과는 nullptr
+    handle_missing(order);      // 이 조건은 항상 거짓이라 절대 실행되지 않는다
+}
+order-&gt;total();                 // order는 방금 nullptr로 재할당됨 — 역참조는 정의되지 않은 동작(UB)</code></pre>
+<blockquote class="info">
+<p><strong>C++ 관점의 통찰:</strong> <code>[[nodiscard]]</code>와 대입-비교 오타 문제는 겉보기엔 다르지만 구조가 같다 — 둘 다 "문법상 완전히 유효한 표현식이라 컴파일러가 막을 근거가 없는" 지점에서 조용한 실패가 태어난다. 방어는 결국 경고를 에러로 승격하는 빌드 설정(<code>-Wall -Wextra -Werror</code>, <code>-Wparentheses</code>)으로 수렴한다 — 아무도 읽지 않는 경고는 아무도 보지 않는 로그(5-③)와 같아서, 빌드를 멈추게 만들어야 비로소 "대응할 수 있는 곳에 닿는 신호"가 된다. 언어가 원천 봉쇄하지 못하는 자리는, 결국 컴파일 파이프라인의 엄격함으로 메워야 한다.</p>
+</blockquote>
 
 <h2>7. 함께 알면 좋은 것</h2>
 <p>본문의 논의를 한 걸음씩 확장하는 어휘들이다 — 앞의 둘은 4절의 "이른 실패" 축을, 셋째는 5-④의 정적 검사 사각지대를, 넷째는 3.1의 반환값 문제를, 다섯째는 2절의 진단 규칙을 각각 잇는다.</p>
