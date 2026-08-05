@@ -194,35 +194,135 @@
 </blockquote>
 
 <h2>★ 6. 언어별 대조</h2>
-<p>같은 원리지만, 각 언어에서 "기본 제공 수단"과 "특유의 함정"이 다르다.</p>
+<p>
+지금까지 본 원리 — 값만 남기는 평탄화, 스키마 진화, 신뢰 경계로서의 역직렬화 — 는 언어와 무관하게 성립한다.
+다만 "그 값을 어떻게 찾아내는가"와 "그 과정에서 무엇이 조용히 새는가"는 언어마다 전혀 다른 얼굴을 하고 있다.
+</p>
 <table>
-  <tr><th>언어</th><th>대표 수단</th><th>특유의 함정</th></tr>
+  <tr><th>언어</th><th>대표 수단</th><th>값을 찾아내는 방식</th><th>특유의 함정</th></tr>
   <tr>
     <td>Java</td>
-    <td>JSON 라이브러리(Jackson 등)가 사실상 표준. 내장 직렬화(<code>Serializable</code>)는 존재하나 기피 대상</td>
-    <td>내장 직렬화의 역직렬화 취약점·강한 클래스 결합. 새 프로젝트에서 쓸 이유가 거의 없음</td>
+    <td>Jackson 등 JSON 매핑 라이브러리, 네이티브 직렬화(<code>Serializable</code>)</td>
+    <td>리플렉션(reflection — 실행 중에 클래스의 필드·메서드 구조를 코드로 조회·호출하는 기능)으로 접근자·필드를 런타임에 훑어 매핑</td>
+    <td>계약(어노테이션·명명 규칙)을 벗어난 필드는 조용히 누락, 네이티브 직렬화의 버전 식별자 불일치</td>
   </tr>
   <tr>
     <td>JS·TS</td>
-    <td><code>JSON.parse</code> / <code>JSON.stringify</code> 내장 — 언어 자체가 JSON과 동형에 가까움</td>
-    <td><code>Date</code>·<code>Map</code>·<code>undefined</code>·<code>BigInt</code>는 그대로 살아남지 않음(문자열화·탈락·예외). TS 타입은 런타임 검증이 아님</td>
+    <td><code>JSON.parse</code> / <code>JSON.stringify</code> 내장</td>
+    <td>언어의 값 모델 자체가 JSON과 거의 동형이라 매핑 코드가 거의 필요 없음</td>
+    <td><code>Date</code>·<code>undefined</code>는 왕복에서 조용히 변형·탈락, <code>BigInt</code>는 예외 발생(시끄러운 실패), TS 타입은 런타임을 보증하지 않음</td>
   </tr>
   <tr>
     <td>Python</td>
     <td><code>json</code> 모듈(교환용), <code>pickle</code>(내부 한정)</td>
-    <td><code>pickle</code>은 임의 코드 실행 가능 — 아래 심화</td>
+    <td>인스턴스 속성을 담은 내부 딕셔너리(<code>__dict__</code>)에서 값만 뽑거나, <code>pickle</code>은 복원 절차까지 함께 기록</td>
+    <td><code>pickle</code> 역직렬화는 임의 코드 실행 통로, <code>json</code>은 dict를 돌려줄 뿐 클래스 인스턴스가 아님</td>
   </tr>
   <tr>
     <td>C++</td>
-    <td>표준 직렬화 없음 — 라이브러리(Protobuf, nlohmann/json 등) 또는 직접 구현</td>
-    <td>"구조체 메모리를 통째로 복사"의 유혹 — 아래 심화에서 왜 안 되는지 해부</td>
+    <td>표준 직렬화 없음 — 라이브러리 또는 직접 구현</td>
+    <td>런타임 리플렉션이 없어, 값을 뽑는 코드를 사람이 직접 작성해야 함(컴파일 타임에 구조가 고정)</td>
+    <td>구조체를 그대로 복사(<code>memcpy</code>)하려는 유혹, 컴파일러·플랫폼마다 다른 메모리 표현(ABI)</td>
   </tr>
 </table>
 
-<h3>6.1 C++ — "메모리를 그대로 쓰면 안 되나?"에 대한 해부</h3>
+<h3>6.1 Java — 리플렉션이 대신 훑어주는 매핑, 그리고 그 대가</h3>
 <p>
-C++에서는 객체의 메모리 표현에 직접 접근할 수 있어, <code>memcpy</code>로 구조체 바이트를 통째로 파일에 쓰는 것이 직렬화처럼 보인다.
-이것이 왜 직렬화가 아닌지가 곧 "직렬화가 왜 필요한가"의 가장 구체적인 답이다.
+Java에는 객체를 값으로 평탄화해 주는 언어 내장 기능이 없다. 대신 Jackson 같은 라이브러리가 리플렉션으로
+클래스의 접근자(getter)나 필드를 런타임에 훑어 이름을 맞춰 준다. 편리함의 대가는 <strong>계약이 암묵적이라는 것</strong>이다 —
+접근자가 없거나 이름 규칙을 벗어난 필드는 예외 없이 조용히 매핑에서 빠진다.
+</p>
+<pre><code>public class User {
+    private final long id;
+    private final String name;
+
+    @JsonCreator
+    public User(@JsonProperty("id") long id, @JsonProperty("name") String name) {
+        this.id = id;
+        this.name = name;
+    }
+    // getter도, @JsonProperty도 없는 필드는 리플렉션이 "찾지 못한다" —
+    // 계약을 대신 찾아주는 것이지, 계약을 만들어 주는 것이 아니다
+}</code></pre>
+<p>
+네이티브 직렬화(<code>Serializable</code>)를 쓰면 이 문제가 한 단계 더 깊어진다. 클래스에는 <code>serialVersionUID</code>라는
+버전 식별자 필드를 둘 수 있는데, 이 값을 명시하지 않으면 컴파일러가 클래스의 필드 구성으로부터 <em>자동 계산</em>해 채운다.
+즉 기능과 무관한 필드 하나만 추가·삭제해도 이 식별자가 달라지고, 역직렬화하는 쪽의 클래스와 값이 다르면
+JVM은 호환 여부를 판단할 수 없다며 복원을 거부한다.
+</p>
+<pre><code>class LegacySession implements Serializable {
+    // 생략하면 컴파일러가 클래스 구조로 자동 계산 — 겉보기엔 사소한 리팩터링도
+    // 이 값을 바꿔 버려, 이미 저장된 옛 데이터의 복원을 깨뜨릴 수 있다
+    private static final long serialVersionUID = 1L;
+}</code></pre>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> 리플렉션 기반 매핑은 "코드를 안 짜도 되게" 해 주지만, 계약을 코드 밖(명명 규칙·어노테이션)으로 옮겼을 뿐 계약 자체를 없애지는 못한다. 어노테이션이 스키마 진화 원칙(추가는 선택적으로, 삭제는 단계적으로)을 어기면 컴파일은 성공해도 매핑은 조용히 어긋난다 — 리플렉션이 실패를 컴파일 타임에서 런타임으로 옮겨 놓았을 뿐이다.</p>
+</blockquote>
+
+<h3>6.2 JS·TS — JSON이 모어(母語)인 언어가 만드는 착시</h3>
+<p>
+JS의 값 모델은 JSON과 구조가 거의 같아서, <code>JSON.stringify</code>/<code>JSON.parse</code>를 쓰면 직렬화가 "그냥 되는 것"처럼 느껴진다.
+바로 이 익숙함이 함정이다 — JSON이 표현하지 못하는 값이 왕복하는 순간 변환 규칙이 개입하는데, 어떤 값은 조용히 변형·탈락하고(조용한 실패) 어떤 값은 예외를 던진다(시끄러운 실패).
+</p>
+<pre><code>const payload = {
+  when: new Date(),   // Date 객체
+  note: undefined,    // 정의되지 않음
+  big: 10n             // BigInt
+};
+
+JSON.stringify(payload);
+// '{"when":"2026-08-05T00:00:00.000Z"}'
+// - when: Date는 ISO 문자열로 바뀐다. 다시 JSON.parse해도 Date가 아니라 문자열이다.
+// - note: undefined인 속성은 키째로 사라진다(배열 안이면 null로 바뀜).
+// - big: BigInt는 stringify 시점에 즉시 TypeError를 던진다.</code></pre>
+<p>
+TS 타입은 이 간극을 메워 주지 않는다. 타입은 컴파일이 끝나면 사라지는 컴파일 타임 개념이라, <code>JSON.parse</code>가
+실제로 무엇을 돌려주는지는 검사하지 못한다. 타입 선언은 "이 값이 이런 모양이길 바란다"는 약속일 뿐,
+파싱 결과가 그 약속을 지켰는지 런타임에 확인해 주는 장치가 아니다.
+</p>
+<pre><code>interface User { id: number; createdAt: Date; }
+
+const user: User = JSON.parse(text);   // 컴파일은 통과한다
+user.createdAt.getFullYear();          // 런타임 오류 — createdAt은 실제로는 string이다</code></pre>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> "JSON이 언어의 일부처럼 느껴진다"는 사실 자체가 역설적으로 위험을 가린다. 직렬화 경계를 넘는 값 중 JSON이 표현할 수 없는 것(날짜·정의되지 않은 값·큰 정수)은 항상 별도로 인코딩·디코딩 규칙을 정해야 하며, 그 규칙을 지켰는지는 타입이 아니라 런타임 검증(스키마 검증기 등)이 확인해야 한다.</p>
+</blockquote>
+
+<h3>6.3 Python — 인터프리터가 객체를 값으로 보는 두 가지 방식</h3>
+<p>
+Python 객체의 인스턴스 속성은 대체로 <code>__dict__</code>라는 딕셔너리 하나에 담겨 있다. <code>json</code> 모듈은
+기본적으로 dict·list·기본 타입만 알기 때문에, 커스텀 객체를 직렬화하려면 이 <code>__dict__</code>에서
+값만 뽑아내는 변환 함수를 직접 넘겨야 한다 — 이것이 "값만 남기는 평탄화"가 Python 인터프리터 수준에서 드러나는 모습이다.
+</p>
+<pre><code>class User:
+    def __init__(self, id, name):
+        self.id = id
+        self.name = name
+
+u = User(7, "Kim")
+u.__dict__   # {'id': 7, 'name': 'Kim'} — 인스턴스 속성은 결국 딕셔너리다
+
+import json
+json.dumps(u)                                  # TypeError: User는 json이 모르는 타입
+json.dumps(u, default=lambda o: o.__dict__)    # 값만 명시적으로 뽑아 줘야 함</code></pre>
+<p>
+<code>pickle</code>은 다른 층위에서 동작한다. <code>__dict__</code>의 값뿐 아니라 "어느 모듈의 어느 클래스인지,
+복원 시 어떤 절차(<code>__reduce__</code> 등)를 거칠지"까지 바이트 안에 함께 기록한다. 편리함의 원천 —
+객체 그래프를 통째로 복원할 수 있다는 것 — 이 그대로 위험의 원천이다. 이 복원 절차 지시를 조작하면
+임의의 호출을 유발할 수 있기 때문이다.
+</p>
+<pre><code>import pickle
+pickle.dumps(u)
+# 바이트 안에는 __dict__ 값뿐 아니라 "복원 시 무엇을 호출할지"에 대한 지시까지 들어 있다
+# pickle.loads(신뢰할 수 없는_바이트)  # 이 지시를 그대로 실행하는 행위 — 절대 금지</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> <code>json.loads</code>가 돌려주는 것은 dict·list뿐이다 — 내 클래스의 인스턴스가 아니다. 반대로 <code>pickle</code>은 "값 + 복원 절차"까지 돌려주기에 인스턴스가 그대로 나온다. 이 둘의 차이는 결국 "인터프리터가 클래스를 어떻게 다시 만드는가"에 대한 정보를 바이트에 얼마나 담느냐의 문제이며, 그 정보가 많을수록 편리함과 위험이 함께 커진다.</p>
+</blockquote>
+
+<h3>6.4 C++ — 값을 뽑는 코드를 사람이 직접 써야 하는 언어</h3>
+<p>
+C++에는 런타임에 클래스 구조를 훑어 주는 리플렉션이 없다. 그래서 "값만 남기는 평탄화"를 대신해 줄 존재가 없고,
+직접 접근할 수 있는 객체의 메모리 표현을 그대로 파일에 쓰는 것이 직렬화처럼 보이는 유혹이 생긴다.
 </p>
 <pre><code>struct User {
     int         id;      // 4바이트라고 단정할 수 없음 (플랫폼별 상이)
@@ -243,34 +343,15 @@ void serialize(const User&amp; u, std::ostream&amp; out) {
     out.write(u.name.data(), u.name.size());    // 포인터가 아니라 내용물을 기록
 }</code></pre>
 <p>
-<code>메모리 관점의 통찰: 이 예제는 직렬화의 정의를 역으로 증명한다 — 직렬화란 "메모리 표현(주소·패딩·정렬·엔디언이 얽힌, 이 기계만의 사정)"을 "플랫폼 중립적인 값의 표현"으로 옮기는 번역이다. 다른 언어에서는 런타임이 메모리 표현을 감춰 주기에 이 번역의 존재를 잊기 쉽지만, 번역은 항상 일어나고 있다.</code>
+이 문제는 한 프로그램의 실행 사이에서도 생기지만, 서로 다른 컴파일러·버전으로 빌드된 두 프로그램 사이에서는 더 근본적이다.
+클래스의 메모리 레이아웃(필드 순서, 패딩, vtable 배치)을 정확히 어떻게 배치할지는 표준이 강제하지 않는
+ABI(응용 이진 인터페이스, application binary interface — 컴파일된 바이너리끼리 서로 호출·전달할 때 지키는 저수준 약속)의
+영역이라, 컴파일러나 버전이 바뀌면 같은 소스 코드도 다른 메모리 표현을 만들어 낼 수 있다.
+<code>memcpy</code>로 만든 바이트는 이식 가능한 직렬화 포맷이 아니라, "이 컴파일러가 지금 이 순간 만든 ABI"에 종속된 바이트일 뿐이다.
 </p>
-
-<h3>6.2 Python — pickle의 편리함과 위험을 나란히 보기</h3>
-<p>
-<code>pickle</code>은 거의 모든 Python 객체 그래프를 한 줄로 저장·복원하는 네이티브 직렬화다. 편리함의 원천은 바이트 안에
-"어떤 클래스를 어떻게 다시 만들지"라는 <strong>복원 지시</strong>가 들어 있다는 점인데, 이것이 그대로 위험의 원천이다 — 복원 지시를 조작하면 임의의 함수를 호출하게 만들 수 있다.
-</p>
-<pre><code>import json, pickle
-
-user = {"id": 7, "name": "Kim"}
-
-# 교환·외부 입력용: 데이터만 담는 포맷
-text = json.dumps(user)              # '{"id": 7, "name": "Kim"}'
-restored = json.loads(text)          # 문법 검사만 통과 — 값 검증은 별도로!
-
-# 내부 한정(캐시, 프로세스 간 전달 등 '내가 만든 바이트'만):
-blob = pickle.dumps(user)
-# pickle.loads(외부에서_온_바이트)   # ❌ 절대 금지: 역직렬화 = 코드 실행이 될 수 있음</code></pre>
-<p>
-<code>Python 관점의 통찰: json.loads가 돌려주는 것은 dict·list·기본 타입뿐이다 — 내 클래스의 인스턴스가 아니다. "dict를 받아 검증하며 객체로 승격시키는" 이 마지막 구간을 자동화·강제하는 것이 검증 라이브러리(예: dataclass 기반 검증기)의 존재 이유이며, TS에서 런타임 스키마 검증기가 필요한 이유와 정확히 같은 구멍이다.</code>
-</p>
-
-<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
-<p>
-Java 백엔드의 실질 표준은 "JSON ↔ 객체" 매핑 라이브러리이며, 웹 프레임워크의 요청/응답 본문 자동 변환이 바로 이 직렬화·역직렬화 계층이다.
-JS·TS(Vue)에서 <code>JSON.parse(응답)</code>의 결과에 TS 타입을 붙여도 그것은 컴파일 타임의 <em>믿음</em>일 뿐 런타임 <em>검증</em>이 아니라는 점 — 서버 스키마가 진화하면 그 믿음이 조용히 어긋난다는 점이 이 문서 전체(스키마 진화)와 만나는 지점이다.
-</p>
+<blockquote class="info">
+<p><strong>C++ 관점의 통찰:</strong> 이 예제는 직렬화의 정의를 역으로 증명한다 — 직렬화란 "메모리 표현(주소·패딩·정렬·엔디언·ABI가 얽힌, 이 컴파일러·이 기계만의 사정)"을 "플랫폼 중립적인 값의 표현"으로 옮기는 번역이다. 리플렉션이 없는 C++에서는 이 번역을 컴파일 타임에 사람이 직접 코드로 새겨 넣어야 하지만, 다른 언어에서는 런타임이 메모리 표현을 감춰 주기에 번역이 항상 일어나고 있다는 사실 자체를 잊기 쉽다.</p>
+</blockquote>
 
 <h2>7. 함께 알면 좋은 것</h2>
 <ul>
