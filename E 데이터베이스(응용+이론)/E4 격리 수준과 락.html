@@ -212,8 +212,9 @@ T2: UPDATE items SET stock = 9 WHERE id = 7; COMMIT;   -- 자기가 읽은 10 �
 
 <h2>★ 8. 언어별 대조</h2>
 <p>
-격리 수준과 락은 SQL의 세계지만, <strong>그것을 지정하고 활용하는 문은 애플리케이션 코드</strong>에 있다.
-각 언어 생태계가 이 문을 어떻게 노출하는지, 특히 낙관적 락(6.1절)을 어떤 관용구로 지원하는지가 비교의 축이다.
+7절 ⑤에서 본 것처럼, "읽고-계산하고-쓰기" 사이의 경쟁은 DB만의 문제가 아니라 애플리케이션 코드에서도 반복되는 패턴이다.
+격리 수준과 락은 SQL의 개념이지만, 이를 지정하고 6.1절의 비관적·낙관적 락을 실제로 구현하는 문은 각 언어의 런타임·생태계 관용구에 있다.
+개요를 표로 잡은 뒤, 각 언어에서 그 관용구가 어떤 내부 기제 위에 서 있는지를 본다.
 </p>
 <table>
   <tr><th>언어</th><th>격리 수준 지정</th><th>갱신 유실 대응 관용구</th><th>비고</th></tr>
@@ -221,29 +222,126 @@ T2: UPDATE items SET stock = 9 WHERE id = 7; COMMIT;   -- 자기가 읽은 10 �
     <td>Java</td>
     <td><code>@Transactional(isolation = Isolation.REPEATABLE_READ)</code></td>
     <td>JPA <code>@Version</code>(낙관적) · <code>@Lock(PESSIMISTIC_WRITE)</code>(비관적)</td>
-    <td>표 + 8.3 요약</td>
+    <td>아래 8.1 참조</td>
   </tr>
   <tr>
     <td>JS·TS</td>
-    <td>ORM 옵션(예: Prisma <code>$transaction(..., { isolationLevel })</code>) 또는 <code>SET TRANSACTION</code> 직접 실행</td>
-    <td>ORM의 버전 필드 패턴 또는 <code>UPDATE ... WHERE version = ?</code> 수동 구현</td>
-    <td>표 + 8.3 요약</td>
+    <td>ORM 옵션(예: 트랜잭션 콜백의 <code>isolationLevel</code>) 또는 <code>SET TRANSACTION</code> 직접 실행</td>
+    <td>ORM의 버전 컬럼 데코레이터 + 명시적 재시도 루프</td>
+    <td>아래 8.2 참조</td>
   </tr>
   <tr>
     <td>Python</td>
     <td>SQLAlchemy <code>engine.execution_options(isolation_level=...)</code></td>
-    <td><code>with_for_update()</code>(비관적) · 버전 컬럼 매핑(낙관적)</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td><code>with_for_update()</code>(비관적) · <code>version_id_col</code> 매핑(낙관적)</td>
+    <td>아래 8.3 참조</td>
   </tr>
   <tr>
     <td>C++</td>
     <td><code>SET TRANSACTION ISOLATION LEVEL ...</code> SQL 직접</td>
     <td><code>SELECT ... FOR UPDATE</code>·버전 WHERE 절 수동</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>아래 8.4 참조</td>
   </tr>
 </table>
 
-<h3>8.1 C++ — 같은 문제, 같은 해법: 락 순서와 데드락</h3>
+<h3>8.1 Java — ORM 레벨 락이 DB 락으로 번역되는 지점</h3>
+<p>
+Java 생태계는 격리 수준·락을 SQL 문자열이 아니라 애너테이션으로 선언하는 데까지 관용구가 발전했다.
+JPA(Java Persistence API)의 <code>@Version</code> 필드 하나가 6.1절의 낙관적 락 전체를 대신하고,
+<code>@Lock(PESSIMISTIC_WRITE)</code>가 <code>SELECT ... FOR UPDATE</code>를 대신한다.
+다만 이 매핑이 정확히 <em>무엇을</em> 대신해 주고 <em>무엇을</em> 안 해 주는지 구분해야 착시를 피할 수 있다.
+</p>
+<pre><code>@Entity
+class Item {
+    @Id Long id;
+    int stock;
+    @Version
+    long version;      // 매 UPDATE마다 자동 증가, WHERE version = ? 이 함께 붙는다
+}
+
+// 낙관적 락: 커밋 시점에
+//   UPDATE items SET stock=?, version=version+1 WHERE id=? AND version=?
+// 영향 행 0건이면 OptimisticLockException — 재시도는 호출자 책임
+item.setStock(item.getStock() - 1);
+
+// 비관적 락: SELECT ... FOR UPDATE가 그대로 DB에 내려간다
+Item locked = em.find(Item.class, 7L, LockModeType.PESSIMISTIC_WRITE);</code></pre>
+<p>
+<code>@Transactional(isolation = ...)</code>도 비슷한 함정을 갖는다 — 이 지정은 <strong>물리적 트랜잭션이 새로 시작될 때만</strong> DB에 전달된다.
+이미 열린 트랜잭션에 합류(propagation)하는 메서드에 다른 격리 수준을 지정해도 조용히 무시되는 경우가 흔하다 — 3절의 "표준은 어휘, 거동은 문서로"라는 원칙이 여기서는 "선언은 어휘, 적용 여부는 트랜잭션 경계로" 확인해야 한다는 형태로 반복된다.
+</p>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰(ORM과 DB 락의 경계):</strong> <code>@Version</code>은 DB가 아는 개념이 아니라, ORM이 UPDATE문에 <code>WHERE</code>절을 끼워 넣어 흉내 내는 <strong>소프트웨어 계층의 규약</strong>이다. 반면 <code>@Lock(PESSIMISTIC_WRITE)</code>는 진짜 DB 배타 락(4절)을 그대로 요청하는 것이라, 커밋까지 유지되는 것도 데드락 위험도 원본과 동일하다. "낙관적 락은 ORM이 만든 약속, 비관적 락은 DB 기능의 얇은 래퍼"라는 이 구분을 놓치면 <code>@Version</code>만 붙이면 동시성 문제가 끝난다고 오해하기 쉽다 — 충돌 <em>감지</em>는 프레임워크가 자동화했지만, 충돌 <em>해소</em>(무엇을 다시 읽고 다시 계산할지)는 여전히 애플리케이션 코드의 몫이다.</p>
+</blockquote>
+
+<h3>8.2 JS·TS — 재시도가 코드에 그대로 드러나는 생태계</h3>
+<p>
+Java가 애너테이션 뒤에 재시도 여지를 숨긴다면, JS·TS 진영은 그 재시도까지 명시적 코드로 드러내는 편이다.
+자바스크립트의 이벤트 루프(event loop — 콜백을 한 번에 하나씩만 실행하는 단일 실행 스레드 모델) 덕분에 "두 콜백이 동시에 변수를 증가시켜 값이 어긋나는" 문제는 프로세스 내부에서는 성립하지 않는다.
+그러나 이것이 6.1절의 갱신 유실까지 막아 주지는 않는다 — <code>await</code>로 넘어가는 순간(비동기 I/O 대기 중)에는 다른 요청의 콜백이 얼마든지 끼어들 수 있고, 애초에 DB 갱신 유실은 서로 다른 커넥션·프로세스에 걸친 진짜 동시성 문제이기 때문이다.
+"단일 스레드니까 안전하다"는 오해는 8.3절 Python의 GIL 오해와 정확히 같은 자리에서 반복된다.
+</p>
+<pre><code>// ORM의 버전 컬럼 데코레이터 — Java @Version과 같은 발상
+@Entity()
+class Item {
+  @PrimaryColumn() id: number;
+  @Column() stock: number;
+  @VersionColumn() version: number;
+}
+// save() 내부적으로 UPDATE ... WHERE id = ? AND version = ? 실행,
+// 영향 행 0건이면 낙관적 락 충돌 예외를 던진다
+
+// 재시도는 프레임워크가 대신 해주지 않는다 — 호출부에서 명시적으로 감싼다
+async function decreaseStock(id: number, tries = 3): Promise&lt;void&gt; {
+  for (let i = 0; i &lt; tries; i++) {
+    try {
+      const item = await repo.findOneBy({ id });
+      item.stock -= 1;
+      await repo.save(item);           // 버전 불일치 시 여기서 예외
+      return;
+    } catch (e) {
+      if (!isOptimisticLockError(e) || i === tries - 1) throw e;
+      // 다음 루프에서 최신 버전을 다시 읽고 재시도한다
+    }
+  }
+}</code></pre>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> ORM이 버전 검사는 대신해 줘도, "실패를 어떻게 다시 시도할지"는 데코레이터 한 줄 뒤에 숨지 않고 <code>for</code> 루프로 코드에 그대로 노출된다 — 이는 표현력의 부족이 아니라, 충돌 후 무엇을 다시 읽어야 하는지를 작성자가 매번 명시적으로 고민하도록 만드는 효과이기도 하다. 또한 커넥션 풀에서 임의로 커넥션을 받아 <code>SET TRANSACTION ISOLATION LEVEL ...</code>을 직접 실행하면, 그 커넥션이 반환된 뒤 다음 요청이 의도치 않게 같은 격리 수준을 물려받을 위험이 있다 — 격리 수준은 커넥션이 아니라 트랜잭션 콜백의 옵션으로 지정하는 API가 안전한 이유다.</p>
+</blockquote>
+
+<h3>8.3 Python — GIL과 DB 락은 다른 층의 이야기다</h3>
+<p>
+Python에는 GIL(global interpreter lock, 전역 인터프리터 락 — 한 인터프리터 안에서 한 번에 하나의 스레드만 바이트코드를 실행하게 하는 잠금)이 있어
+"동시 실행이 없으니 안전하지 않나" 오해하기 쉽다. 그러나 GIL은 <strong>바이트코드 한 줄 단위</strong>로만 배타적일 뿐,
+6.1절의 갱신 유실 — 읽고-계산하고-쓰기 사이에 남이 끼어드는 문제 — 는 그대로 일어난다.
+</p>
+<pre><code>import threading
+
+counter = 0
+def worker():
+    global counter
+    for _ in range(100_000):
+        counter += 1      # 읽기 → +1 → 쓰기: 세 단계 사이에 다른 스레드가 끼어들 수 있다
+
+threads = [threading.Thread(target=worker) for _ in range(4)]
+[t.start() for t in threads]; [t.join() for t in threads]
+print(counter)             # 400000이 아닌 값 — DB의 갱신 유실과 정확히 동형
+
+# DB 쪽 관용구 (SQLAlchemy)
+item = session.query(Item).with_for_update().get(7)     # 비관적 락
+
+class Item(Base):
+    __tablename__ = "items"
+    id = Column(Integer, primary_key=True)
+    stock = Column(Integer)
+    version_id = Column(Integer, nullable=False)
+    __mapper_args__ = {"version_id_col": version_id}     # 낙관적 락
+    # 커밋 시 UPDATE ... WHERE id=? AND version_id=? 자동 생성, 0건이면 StaleDataError</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰(인터프리터와 프로세스의 경계):</strong> GIL이 지켜 주는 것은 "하나의 인터프리터 프로세스 안에서 실행되는 바이트코드의 순서"뿐이다. 웹 서버가 요청마다 별도 워커 프로세스를 띄우는 배치라면 GIL은 그 프로세스들의 존재조차 모른다 — 갱신 유실을 막는 것은 애초에 GIL의 관할 밖이고, 유일하게 유효한 경계는 DB 자신의 락(4·5절)이다. "Python은 GIL이 있으니 동시성 걱정이 없다"는 통념은 같은 프로세스의 스레드 수준에서도 절반만 맞고(<code>counter += 1</code>이 원자적이지 않다는 위 예제), 프로세스·DB 수준에서는 아예 성립하지 않는다는 것이 이 절의 결론이다. 최근 GIL을 제거한 실험적 빌드가 도입 단계에 있는데, 그 경우 위 스레드 예제의 어긋남은 <em>더</em> 커진다 — GIL이 우연히 제공하던 보호막마저 사라지기 때문이다.</p>
+</blockquote>
+
+<h3>8.4 C++ — 락과 CAS, 그리고 메모리 모델이라는 또 다른 층</h3>
 <p>
 4.1절의 데드락은 DB만의 현상이 아니다. 여러 자원을 <strong>서로 다른 순서로</strong> 잠그면 어떤 세계에서든 발생하며,
 C++의 <code>std::mutex</code>(상호 배제 장치)에서도 형태가 똑같다. 다만 여기서는 DB처럼 감지해 주는 심판이 없어 <strong>프로그램이 그냥 멈춘다</strong>.
@@ -259,44 +357,23 @@ void thread2() { std::lock_guard&lt;std::mutex&gt; b(mB); std::lock_guard&lt;std
 void safe() {
     std::scoped_lock lock(mA, mB);   // 순서에 무관하게 안전하게 둘 다 확보
 }</code></pre>
-<blockquote class="info">
-<p><strong>C++ 관점의 통찰(수명·소유권):</strong> <code>lock_guard</code>·<code>scoped_lock</code>은 <strong>락의 수명을 스코프에 묶는</strong> 장치다 — 예외가 나든 중간에 반환하든 소멸자가 반드시 잠금을 푼다. DB 트랜잭션의 락이 "커밋/롤백까지" 유지되는 것과 정확히 같은 발상으로, <strong>해제 시점을 사람의 기억이 아니라 구조에 맡긴다</strong>는 원칙이다.<br>결정적 차이도 하나 있다: DB는 데드락을 <em>감지해서</em> 한쪽을 희생시키지만(4.1절), <code>std::mutex</code>에는 그런 심판이 없어 프로세스가 조용히 정지한다. "데드락 에러가 로그에 찍히는 것은 그나마 다행"이라는 4.1절의 태도 전환이 이 대조에서 설득력을 얻는다 — 감지 가능한 실패가 감지 불가능한 정지보다 낫다.</p>
-</blockquote>
-
-<h3>8.2 Python — GIL이 있어도 경쟁 조건은 사라지지 않는다</h3>
 <p>
-Python에는 GIL(global interpreter lock, 전역 인터프리터 락 — 한 번에 하나의 스레드만 바이트코드를 실행하게 하는 잠금)이 있어
-"동시 실행이 없으니 안전하지 않나" 오해하기 쉽다. 그러나 GIL은 <strong>바이트코드 단위</strong>로만 배타적일 뿐,
-6.1절의 갱신 유실 — <em>읽고-계산하고-쓰기</em> 사이에 남이 끼어드는 문제 — 는 그대로 일어난다.
+6.1절의 낙관적 락 — "버전이 같을 때만 갱신" — 에 해당하는 C++ 관용구는 <code>std::atomic</code>의 CAS(compare-and-swap, 비교 후 교환) 연산이다.
+읽었던 값이 여전히 유효할 때만 새 값으로 바꾸고, 그사이 값이 바뀌었으면 실패시켜 재시도하게 한다는 발상이 DB의 <code>WHERE version = ?</code>와 그대로 겹친다.
 </p>
-<pre><code>import threading
+<pre><code>std::atomic&lt;int&gt; stock{10};
 
-counter = 0
-def worker():
-    global counter
-    for _ in range(100_000):
-        counter += 1      # 읽기 → +1 → 쓰기: 세 단계 사이에 다른 스레드가 끼어들 수 있다
-
-threads = [threading.Thread(target=worker) for _ in range(4)]
-[t.start() for t in threads]; [t.join() for t in threads]
-print(counter)            # 400000이 아닌 값이 나온다 — DB의 갱신 유실과 정확히 동형
-
-# 해법도 평행하다: 잠그거나(비관적), 원자적 연산 하나로 만들거나
-lock = threading.Lock()
-with lock:
-    counter += 1          # ≒ SELECT ... FOR UPDATE
-
-# DB 쪽 관용구 (SQLAlchemy)
-item = session.query(Item).with_for_update().get(7)   # 비관적 락</code></pre>
+void decrease() {
+    int expected = stock.load();
+    // expected와 현재 값이 같을 때만 교환 — DB의 "WHERE version = ?"와 같은 CAS 발상
+    while (!stock.compare_exchange_weak(expected, expected - 1)) {
+        // 실패하면 expected가 최신값으로 자동 갱신된 채 루프가 재시도된다
+    }
+}</code></pre>
 <blockquote class="info">
-<p><strong>Python 관점의 통찰:</strong> <code>counter += 1</code>이 한 줄인데도 안전하지 않다는 사실이 이 문서 전체의 요약이다 — <strong>원자적으로 보이는 것과 원자적인 것은 다르다.</strong> 6.1절에서 "읽고-쓰기를 <code>UPDATE items SET stock = stock - 1</code> 한 문장으로 만들라"고 한 처방이, 여기서는 "락으로 감싸라" 또는 "원자적 연산을 쓰라"로 번역된다. 문제도 해법도 층위만 다를 뿐 같은 계보라는 것이 <a href="G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a>과 이 문서를 겹쳐 읽는 이유다.<br>참고로 최근 Python에는 GIL을 제거한 실험적 빌드가 도입 단계에 있는데, 그 경우 위 코드의 결과는 <em>더</em> 어긋난다 — GIL이 우연히 제공하던 보호막마저 사라지기 때문이다. "언어가 보장해 주는 줄 알았던 것"에 기대는 코드가 왜 위험한지 보여 주는 사례다.</p>
+<p><strong>C++ 관점의 통찰(수명·소유권):</strong> <code>lock_guard</code>·<code>scoped_lock</code>은 <strong>락의 수명을 스코프에 묶는</strong> 장치다 — 예외가 나든 중간에 반환하든 소멸자가 반드시 잠금을 푼다. DB 트랜잭션의 락이 "커밋/롤백까지" 유지되는 것과 같은 발상으로, 해제 시점을 사람의 기억이 아니라 구조에 맡긴다는 원칙이다. 결정적 차이도 있다: DB는 데드락을 <em>감지해서</em> 한쪽을 희생시키지만(4.1절), <code>std::mutex</code>에는 그런 심판이 없어 프로세스가 조용히 정지한다 — 감지 가능한 실패가 감지 불가능한 정지보다 낫다는 4.1절의 태도 전환이 이 대조에서 설득력을 얻는다.</p>
+<p><strong>C++ 관점의 통찰(메모리 모델과 컴파일 타임):</strong> <code>std::mutex</code>의 잠금·해제는 획득-해제 순서(acquire-release ordering — 락을 잡은 이후의 읽기가 락을 풀기 전의 쓰기를 반드시 보게 강제하는 규칙)를 함께 강제한다. 목적은 DB 락이 커밋된 값만 보이게 하는 것(더티 리드 차단, 2절)과 같다 — "내가 볼 수 있는 값의 범위"를 규율하는 것이다. 다만 근본적인 차이가 있다: C++의 메모리 모델은 컴파일 타임에 확정되는 하드웨어·컴파일러 수준 규칙이고, DB의 격리 수준은 런타임에 트랜잭션 단위로 선택하는 논리적 규칙이다. 전자를 어기면 정의되지 않은 동작(undefined behavior — 언어 표준이 결과를 전혀 보장하지 않는 상태)으로 이어지지만, 후자를 어기면 이상현상(2절)이 나타날 뿐 프로그램 자체는 계속 돈다 — "틀린 값이 나온다"와 "무엇이 나올지 아무도 보장하지 않는다"는 전혀 다른 층위의 실패다.</p>
 </blockquote>
-
-<h3>8.3 Java / JS·TS — 한 줄 요약</h3>
-<p>
-Java는 낙관적 락이 프레임워크 관용구로 정착한 대표 사례로, JPA의 <code>@Version</code> 필드 하나면 UPDATE에 <code>WHERE version = ?</code>가 자동으로 붙고 0건 갱신 시 예외가 발생한다 — 다만 <strong>재시도는 프레임워크 밖의 책임</strong>이라, 예외를 그대로 흘리면 낙관적 락은 "가끔 실패하는 기능"으로 보인다(충돌 감지는 프레임워크, 충돌 해소는 내 코드).
-JS·TS에서는 격리 수준이 <strong>커넥션·트랜잭션 단위 속성</strong>이라는 점이 관건으로, 풀에서 받은 임의의 커넥션에 <code>SET TRANSACTION ...</code>을 실행하면 엉뚱한 트랜잭션에 적용될 수 있어 트랜잭션 콜백의 옵션으로 지정하는 API가 안전하다.
-</p>
 
 <h2>9. 함께 알면 좋은 것</h2>
 <ul>
