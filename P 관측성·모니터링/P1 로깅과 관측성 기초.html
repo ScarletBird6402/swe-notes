@@ -163,20 +163,77 @@
 
 <h2>★ 6. 언어별 대조</h2>
 <p>
-로깅의 개념(레벨·구조화·컨텍스트)은 언어 중립이지만, 각 생태계가 이를 담아낸 형태 — 표준 라이브러리의 유무, 컨텍스트 전파 방식, 비용 제어 방식 — 는 뚜렷이 다르다.
+지금까지 본 원칙 — 레벨의 일관성, 컨텍스트의 자동 전파, 걸러지는 로그의 비용 제거 — 은 언어 중립적이다. 그런데 이 원칙을 실제로 강제하는 기제는 언어마다 표준 라이브러리의 유무, 동시성 모델, 타입 시스템에 따라 확연히 갈린다.
+특히 "컨텍스트를 어떻게 자동으로 전파하는가"는 그 언어가 요청을 어떻게 처리하는가(스레드 하나당 요청 하나인가, 이벤트 루프에서 콜백이 뒤섞이는가)에 직접 좌우된다.
 </p>
 <table>
-  <tr><th>언어</th><th>대표 도구</th><th>레벨 필터</th><th>요청 컨텍스트(상관관계 ID)</th></tr>
-  <tr><td>Java</td><td>SLF4J(공통 창구) + Logback 등 구현체</td><td>설정 파일로 패키지별 제어</td><td>MDC — 스레드에 붙는 키-값 보관소</td></tr>
-  <tr><td>JS·TS</td><td><code>console</code>(원시적) → pino·winston 등 구조적 로거</td><td>로거 설정</td><td>비동기 체인을 따라가는 저장소(<code>AsyncLocalStorage</code>)</td></tr>
-  <tr><td>Python</td><td>표준 <code>logging</code> 모듈(내장)</td><td>로거 계층 트리로 모듈별 제어</td><td><code>contextvars</code> + 필터/어댑터</td></tr>
-  <tr><td>C++</td><td>표준 로깅 없음 — spdlog 등 라이브러리 선택</td><td>런타임 + <strong>컴파일 타임 제거</strong> 가능</td><td>수동 전달 또는 스레드 로컬 직접 구성</td></tr>
+  <tr><th>언어</th><th>대표 도구</th><th>레벨 제어 기제</th><th>컨텍스트 전파(상관관계 ID)</th><th>비용 제어의 특이점</th></tr>
+  <tr><td>Java</td><td>SLF4J(파사드) + Logback·Log4j2 등 구현체</td><td>설정 파일 기반, 운영 중 재조정 가능</td><td>MDC — 스레드에 붙는 키-값 저장소</td><td>지연 평가 오버로드로 문자열 조립 비용 회피</td></tr>
+  <tr><td>JS·TS</td><td><code>console</code>(원시적) → pino·winston 등 구조적 로거</td><td>로거 인스턴스 설정</td><td><code>AsyncLocalStorage</code> — 비동기 체인을 따라가는 저장소</td><td>동기 I/O로 인한 이벤트 루프 블로킹 회피</td></tr>
+  <tr><td>Python</td><td>표준 <code>logging</code> 모듈(내장)</td><td>로거 이름의 점(.) 구분 계층 트리</td><td><code>contextvars</code> + 필터·어댑터</td><td>포맷 인자 분리를 통한 지연 평가</td></tr>
+  <tr><td>C++</td><td>표준 로깅 없음 — spdlog 등 라이브러리 선택</td><td>런타임 설정 + <strong>컴파일 타임 매크로 제거</strong></td><td>수동 전달 또는 스레드 로컬 직접 구성</td><td>로그 호출 자체를 바이너리에서 제거 + 전역 로거의 초기화 순서</td></tr>
 </table>
 
-<h3>6.1 Python — 로거 "계층 트리"라는 설계</h3>
+<h3>6.1 Java — SLF4J라는 파사드, 그리고 스레드에 묶인 컨텍스트</h3>
 <p>
-Python의 <code>logging</code>은 로거를 이름의 점(.) 구분 계층으로 조직한다: <code>app.db.pool</code> 로거는 <code>app.db</code>의 자식이고, 설정은 부모에서 자식으로 흘러내린다.
-그래서 "우리 앱 전체는 <code>INFO</code>, 단 <code>app.db</code> 계열만 <code>DEBUG</code>"라는 정밀 제어가 코드 수정 없이 가능하다 — 앞서 말한 "레벨 = 계약, 필터로 해상도 조절"이 언어 표준에 내장된 형태다.
+Java 생태계는 이 문서의 원칙 대부분을 표준 관행으로 제도화했다. SLF4J는 파사드(facade — 여러 구현을 하나의 단순한 창구 뒤로 감추는 설계)로, 라이브러리·애플리케이션 코드는 SLF4J의 인터페이스에만 대고 로그를 남기고, 실제로 그 로그를 어디에 어떤 형식으로 쓸지는 배포 시점에 클래스패스에 올라온 구현체(Logback, Log4j2 등)가 결정한다.
+그래서 <strong>코드는 로깅 구현체를 몰라도 되고</strong>, 운영 환경은 설정 파일 하나로 어느 패키지를 어느 레벨로 찍을지 재조정할 수 있다 — 이 재조정은 코드 재배포 없이 설정만 다시 읽어들이는 방식으로 이뤄지는 경우가 많다.
+</p>
+<p>
+컨텍스트 전파는 MDC(Mapped Diagnostic Context — 현재 스레드에 매달리는 키-값 저장소)가 담당한다. Java의 전통적 요청 처리 모델은 "요청 하나당 스레드 하나"이므로, 요청이 들어올 때 MDC에 넣은 상관관계 ID는 그 요청을 처리하는 호출 스택 전체에서 별도로 전달할 필요 없이 자동으로 따라온다.
+</p>
+<pre><code>import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+
+class CheckoutService {
+    private static final Logger log = LoggerFactory.getLogger(CheckoutService.class);
+
+    void process(String requestId, int userId) {
+        MDC.put("correlationId", requestId);   // 이 스레드의 이후 모든 로그에 자동 포함
+        try {
+            log.info("checkout_started userId={}", userId);
+            // ... 비즈니스 로직 ...
+        } finally {
+            MDC.clear();   // 스레드 풀 환경에서 다음 요청으로의 오염을 막는 필수 정리
+        }
+    }
+}</code></pre>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> MDC가 "스레드에 붙는다"는 성질은 축복이자 함정이다. 스레드 풀에서는 스레드가 재사용되므로, <code>finally</code>에서 <code>clear()</code>를 빠뜨리면 다음 요청이 이전 요청의 상관관계 ID를 그대로 물려받는 조용한 오염이 생긴다. 그리고 비동기·리액티브 코드로 넘어가 콜백이 다른 스레드에서 실행되면 MDC는 그 경계를 넘지 못하므로, 스레드를 넘길 때 컨텍스트를 명시적으로 복사해야 한다.</p>
+</blockquote>
+
+<h3>6.2 JS·TS — console의 한계와 이벤트 루프에서 컨텍스트를 잃지 않는 법</h3>
+<p>
+<code>console.log</code>는 레벨도, 필드 구조도, 목적지 전환도 없는 원시적 출력이다. 값을 문자열로 즉시 조립해 표준 출력에 동기적으로 쓰기 때문에, 트래픽이 몰리면 이 출력 자체가 이벤트 루프(자바스크립트가 콜백을 순서대로 꺼내 실행하는 단일 스레드의 처리 루프)를 잠깐씩 막을 수 있다. pino 같은 구조적 로거는 로그를 JSON 레코드로 남기고, 무거운 직렬화·쓰기를 별도 흐름으로 넘겨 이 병목을 줄인다.
+</p>
+<p>
+더 근본적인 문제는 컨텍스트 전파다. Node의 동시성 모델에는 요청마다 배정되는 전용 스레드가 없다 — 하나의 스레드가 여러 요청의 콜백을 번갈아 실행한다. 그래서 Java의 MDC처럼 "현재 스레드"에 상관관계 ID를 걸어 둘 자리가 없고, 과거에는 모든 함수 인자에 ID를 꿰어 넘기거나 요청 객체에 얹어 전달하는 수밖에 없었다.
+<code>AsyncLocalStorage</code>는 이 공백을 메운 해법으로, 저장소에 넣은 값을 콜백·프라미스·<code>await</code> 경계를 넘어서도 그 실행 체인을 따라 자동으로 유지한다.
+</p>
+<pre><code>const { AsyncLocalStorage } = require('node:async_hooks');
+const pino = require('pino');
+
+const logger = pino();
+const als = new AsyncLocalStorage();
+
+function withRequest(correlationId, fn) {
+  als.run({ correlationId }, fn);   // 이 콜백 체인 전체에 컨텍스트가 따라붙는다
+}
+
+async function checkout(userId) {
+  const { correlationId } = als.getStore();     // 인자로 넘기지 않아도 꺼낼 수 있다
+  logger.info({ correlationId, userId }, 'checkout_started');
+  await chargeCard(userId);                     // await 너머에서도 store는 유지된다
+}</code></pre>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> <code>AsyncLocalStorage</code>가 자동으로 따라가는 것은 프라미스 체인·<code>await</code>처럼 언어가 추적하는 비동기 흐름이다. 반면 <code>setTimeout</code>이나 별도 이벤트 리스너처럼 완전히 새 매크로태스크로 갈라지는 지점에서는 체인이 끊길 수 있어, 그런 진입점마다 컨텍스트를 다시 <code>run</code>으로 감싸야 한다는 점을 유의해야 한다.</p>
+</blockquote>
+
+<h3>6.3 Python — 로거 "계층 트리"라는 설계</h3>
+<p>
+Python의 <code>logging</code>은 로거를 이름의 점(.) 구분 계층으로 조직한다: <code>app.db.pool</code> 로거는 <code>app.db</code>의 자식이고, 레벨·핸들러 설정은 부모에서 자식으로 흘러내린다.
+그래서 "앱 전체는 <code>INFO</code>, 단 <code>app.db</code> 계열만 <code>DEBUG</code>"라는 정밀 제어가 코드 수정 없이 가능하다 — "레벨은 계약이고 필터로 해상도를 조절한다"는 원칙이 언어 표준 라이브러리의 객체 모델(로거 인스턴스 사이의 부모-자식 관계)에 그대로 내장된 형태다.
 </p>
 <pre><code>import logging, contextvars
 
@@ -187,42 +244,44 @@ class CorrelationFilter(logging.Filter):
         record.correlation_id = correlation_id.get()  # 모든 레코드에 자동 주입
         return True
 
-logger = logging.getLogger("app.checkout")   # "app"의 자식 — 설정 상속
+logger = logging.getLogger("app.checkout")   # "app"의 자식 — 설정을 상속
 logger.addFilter(CorrelationFilter())
 
 # 요청 진입 지점에서:
 correlation_id.set("a1b2c3")
-logger.info("checkout_started", extra={"user_id": 42})
-</code></pre>
-<p>
-<code>Python 관점의 통찰: logger.debug("value=%s", big_obj)처럼 포맷 인자를 분리하면, 레벨이 걸러질 때 문자열 조립 자체가 생략된다 — f-string으로 미리 조립해 넘기는 순간 이 지연 평가의 이점을 스스로 버리는 셈이다. "걸러질 로그는 비용도 걸러져야 한다"는 원칙의 표준 관용구다.</code>
-</p>
+logger.info("checkout_started", extra={"user_id": 42})</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> <code>logger.debug("value=%s", big_obj)</code>처럼 포맷 인자를 분리해 넘기면, 레벨이 걸러질 때 문자열 조립 자체가 생략된다 — f-string으로 미리 조립해서 넘기는 순간 이 지연 평가의 이점을 스스로 버리는 셈이다. "걸러질 로그는 비용도 걸러져야 한다"는 원칙이 표준 라이브러리의 관용구로 굳어진 예다.</p>
+</blockquote>
 
-<h3>6.2 C++ — 표준이 없다는 것, 그리고 비용을 컴파일 타임에 지우는 것</h3>
+<h3>6.4 C++ — 표준이 없다는 것, 그리고 비용과 수명을 컴파일 타임에 다루는 것</h3>
 <p>
 C++에는 표준 로깅이 없어 라이브러리(예: spdlog)를 선택하게 되는데, 이 생태계가 성능에 민감한 만큼 로깅 비용 제어가 언어 특성과 깊게 얽힌다.
 핵심 기제는 두 가지다. 첫째, 포맷팅을 호출 시점이 아니라 필터 통과 후로 미루는 API 설계. 둘째, 매크로와 컴파일 타임 상수를 이용해 <strong>일정 레벨 이하의 로그 호출을 바이너리에서 아예 제거</strong>하는 것 — 걸러지는 수준이 아니라, 기계어에 존재하지 않게 만든다.
 </p>
+<p>
+비용뿐 아니라 <strong>수명</strong>도 문제가 된다. 로거 객체를 평범한 전역 변수로 선언하면, 서로 다른 번역 단위(translation unit — 소스 파일 하나가 컴파일되는 단위)에 걸친 전역 객체들의 초기화 순서는 표준이 보장하지 않는다(정적 초기화 순서 문제, static initialization order fiasco). 다른 전역 객체의 생성자가 아직 만들어지지 않은 로거를 먼저 사용하면 정의되지 않은 동작으로 이어진다.
+이를 피하는 관용 기법이 함수 지역 <code>static</code>(Meyer's singleton — 함수가 처음 호출될 때 한 번만 초기화되는 지역 정적 변수를 이용한 지연 생성 패턴)이다.
+</p>
 <pre><code>#include &lt;spdlog/spdlog.h&gt;
+#include &lt;memory&gt;
+
+// 전역 로거를 "함수 지역 static"으로 감싸 초기화 순서 문제를 피한다
+// — 다른 전역 객체의 생성자에서 먼저 호출돼도 이 시점에야 비로소 생성된다
+std::shared_ptr&lt;spdlog::logger&gt;&amp; app_logger() {
+    static std::shared_ptr&lt;spdlog::logger&gt; logger = spdlog::stdout_color_mt("app");
+    return logger;
+}
 
 // 컴파일 타임 레벨: 이보다 낮은 로그는 코드 자체가 사라짐
 // (빌드 옵션) -DSPDLOG_ACTIVE_LEVEL=SPDLOG_LEVEL_INFO
-
 void process(int user_id) {
-    // 포맷 인자 분리 — INFO 미만이 걸러지면 조립도 일어나지 않음
-    SPDLOG_DEBUG("cache state user={}", user_id);   // 릴리스 빌드에서 소멸
-    SPDLOG_INFO("checkout_started user={}", user_id);
-}
-</code></pre>
-<p>
-<code>C++ 관점의 통찰: "런타임에 거른다"와 "컴파일 타임에 지운다"는 결과가 같아 보여도 다르다 — 전자는 분기 비용과 코드 크기가 남고, 후자는 흔적이 없다. 대신 후자는 배포 후 레벨을 내려도 그 로그를 되살릴 수 없다. 관찰 가능성과 성능을 맞바꾸는 트레이드오프를 빌드 시점에 확정하는 셈이다.</code>
-</p>
-
-<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
-<p>
-Java는 "인터페이스(SLF4J)와 구현(Logback 등)의 분리 + MDC"로 이 문서의 개념 전부가 생태계 표준으로 제도화된 경우다 — 상관관계 ID는 MDC에 넣으면 모든 라인에 자동으로 붙는다.
-JS·TS(Node)는 <code>console.log</code> 문화에서 출발했지만, 운영 수준에서는 구조적 로거로 넘어가며, 비동기 콜백을 넘나드는 요청 컨텍스트 유지가 최대 난제라 <code>AsyncLocalStorage</code>가 그 답으로 자리잡았다.
-</p>
+    SPDLOG_LOGGER_DEBUG(app_logger(), "cache state user={}", user_id);   // 릴리스 빌드에서 소멸
+    SPDLOG_LOGGER_INFO(app_logger(), "checkout_started user={}", user_id);
+}</code></pre>
+<blockquote class="info">
+<p><strong>C++ 관점의 통찰:</strong> "런타임에 거른다"와 "컴파일 타임에 지운다"는 결과가 같아 보여도 다르다 — 전자는 분기 비용과 코드 크기가 남고, 후자는 흔적이 없는 대신 배포 후 레벨을 내려도 그 로그를 되살릴 수 없다. 그리고 로거를 일반 전역 변수로 두면 이 비용 최적화 이전에 "초기화되지 않은 로거에 접근"이라는 더 근본적인 수명 문제가 먼저 터질 수 있다는 점에서, C++의 로깅은 성능 설계이자 동시에 객체 수명 설계다.</p>
+</blockquote>
 
 <h2>7. 함께 알면 좋은 것</h2>
 <ul>
