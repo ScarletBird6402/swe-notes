@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J11 테스트 결정성과 환경 의존 함정</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>J11 테스트 결정성과 환경 의존 함정</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>테스트의 가치는 <strong>"실패 = 결함"이라는 등식</strong>에서 나온다. 같은 코드·같은 입력에 대해 결과가 실행마다 달라지는 순간 이 등식이 깨지고, 테스트는 신호가 아니라 소음이 된다.</li>
+  <li>그렇게 코드 변경 없이 통과와 실패를 오가는 테스트가 <strong>플래키 테스트(flaky test)</strong>다. 진짜 비용은 실패 한 번이 아니라 <strong>"빨간불은 재실행하면 된다"는 학습</strong> — 이후의 진짜 결함까지 같은 취급을 받는다.</li>
+  <li>비결정성의 원천은 다섯 갈래로 정리된다: <strong>① 시각 ② 순서 ③ 동시성 ④ 외부 I/O ⑤ 로케일·타임존·환경.</strong> 공통 구조는 하나 — 테스트가 통제하지 않은 <strong>암묵 입력</strong>이 결과에 섞여 든다는 것.</li>
+  <li>고정 기법도 갈래마다 정해져 있다: 시각은 <strong>시계 주입</strong>, 순서는 <strong>정렬·집합 비교와 테스트 간 독립</strong>, 동시성은 <strong>동기화 지점 노출과 래치</strong>, 외부 I/O는 <strong>대역과 임시 디렉터리</strong>, 환경은 <strong>테스트 안에서의 명시 고정</strong>(UTC·ROOT 로케일).</li>
+  <li>두 안티패턴을 경계한다: <strong>sleep으로 기다리기</strong>(타이밍을 가정으로 굳힘)와 <strong>재시도로 덮기</strong>(신호를 은폐함). 둘 다 비결정성을 없애지 않고 숨긴다.</li>
+  <li>언어마다 "어떤 갈래가 특히 위험한가"가 다르다: Java는 전역 기본값 오염, JS·TS는 가짜 타이머의 범위, Python은 해시 무작위화와 패치 위치, C++은 미정의 동작이 비결정성으로 위장하는 문제.</li>
+</ul>
+
+<h2>1. 전제 — 결정적 테스트가 왜 출발점인가</h2>
+<p>
+테스트가 결정적(deterministic)이라는 말은 <strong>같은 코드와 같은 입력에 대해 언제, 어디서, 몇 번을 실행해도 같은 결과</strong>가 나온다는 뜻이다.
+너무 당연해서 언급조차 안 되는 이 성질이 사실 테스트라는 도구 전체의 토대다. 자동화된 테스트가 하는 일은 결국 <strong>"실패하면 결함이 있다"는 등식을 기계에게 맡기는 것</strong>인데, 이 등식은 결과가 코드에만 의존할 때만 성립한다.
+</p>
+<p>
+등식의 다른 방향도 같은 전제 위에 있다. "통과하면 이 요구사항은 지켜졌다"는 믿음은, 통과가 우연이 아닐 때만 의미가 있다. 결과에 코드 이외의 것 — 지금 시각, 머신의 속도, 운영체제의 언어 설정 — 이 섞여 들면 통과도 실패도 코드에 대한 정보를 담지 않게 된다.
+</p>
+<p>
+그런데 이 전제는 자주 깨진다. 코드를 한 줄도 바꾸지 않았는데 어제는 초록, 오늘은 빨강인 테스트를 누구나 만난다. 그 테스트는 무엇이고, 왜 단순히 "가끔 실패하는 테스트" 이상의 문제인가.
+</p>
+
+<h2>2. 플래키 테스트 — 정의와 진짜 비용</h2>
+<p>
+플래키 테스트는 <strong>코드 변경 없이 통과와 실패를 오가는 테스트</strong>다. 정의의 핵심은 "가끔 실패한다"가 아니라 "<em>같은 코드에 대해</em> 결과가 다르다"는 점이다 — 1절의 등식이 정확히 이 지점에서 깨진다.
+</p>
+<p>
+비용을 실패 횟수로 세면 과소평가하게 된다. 진짜 비용은 <strong>학습 효과</strong>다. 빨간불을 봤는데 재실행하니 초록이 되는 경험이 몇 번 쌓이면, 팀은 "빨간불은 일단 다시 돌려 본다"를 배운다. 이 학습은 플래키 테스트 하나에 국한되지 않는다 — 같은 스위트의 <em>진짜 결함이 만든 빨간불</em>도 같은 취급을 받고, 그 순간 테스트 스위트 전체가 무시해도 되는 소음으로 강등된다.
+</p>
+<blockquote class="warn">
+<p><strong>신호 무시의 비대칭:</strong> 플래키 테스트 한 개가 만드는 손실은 그 테스트의 검증력이 아니라 <strong>나머지 모든 테스트의 신뢰</strong>다. 100개 중 1개가 무작위로 실패하는 스위트에서 "빨간불 = 결함"이라는 반응은 유지되지 않는다. 그래서 플래키 테스트의 처리는 "고치거나 격리한다"이지 "그냥 둔다"가 아니다.</p>
+</blockquote>
+<p>
+플래키함은 증상이지 원인이 아니다. 고치려면 결과에 섞여 든 <strong>코드 이외의 입력</strong>이 무엇인지 알아야 한다. 그 입력들은 무작위로 흩어져 있지 않고, 몇 가지 갈래로 정리된다.
+</p>
+
+<h2>3. 비결정성의 원천 — 다섯 갈래</h2>
+<p>
+테스트가 통제하지 않았는데 결과에 영향을 주는 입력을 <strong>암묵 입력</strong>이라 부르자. 명시 입력(인자·픽스처)은 테스트가 정하지만, 암묵 입력은 실행 환경이 정한다. 비결정성의 원천은 이 암묵 입력이 어디서 오느냐에 따라 다섯 갈래로 나뉜다. 이 문서 전체를 관통하는 예제로 "할인 쿠폰의 만료 여부를 판정하고 만료 안내를 보내는 서비스"를 두고 갈래마다 어떻게 새는지 보자.
+</p>
+<table>
+  <tr><th>갈래</th><th>암묵 입력</th><th>예제에서의 증상</th><th>왜 숨어 있는가</th></tr>
+  <tr>
+    <td>① 시각</td>
+    <td>"지금"이 언제인가</td>
+    <td>"3월 15일까지 유효" 쿠폰 테스트가 3월 16일부터 실패</td>
+    <td><code>now()</code>는 인자가 없어 입력처럼 보이지 않는다</td>
+  </tr>
+  <tr>
+    <td>② 순서</td>
+    <td>컬렉션 순회 순서·테스트 실행 순서</td>
+    <td>만료 쿠폰 목록을 리스트로 비교 — 어떤 실행에서는 원소 순서가 뒤바뀜; 앞 테스트가 남긴 상태에 뒷 테스트가 의존</td>
+    <td>"항상 이 순서였다"는 관찰이 보증으로 오인된다</td>
+  </tr>
+  <tr>
+    <td>③ 동시성</td>
+    <td>스레드·비동기 작업의 완료 타이밍</td>
+    <td>만료 안내를 비동기로 보내는데, 검증 시점에 아직 안 보내졌을 때가 있음</td>
+    <td>빠른 머신에서는 거의 항상 제때 끝나 "보통은 통과"한다</td>
+  </tr>
+  <tr>
+    <td>④ 외부 I/O</td>
+    <td>네트워크·파일 시스템·DB·난수</td>
+    <td>이전 실행이 남긴 파일이 있으면 통과, 없으면 실패; 네트워크 상대가 느리면 타임아웃</td>
+    <td>프로세스 밖 상태는 테스트가 볼 수 없다</td>
+  </tr>
+  <tr>
+    <td>⑤ 로케일·타임존·환경</td>
+    <td>운영체제·런타임의 기본 설정</td>
+    <td>"만료: 2026. 3. 15." 문자열 비교가 다른 언어 설정의 머신에서 실패; 자정 근처 판정이 타임존마다 다른 날짜가 됨</td>
+    <td>개발 머신 설정이 곧 세계의 기본값처럼 느껴진다</td>
+  </tr>
+</table>
+<p>
+다섯 갈래의 공통 구조가 보인다: <strong>모두 "테스트가 정하지 않은 값"이 결과에 참여한다.</strong> 따라서 고정 기법의 공통 원리도 하나다 — <strong>암묵 입력을 명시 입력으로 끌어올린다.</strong> 갈래마다 끌어올리는 방법이 다를 뿐이다. 첫 번째이자 가장 흔한 갈래, 시각부터 본다.
+</p>
+
+<h2>4. 시각 고정 — 시계를 주입한다</h2>
+<p>
+시각이 가장 흔한 원천인 이유는 표의 마지막 열에 있다: <code>now()</code>는 <strong>인자 없는 호출</strong>이라 입력처럼 보이지 않는다. 하지만 "지금이 몇 시인가"는 명백히 판정 결과를 바꾸는 값이고, 그렇다면 다른 입력과 똑같이 <strong>바깥에서 받아야</strong> 한다.
+</p>
+<p>
+받는 통로가 <strong>시계(clock) 주입</strong>이다. "현재 시각을 알려 주는 객체"를 협력자로 취급해 생성자로 받고, 운영에서는 실제 시계를, 테스트에서는 <strong>고정된 시각을 돌려주는 시계</strong>를 넣는다. 이것은 테스트 더블의 한 형태(J1의 stub)이면서, 시각을 다루는 코드 설계 자체의 원칙이기도 하다.
+</p>
+<pre><code>// 대상 코드: "지금"을 직접 묻지 않고 시계에게 묻는다
+public class CouponService {
+    private final Clock clock;                          // java.time.Clock — 협력자로 주입
+    public CouponService(Clock clock) { this.clock = clock; }
+
+    public boolean isExpired(Coupon coupon) {
+        LocalDate today = LocalDate.now(clock);         // LocalDate.now()가 아니라 now(clock)
+        return today.isAfter(coupon.expiresOn());
+    }
+}
+
+// 테스트: 시각을 명시 입력으로 끌어올렸으므로, 어느 날 실행해도 결과가 같다
+@Test
+void 만료일_다음날부터_만료다() {
+    Clock fixed = Clock.fixed(Instant.parse("2026-03-16T00:00:00Z"), ZoneOffset.UTC);
+    var service = new CouponService(fixed);
+    assertTrue(service.isExpired(new Coupon(LocalDate.of(2026, 3, 15))));
+}</code></pre>
+<p>
+주입할 시계에 <strong>타임존까지 함께 고정</strong>한 점에 주목하자. <code>Clock.fixed</code>가 시각(instant)과 존(zone) 둘을 받는 이유는, "지금이 몇 일인가"가 시각만으로는 정해지지 않기 때문이다 — 같은 순간이 UTC에서는 3월 15일이고 서울에서는 3월 16일일 수 있다. C20이 다룬 "벽시계 시간 + 타임존 = 시각"의 구분이 테스트에서 그대로 재현되며, 테스트가 고정해야 할 것은 시각과 존 <em>둘 다</em>다.
+</p>
+<blockquote class="info">
+<p><strong>대안과 그 한계:</strong> 시계 주입 대신 <em>런타임의 시각 함수 자체를 가로채는</em> 도구(가짜 타이머·시간 정지 라이브러리)도 있다. 설계를 바꾸지 않아도 되는 대신, 그 효과가 <strong>전역</strong>이라는 대가를 치른다 — 어떤 코드가 시각에 의존하는지가 드러나지 않고, 복원을 잊으면 다음 테스트로 오염이 번진다(J7의 생명주기 문제). 두 방식의 자리는 ★절에서 언어별로 구분한다.</p>
+</blockquote>
+<p>
+시각은 "한 값을 고정하면 끝나는" 가장 단순한 갈래였다. 그런데 ②순서와 ③동시성은 고정할 <em>값</em>이 아니라 고정할 <em>관계</em>가 문제다 — 무엇이 무엇보다 먼저인가.
+</p>
+
+<h2>5. 순서·동시성 고정 — 관계를 명시한다</h2>
+<p>
+순서의 비결정성은 두 층위에서 온다. 첫째는 <strong>데이터의 순서</strong> — 집합·해시 맵처럼 순서를 보증하지 않는 컬렉션을 순회한 결과를 리스트로 비교하는 경우다. 둘째는 <strong>테스트의 순서</strong> — 앞 테스트가 남긴 상태(정적 필드, 캐시, 파일)에 뒷 테스트가 기대는 경우다.
+</p>
+<p>
+첫째의 고정은 <strong>비교 자체를 순서 무관하게</strong> 만드는 것이다: 결과를 정렬한 뒤 비교하거나, 처음부터 집합으로 비교한다. "요구사항이 순서를 말하지 않는다면 테스트도 순서를 말하지 않는다"는 원칙 — 순서를 검증한다면 그것은 요구사항이어야 하고, 그러면 대상 코드가 순서를 보증하는 컬렉션을 써야 한다.
+둘째의 고정은 <strong>테스트 간 독립성</strong>이다: 각 테스트는 자기 상태를 스스로 만들고 스스로 치운다. 이것이 지켜졌는지 확인하는 유일한 방법은 <strong>순서를 실제로 뒤섞어 돌려 보는 것</strong>이며, 대부분의 러너가 무작위 순서 실행을 지원하는 이유다(★절).
+</p>
+<p>
+동시성은 순서 문제의 확장판이다 — "작업 A가 끝난 뒤에 검증한다"는 관계를 코드가 보장하지 않으면, 검증이 A보다 먼저 실행되는 실행이 언젠가는 나온다. 고정 기법은 <strong>완료를 알리는 동기화 지점을 대상 코드가 노출</strong>하게 만들고, 테스트는 그 지점을 <strong>기다린 뒤</strong> 검증하는 것이다.
+</p>
+<div class="flow">[타이밍에 기대는 테스트]                 [동기화 지점을 기다리는 테스트]
+
+  service.notifyExpired(coupon)             service.notifyExpired(coupon)
+       │  (비동기로 발송)                        │  (비동기로 발송)
+  sleep(200ms)  ◀─ "이 정도면 끝났겠지"     latch.await(deadline)  ◀─ 완료 신호를 기다림
+       │                                        │  (신호가 오면 즉시, 안 오면 deadline에 실패)
+  verify(sent)  ← 느린 머신에서는 아직 안 끝남   verify(sent)  ← 완료가 보장된 뒤 검증</div>
+<p>
+오른쪽의 <strong>래치(latch)</strong>는 "N번의 완료 신호를 받을 때까지 대기하는" 동기화 도구다. 발송 완료 시 래치를 내리도록 대역 알림기를 구성하면, 테스트는 정확히 필요한 만큼만 기다린다. 마감 시한(deadline)이 붙어 있는 이유는 성공 판정이 아니라 <strong>영원히 멈추지 않기 위한 실패 판정</strong>용이다 — 시간은 "안 왔다"를 판단하는 안전망이지 "왔다"를 판단하는 근거가 아니다.
+</p>
+<p>
+여기까지의 갈래는 모두 프로세스 안에서 해결됐다. 남은 두 갈래 — 외부 I/O와 환경 설정 — 는 프로세스 <em>밖</em>에서 들어오는 입력이라 방식이 조금 달라진다.
+</p>
+
+<h2>6. 외부 I/O·환경 고정 — 바깥을 안으로 끌어온다</h2>
+<p>
+외부 I/O의 고정 원칙은 J1에서 온다: 프로세스 밖 자원(네트워크·DB·외부 서비스)은 <strong>대역으로 대체</strong>한다. 결정성 관점에서 이유를 다시 쓰면, 바깥 자원은 테스트가 상태를 통제할 수 없으므로 암묵 입력의 덩어리다. 난수도 같은 부류다 — 난수 생성기를 협력자로 주입하거나 시드를 고정한다.
+</p>
+<p>
+파일 시스템은 대체하기보다 <strong>격리</strong>하는 편이 자연스럽다. 러너가 제공하는 <strong>임시 디렉터리</strong>(테스트마다 새로 만들고 끝나면 지우는 경로)를 쓰면, "이전 실행이 남긴 파일"이라는 암묵 입력이 구조적으로 사라진다. 고정 경로(<code>/tmp/test.txt</code>)를 쓰는 테스트는 그 자체로 순서 의존이기도 하다 — 병렬로 돌면 서로의 파일을 덮어쓴다.
+</p>
+<p>
+마지막 갈래인 <strong>로케일·타임존·환경 변수</strong>는 가장 늦게 발각되는 축이다. 개발 머신에서 몇 달을 통과하다가 다른 언어 설정의 머신이나 UTC로 돌아가는 서버에 올라간 순간 깨진다. 고정 원칙은 두 겹이다:
+</p>
+<ul>
+  <li><strong>대상 코드에서</strong>: 사용자에게 보여 주는 문자열을 만들 때 로케일과 존을 <em>명시적으로 인자로</em> 받는다(C20의 원칙). 기본값에 기대는 코드는 이미 환경 의존이다.</li>
+  <li><strong>테스트에서</strong>: 그래도 기본값이 참여하는 경로가 있다면, 테스트가 <strong>UTC와 ROOT(언어 중립) 로케일을 명시적으로 고정</strong>한다. 단, 고정 방식이 "런타임 전역 기본값 변경"이라면 4절의 정보 상자와 같은 오염 문제가 따라온다 — 반드시 복원하고, 병렬 실행과 충돌하지 않게 한다.</li>
+</ul>
+<blockquote class="ok">
+<p><strong>다섯 갈래의 고정 기법 한 줄 정리:</strong> 시각 → 시계 주입 / 순서 → 정렬·집합 비교 + 테스트 독립 + 무작위 순서 실행 / 동시성 → 동기화 지점 노출 + 래치 / 외부 I/O → 대역·시드 고정·임시 디렉터리 / 환경 → 코드는 명시 인자, 테스트는 UTC·ROOT 고정. 모두 <strong>"암묵 입력을 명시 입력으로"</strong>의 변주다.</p>
+</blockquote>
+<p>
+고정 기법이 갈래마다 있는데도 플래키 테스트가 사라지지 않는 것은, 고정 대신 <strong>덮는</strong> 쪽이 당장은 더 쉽기 때문이다. 대표적인 두 가지를 짚는다.
+</p>
+
+<h2>7. 두 안티패턴 — sleep으로 기다리기, 재시도로 덮기</h2>
+<p>
+<strong>sleep으로 기다리기</strong>는 5절 흐름도의 왼쪽이다. 문제는 sleep이 "끝났다"를 확인하지 않고 "이 정도면 끝났겠지"라는 <strong>타이밍 가정</strong>을 코드에 굳힌다는 것이다. 가정은 양쪽으로 틀린다 — 느린 머신(부하 중인 빌드 서버)에서는 짧아서 실패하고, 빠른 머신에서는 길어서 시간을 버린다. 그래서 대응은 늘 sleep을 늘리는 쪽으로 흐르고, 스위트는 느려지면서도 여전히 가끔 실패한다. 고정은 5절대로 <strong>완료 신호를 기다리는 것</strong>이며, 신호를 노출할 수 없는 대상이라면 "조건이 참이 될 때까지 짧게 반복 확인하되 마감 시한을 둔다"가 차선이다 — 이 경우에도 시간은 실패 판정에만 쓰인다.
+</p>
+<p>
+<strong>재시도로 덮기</strong>는 더 교묘하다. 러너의 "실패 시 N회 재시도" 기능을 켜면 플래키 테스트는 통계적으로 초록이 되고, 문제가 해결된 것처럼 보인다. 그러나 이것은 2절의 신호 무시를 <strong>자동화</strong>한 것이다 — 게다가 재시도로 덮인 실패 중 일부는 플래키가 아니라 <strong>진짜 동시성 결함</strong>(경쟁 조건이 가끔 드러난 것)이고, 재시도는 그 결함을 운영으로 보낸다.
+</p>
+<blockquote class="warn">
+<p><strong>재시도의 정당한 자리:</strong> 재시도가 정당한 유일한 경우는 <em>대상 코드의 요구사항</em>이 재시도일 때(외부 호출의 일시 장애 복구 정책)이고, 그때 테스트할 것은 "재시도 정책이 맞게 동작하는가"다. 테스트 <em>러너</em>의 재시도는 원인 추적 중인 테스트를 임시 격리(quarantine)하는 용도 이상으로 쓰지 않는다.</p>
+</blockquote>
+<p>
+두 안티패턴의 공통점은 <strong>비결정성을 제거하지 않고 확률을 낮춘다</strong>는 것이다. 확률을 낮춘 테스트는 실행 횟수가 늘면 다시 실패한다. 이제 이 판단을 둘러싼 흔한 오해들을 정리한다.
+</p>
+
+<h2>8. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "100번 돌려서 100번 통과했으니 결정적이다"?</strong> — 결정성은 관찰로 증명되지 않는다. 100번 통과는 "실패 확률이 1% 미만일 것"을 말할 뿐이고, 부하가 다른 머신에서는 그 확률이 달라진다. 결정성은 <em>암묵 입력이 없다</em>는 구조적 사실로만 보장되며, 반복 실행은 결정성을 증명하는 도구가 아니라 <strong>비결정성을 발각하는</strong> 도구다.</p>
+<p><strong>② "시각을 고정했으니 날짜 테스트는 안전하다"?</strong> — 4절대로 시각과 존을 둘 다 고정했는지 확인해야 한다. 시각만 고정하고 존은 런타임 기본값에 맡기면, 자정 근처의 시각은 머신마다 다른 날짜가 된다. 또 고정한 시각이 <em>경계값</em>인지도 본다 — 만료 판정을 "만료일 정오"로만 테스트하면 "만료일 자정 직전·직후"의 결함은 통과한다.</p>
+<p><strong>③ "테스트를 병렬로 돌리면 플래키해지니 병렬은 끄자"?</strong> — 순서를 뒤집었다. 병렬 실행은 비결정성을 <em>만드는</em> 것이 아니라 이미 있던 순서 의존·전역 상태 공유를 <em>드러내는</em> 것이다. 병렬을 끄면 증상이 사라질 뿐 의존은 남고, 다음 순서 변경(테스트 추가·삭제)에서 다시 나타난다. 답은 5절의 독립성이며, 공유가 불가피한 자원은 잠금으로 직렬화한다.</p>
+<p><strong>④ "플래키 테스트는 테스트의 결함이다"?</strong> — 절반만 맞다. 시각·로케일 의존은 대개 테스트(또는 테스트 용이성 설계)의 문제지만, 동시성 갈래의 플래키함은 <strong>대상 코드의 경쟁 조건</strong>인 경우가 많다. "가끔 실패"를 테스트 탓으로 돌려 재시도로 덮기 전에, 그 실패가 운영에서도 재현될 수 있는 결함인지부터 묻는다.</p>
+</blockquote>
+
+<h2>★ 9. 언어별 대조</h2>
+<p>
+다섯 갈래의 원리는 언어 중립이지만, 각 언어의 테스트 도구가 어느 갈래를 어떤 API로 고정하는지, 그리고 그 언어의 런타임이 어느 갈래를 특히 위험하게 만드는지는 서로 다르다. 아래 표는 이 문서의 기법이 각 도구에서 어떤 이름으로 나타나는지의 대응표다.
+</p>
+<table>
+  <tr><th>언어 / 도구</th><th>시각 고정</th><th>순서·병렬 격리</th><th>환경(타임존·로케일·파일)</th><th>그 언어만의 함정</th></tr>
+  <tr>
+    <td>Java / JUnit 5 + Mockito</td>
+    <td><code>Clock</code> 주입 + <code>Clock.fixed</code> (설계 방식)</td>
+    <td><code>@Execution(CONCURRENT)</code>·<code>@ResourceLock</code>·<code>@Isolated</code></td>
+    <td><code>@TempDir</code>; 존·로케일은 <code>setDefault</code>가 JVM 전역</td>
+    <td><code>Set.of</code>·<code>Map.of</code>의 순회 순서가 실행마다 다름, 전역 기본값 오염</td>
+  </tr>
+  <tr>
+    <td>JS·TS / Jest · Vitest</td>
+    <td><code>useFakeTimers()</code> + <code>setSystemTime()</code> (전역 가로채기 방식)</td>
+    <td>파일 단위 워커 격리가 기본, 파일 안은 순차</td>
+    <td><code>TZ</code> 환경 변수는 프로세스 시작 전에; <code>Intl</code>은 ICU 데이터 의존</td>
+    <td>가짜 타이머가 가로채지 않는 큐(<code>nextTick</code> 등), 복원 누락</td>
+  </tr>
+  <tr>
+    <td>Python / pytest + unittest.mock</td>
+    <td>시계 주입 또는 시간 정지 라이브러리(freezegun·time-machine 계열)</td>
+    <td><code>pytest-randomly</code>로 순서 뒤섞기, <code>pytest-xdist</code>로 병렬</td>
+    <td><code>tmp_path</code>·<code>monkeypatch.setenv</code></td>
+    <td>문자열 해시 무작위화로 <code>set</code> 순회 순서가 프로세스마다 다름, <code>datetime</code>은 패치 불가 타입</td>
+  </tr>
+  <tr>
+    <td>C++ / GoogleTest + GoogleMock</td>
+    <td>클록을 인터페이스(gMock) 또는 템플릿 매개변수로 주입 — 가로채기 불가</td>
+    <td><code>--gtest_shuffle</code>·<code>--gtest_repeat</code>·<code>--gtest_random_seed</code></td>
+    <td><code>std::locale::global</code> 전역, 임시 디렉터리는 직접 관리</td>
+    <td>미정의 동작이 비결정성으로 위장, 정적 초기화 순서가 링크 순서에 의존</td>
+  </tr>
+</table>
+
+<h3>9.1 Java — JUnit 5 + Mockito</h3>
+<p>
+Java는 시각 갈래의 정답이 표준 라이브러리에 들어 있는 언어다. <code>java.time</code>의 <code>now()</code> 계열은 모두 <code>Clock</code>을 인자로 받는 오버로드를 가지므로, 4절의 시계 주입이 언어 관례와 일치한다. 반대로 Mockito의 정적 메서드 가로채기(<code>mockStatic(Instant.class)</code>)로 <code>Instant.now()</code>를 덮는 것도 가능하지만, 그 효과는 <strong>현재 스레드 범위의 전역</strong>이라 반드시 닫아야 하고, 어떤 코드가 시각에 의존하는지를 숨긴다 — 4절의 정보 상자가 말한 대가다. 이 언어에서 특히 조심할 갈래는 <strong>전역 기본값 오염</strong>이다.
+</p>
+<pre><code>@Execution(ExecutionMode.CONCURRENT)          // junit.jupiter.execution.parallel.enabled=true 가 전제
+class CouponFormatterTest {
+
+    @TempDir Path tempDir;                    // 테스트마다 새 임시 디렉터리, 종료 시 자동 삭제
+
+    @Test
+    @ResourceLock(Resources.TIME_ZONE)        // 전역 기본값을 만지는 테스트끼리는 직렬화
+    void 만료일_표시는_UTC_기준이다() {
+        TimeZone saved = TimeZone.getDefault();
+        try {
+            TimeZone.setDefault(TimeZone.getTimeZone("UTC"));   // JVM 전역 — 다른 스레드의 테스트도 본다
+            var text = new CouponFormatter().expiryLabel(Instant.parse("2026-03-15T23:30:00Z"));
+            assertEquals("2026-03-15", text);
+        } finally {
+            TimeZone.setDefault(saved);       // 복원을 잊으면 이후 모든 테스트가 UTC로 돈다
+        }
+    }
+
+    @Test
+    void 만료_쿠폰_목록은_순서_무관하게_비교한다() {
+        Set&lt;String&gt; expired = service.expiredCodes();          // Set.of(...)로 만들어졌다면
+        assertEquals(Set.of("A1", "B2"), expired);              // 리스트로 바꿔 비교하면 실행마다 순서가 다르다
+    }
+}</code></pre>
+<p>
+첫 번째 함정은 <code>TimeZone.setDefault</code>·<code>Locale.setDefault</code>가 <strong>JVM 전체</strong>의 값을 바꾼다는 것이다. JUnit 5의 병렬 실행(<code>@Execution(CONCURRENT)</code>)을 켜면 다른 스레드에서 도는 테스트가 바뀐 기본값을 그대로 보게 되므로, 전역을 만지는 테스트는 <code>@ResourceLock</code>으로 서로 직렬화하거나 <code>@Isolated</code>로 단독 실행시켜야 한다. 더 나은 답은 물론 전역을 만질 필요가 없게 존을 인자로 받는 설계다.
+두 번째 함정은 순서 갈래의 교과서적 사례다. Java 9부터 <code>Set.of</code>·<code>Map.of</code>가 만드는 불변 컬렉션은 <strong>순회 순서가 JVM 실행마다 의도적으로 달라지도록</strong> 설계되어 있다 — 순서에 기대는 코드를 일찍 발각시키려는 결정이다. 리스트로 변환해 순서까지 비교하는 테스트는 "어제는 통과했는데"의 전형이 된다.
+</p>
+
+<h3>9.2 JS·TS — Jest / Vitest</h3>
+<p>
+JS 생태계는 시각 갈래를 <strong>가로채기 방식</strong>으로 푸는 것이 관례다. <code>jest.useFakeTimers()</code> / <code>vi.useFakeTimers()</code>는 <code>Date</code>·<code>setTimeout</code> 같은 전역 시간 API를 가짜로 바꾸고, <code>setSystemTime()</code>으로 "지금"을 정한다. Jest는 27부터 이 구현(이른바 modern 타이머)이 기본이고, Vitest도 같은 계열 라이브러리 위에 있어 API가 거의 같다. 시계 주입 없이도 되는 대신, <strong>가로채는 범위와 복원</strong>이 이 언어의 함정이 된다.
+</p>
+<pre><code>import { vi, it, expect, afterEach } from 'vitest';   // Jest라면 vi → jest
+import { CouponService } from './CouponService';
+
+afterEach(() =&gt; vi.useRealTimers());                   // 복원을 빠뜨리면 다음 테스트의 "지금"이 오염된다
+
+it('만료일 다음날부터 만료다', () =&gt; {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-03-16T00:00:00Z'));  // Date.now()·new Date()가 이 시각을 돌려준다
+  const service = new CouponService();
+  expect(service.isExpired({ expiresOn: '2026-03-15' })).toBe(true);
+});
+
+it('만료 안내는 비동기 발송 완료 뒤에 검증한다', async () =&gt; {
+  vi.useFakeTimers();
+  const notifier = { send: vi.fn() };
+  const service = new CouponService(notifier);
+  service.notifyExpiredLater({ code: 'A1' }, 5_000);   // 5초 뒤 발송을 예약
+  await vi.advanceTimersByTimeAsync(5_000);             // 실제로 5초를 기다리지 않고 타이머를 진행
+  expect(notifier.send).toHaveBeenCalledWith('A1');
+});</code></pre>
+<p>
+첫 번째 함정은 <strong>가로채기의 범위</strong>다. 가짜 타이머는 매크로태스크 계열(타이머·<code>Date</code>)을 바꾸지만, Vitest는 기본값으로 <code>process.nextTick</code>과 <code>queueMicrotask</code>는 가로채지 않는다(옵션으로 켤 수 있고, 2020년대 중반 기준 <code>forks</code> 풀에서는 <code>nextTick</code> 가로채기가 지원되지 않는다). 그래서 "타이머를 진행했는데 왜 콜백이 안 왔지"는 대개 이벤트 루프의 어느 큐를 가로챘는가의 문제이며, 비동기 타이머 진행에는 <code>advanceTimersByTimeAsync</code>처럼 마이크로태스크를 함께 소진하는 변형을 쓴다.
+두 번째는 환경 갈래다. 타임존은 <code>TZ</code> 환경 변수를 <strong>테스트 프로세스가 시작되기 전</strong>(러너 설정의 전역 셋업이나 실행 스크립트)에 <code>UTC</code>로 고정하는 것이 안전하다. 로케일 의존 포매팅(<code>Intl.DateTimeFormat</code>·<code>toLocaleString</code>)은 런타임에 내장된 ICU(국제화 데이터 라이브러리) 버전에 따라 출력이 달라질 수 있으므로, 표시 문자열을 그대로 비교하기보다 파싱된 값을 비교한다.
+격리 단위도 알아 두자: Jest와 Vitest 모두 <strong>테스트 파일 단위</strong>로 워커를 나누어 모듈 상태를 격리하고, 같은 파일 안의 테스트는 순차로 실행한다. 즉 파일 간 전역 오염은 도구가 막아 주지만 파일 안에서는 5절의 독립성이 그대로 필요하다. 순서 갈래 자체는 이 언어에서 상대적으로 덜 위험하다 — 객체 키와 <code>Map</code>·<code>Set</code>의 순회 순서가 삽입 순서로 명세되어 있어, "해시 순서가 실행마다 다르다"는 문제는 성립하지 않는다.
+</p>
+
+<h3>9.3 Python — pytest + unittest.mock</h3>
+<p>
+Python은 시각 갈래에서 두 방식이 나란히 쓰이는 언어다. 시계 주입(<code>now_fn</code>이나 clock 객체를 인자로)이 원칙이고, 기존 코드의 <code>datetime.now()</code>를 그대로 둔 채 시간을 멈추는 라이브러리(freezegun·time-machine 계열)가 가로채기 쪽의 대안이다. 이런 라이브러리가 별도로 존재하는 이유가 곧 이 언어의 함정이다 — <code>datetime.datetime</code>은 C로 구현된 불변 타입이라 <code>patch("datetime.datetime.now")</code>가 <strong>애초에 되지 않는다.</strong> 그래서 라이브러리는 모듈 네임스페이스의 <code>datetime</code> 이름을 통째로 바꿔치기하거나(freezegun), 더 낮은 계층의 시각 함수를 가로챈다(time-machine). 전자는 "어느 모듈이 그 이름을 조회하는가"라는 J12의 질문을 그대로 동반하며, 픽스처처럼 다른 경로로 실행되는 코드에는 미치지 않을 수 있다.
+</p>
+<pre><code>import datetime as dt
+from pathlib import Path
+
+def test_만료일_다음날부터_만료다(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("TZ", "UTC")            # 환경 변수를 이 테스트 동안만 바꾸고 자동 복원
+    # (Unix에서는 time.tzset()을 호출해야 반영된다 — Windows에는 tzset이 없다)
+
+    fixed_now = lambda: dt.datetime(2026, 3, 16, tzinfo=dt.timezone.utc)
+    service = CouponService(now_fn=fixed_now)  # 시계 주입: datetime을 패치할 필요가 없다
+    assert service.is_expired(expires_on=dt.date(2026, 3, 15))
+
+    report = tmp_path / "expired.txt"          # 테스트마다 새 디렉터리 — 이전 실행의 파일이 없다
+    service.write_report(report)
+    assert report.read_text().splitlines() == ["A1"]
+
+def test_만료_코드_집합은_순서_무관하게_비교한다():
+    assert CouponService().expired_codes() == {"A1", "B2"}   # set끼리 비교
+    # list(...)로 바꿔 ["A1", "B2"]와 비교하면 실행마다 통과·실패가 갈린다</code></pre>
+<p>
+순서 갈래에서 Python은 독특한 위치에 있다. <code>dict</code>는 3.7부터 삽입 순서가 보증되지만, <code>set</code>은 그렇지 않고 — 결정적으로 — <strong>문자열의 해시가 프로세스마다 무작위화</strong>된다(<code>PYTHONHASHSEED</code>). 즉 문자열 집합의 순회 순서는 같은 머신에서도 실행마다 달라지므로, 집합을 리스트로 바꿔 순서까지 비교하는 테스트는 확률적으로 실패한다. 테스트 순서 의존은 <code>pytest-randomly</code>가 발각한다: 모듈·클래스·함수 단위로 순서를 뒤섞고 시드를 출력하므로, 실패한 순서를 시드로 재현할 수 있다. 이 플러그인은 매 테스트 전에 <code>random</code>의 시드도 재설정해, 난수 갈래를 덤으로 고정한다.
+</p>
+<p>
+<code>Python 관점의 통찰: 이 언어에서 시각을 "가로채기"가 유난히 까다로운 것은 객체 모델의 두 면이 부딪히기 때문이다 — 모듈이 딕셔너리라서 이름 패치는 어디서나 되지만, C 구현 내장 타입은 속성 대입을 거부한다. 그래서 시간 정지 라이브러리가 이름 바꿔치기와 저수준 후킹이라는 우회로를 만들었고, 그 우회로의 범위가 곧 함정의 범위가 된다. 시계를 주입하면 이 모든 우회로가 필요 없어진다는 점에서, 동적 언어라고 해서 설계 원칙이 면제되는 것은 아니다.</code>
+</p>
+
+<h3>9.4 C++ — GoogleTest + GoogleMock</h3>
+<p>
+C++에는 런타임 가로채기가 없다. <code>std::chrono::system_clock::now()</code>를 직접 부르는 코드는 <strong>테스트에서 시각을 바꿀 방법이 없으므로</strong>, 시계 주입이 선택이 아니라 유일한 길이다. 주입 통로는 둘이다 — 가상 인터페이스로 받아 gMock으로 대체하거나(런타임 다형성), 클록 타입을 템플릿 매개변수로 받아 테스트용 클록 타입을 넣는다(컴파일 타임 주입, 가상 호출 비용 없음). <code>std::chrono</code>의 클록이 <code>now()</code> 정적 멤버를 가진 <strong>타입</strong>으로 정의되어 있어, 후자가 표준 라이브러리의 관례와 맞물린다.
+</p>
+<pre><code>#include &lt;chrono&gt;
+
+template &lt;class Clock = std::chrono::system_clock&gt;     // 클록을 타입으로 주입
+class CouponService {
+public:
+    bool IsExpired(const Coupon&amp; c) const { return Clock::now() &gt; c.expires_at; }
+};
+
+struct FixedClock {                                     // 테스트용 클록: 항상 같은 시각
+    using time_point = std::chrono::system_clock::time_point;
+    static time_point value;
+    static time_point now() { return value; }
+};
+FixedClock::time_point FixedClock::value{};
+
+TEST(CouponServiceTest, ExpiredAfterExpiry) {
+    FixedClock::value = ParseUtc("2026-03-16T00:00:00Z");
+    CouponService&lt;FixedClock&gt; service;
+    EXPECT_TRUE(service.IsExpired(Coupon{ParseUtc("2026-03-15T23:59:59Z")}));
+}
+// 순서 의존 발각: ./coupon_test --gtest_shuffle --gtest_repeat=50
+// 실패한 순서 재현:  ./coupon_test --gtest_shuffle --gtest_random_seed=&lt;출력된 시드&gt;</code></pre>
+<p>
+순서 갈래는 GoogleTest의 실행 옵션으로 발각한다. <code>--gtest_shuffle</code>이 테스트 순서를 뒤섞고, <code>--gtest_repeat</code>이 같은 바이너리를 반복 실행하며, 출력된 시드를 <code>--gtest_random_seed</code>로 넘기면 실패 순서를 재현할 수 있다. 이 언어 특유의 순서 문제는 하나 더 있다 — 서로 다른 번역 단위(소스 파일 하나가 컴파일되는 단위)에 있는 전역 객체들의 <strong>초기화 순서가 명세되지 않는다</strong>. 테스트 픽스처가 전역 객체에 기대면, 결과가 링크 순서에 따라 달라지는 비결정성이 생긴다.
+가장 조심할 것은 <strong>미정의 동작(표준이 결과를 정의하지 않은 코드)의 위장</strong>이다. 초기화되지 않은 변수 읽기, 해제된 메모리 접근, 데이터 경쟁은 "가끔 실패"로 나타나 플래키 테스트처럼 보이지만, 원인은 타이밍이 아니라 결함이다. 8-④의 질문이 이 언어에서 가장 무겁다 — 재시도로 덮으면 결함이 운영으로 간다. 발각 도구는 테스트 옵션이 아니라 새니타이저(주소·미정의 동작·스레드 경쟁을 런타임에 검출하는 컴파일러 계측)다.
+</p>
+<p>
+<code>C++ 관점의 통찰: 다른 세 언어의 "가로채기"는 런타임이 함수 테이블이나 네임스페이스를 실행 중에 바꿀 수 있다는 사실에 기댄다. C++은 호출 대상이 컴파일·링크 시점에 고정되므로 그런 통로가 없고, 대신 템플릿이 "타입을 바꿔 끼우는 컴파일 타임 주입"이라는 다른 통로를 준다 — 비용은 0이지만 테스트 대상이 템플릿이 되어 헤더에 노출된다는 대가가 있다. 또 하나, 이 언어에서 "실행마다 결과가 다르다"는 관찰은 비결정성보다 먼저 미정의 동작을 의심해야 한다: 주소 공간 배치 무작위화(ASLR) 때문에 포인터 값을 키로 쓴 컨테이너의 순회 순서까지 실행마다 달라지므로, 순서 갈래와 결함이 같은 증상으로 겹친다.</code>
+</p>
+
+<h2>10. 함께 알면 좋은 것</h2>
+<p>본문의 갈래를 확장하는 인접 개념들이다 — 첫째는 3절의 분류 자체를, 둘째는 4절의 시계 주입을, 셋째는 5절의 동시성을, 넷째는 7절의 재시도를, 다섯째는 6절의 난수 갈래를 잇는다.</p>
+<ul>
+  <li><strong>육각형 아키텍처의 "시간 포트"</strong> — 시각·난수·환경처럼 바깥에서 오는 암묵 입력을 모두 포트(경계 인터페이스)로 승격시켜 애플리케이션 코어를 결정적으로 만드는 설계. 3절의 다섯 갈래를 "코어 밖으로 밀어낼 것들의 목록"으로 읽는 관점.</li>
+  <li><strong>의존성 주입과 테스트 용이성(I4의 주제)</strong> — 시계 주입은 협력자 주입의 특수 사례다. "인자 없는 <code>now()</code>도 협력자다"라는 4절의 시각은 주입 대상을 객체에서 <em>암묵 입력 전반</em>으로 넓힌 것.</li>
+  <li><strong>결정적 동시성 테스트 도구</strong> — 스레드 스케줄을 도구가 통제해 모든 교차 순서를 체계적으로 탐색하거나(모델 검사 계열), 가상 시간 위에서 비동기 코드를 돌려 대기를 즉시 진행시키는 접근. 5절의 래치가 "완료를 기다린다"면, 이쪽은 "시간과 스케줄 자체를 명시 입력으로 만든다".</li>
+  <li><strong>플래키 테스트 격리(quarantine)와 통계 추적</strong> — 실패를 재시도로 덮는 대신, 플래키로 판정된 테스트를 별도 묶음으로 옮겨 주 스위트의 신호를 지키면서 원인을 추적하는 운영 방식. 재시도가 정당한 자리(7절)의 제도화된 형태.</li>
+  <li><strong>속성 기반 테스트(property-based testing)</strong> — 무작위 입력을 대량 생성해 성질을 검증하는 기법. 난수를 쓰면서도 결정적인 이유는 <strong>시드를 기록·재현</strong>하기 때문이다 — 6절의 "난수는 시드 고정"이 "무작위성을 쓰되 재현 가능하게"로 확장된 사례.</li>
+</ul>
+
+<h2>11. 한 장 요약</h2>
+<ul>
+  <li>결정성은 테스트의 전제다: <strong>"실패 = 결함"</strong>이라는 등식은 결과가 코드에만 의존할 때 성립한다.</li>
+  <li>플래키 테스트의 비용은 실패 자체가 아니라 <strong>신호 무시의 학습</strong>이며, 손실은 스위트 전체의 신뢰로 번진다.</li>
+  <li>비결정성의 다섯 갈래 — <strong>시각·순서·동시성·외부 I/O·로케일/타임존/환경</strong> — 는 모두 "테스트가 정하지 않은 암묵 입력"이고, 고정 원리는 하나다: <strong>암묵 입력을 명시 입력으로.</strong></li>
+  <li>갈래별 기법: 시계 주입(시각+존 둘 다) / 정렬·집합 비교 + 테스트 독립 + 무작위 순서 실행 / 동기화 지점 노출 + 래치(시간은 실패 판정에만) / 대역·시드·임시 디렉터리 / 코드는 명시 인자, 테스트는 UTC·ROOT 고정.</li>
+  <li><strong>sleep</strong>은 타이밍 가정을 굳히고 <strong>재시도</strong>는 신호를 은폐한다 — 둘 다 확률을 낮출 뿐 비결정성을 제거하지 않으며, 동시성 결함까지 덮는다.</li>
+  <li>언어별 급소: Java는 전역 기본값 오염과 <code>Set.of</code>의 순회 순서, JS·TS는 가짜 타이머의 범위와 복원, Python은 해시 무작위화와 패치 불가 타입, C++은 미정의 동작의 위장과 정적 초기화 순서.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="J1 테스트 더블과 단위 테스트 격리.html">J1 테스트 더블과 단위 테스트 격리.html</a> — 이 문서의 시계 주입·외부 I/O 대역이 전제로 삼는 더블의 종류와 "무엇을 대체하는가"의 기준. 4절의 고정 시계는 J1의 stub이 시각이라는 암묵 입력에 적용된 형태</li>
+  <li><a href="../C 백엔드/C20 날짜·시간·타임존 처리.html">C20 날짜·시간·타임존 처리.html</a> — 4절·6절이 기대는 "벽시계 시간 + 타임존 = 시각"의 구분과 존을 명시 인자로 받는 코드 설계. 테스트가 시각과 존을 둘 다 고정해야 하는 이유의 본론</li>
+  <li><a href="J7 Mock 생명주기 관리.html">J7 Mock 생명주기 관리.html</a> — 가짜 타이머·전역 기본값 변경처럼 효과가 전역인 고정 기법의 초기화·복원 시점 관리. 9.1의 <code>finally</code> 복원과 9.2의 <code>afterEach</code>가 J7의 생명주기 규칙이 결정성 문제에 적용된 사례</li>
+</ul>
+
+</body>
+</html>
