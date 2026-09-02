@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J1 테스트 더블과 단위 테스트 격리</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>J1 테스트 더블과 단위 테스트 격리</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li><strong>테스트 더블(test double)</strong>은 테스트 중 실제 의존 객체를 대신 서는 대역의 총칭이다. 종류를 나누는 기준은 이름이 아니라 <strong>"무엇을 검증하는가"</strong> — <strong>응답을 제공</strong>하는 계열(stub·fake)과 <strong>호출을 기록</strong>하는 계열(mock·spy)로 갈린다.</li>
+  <li>stub은 미리 정한 답을 돌려주고, fake는 진짜처럼 동작하는 경량 구현이며, mock은 기대한 호출이 왔는지를 스스로 검증하고, spy는 실물을 감싸 호출을 기록한다. dummy는 자리만 채우는 값이다.</li>
+  <li><strong>격리(isolation)는 "느린 것을 떼어내는 기술"이 아니라 단위의 경계를 정의하는 행위</strong>다. 무엇을 대체하고 무엇을 진짜로 두었는가가 곧 "이 테스트가 책임지는 범위"를 결정한다.</li>
+  <li>대체 대상은 경계 밖의 것들이다: 프로세스 밖 자원(데이터베이스·네트워크), 비결정성(시계·난수), 결과가 밖으로 나가 버리는 것(발송), 아직 없거나 통제 불가한 것. <strong>순수 계산·도메인 협력자는 진짜로 둔다.</strong> 경계 밖 실물을 하나라도 진짜로 포함하면 그것이 통합 테스트다.</li>
+  <li>대체 이유를 한 문장으로 말할 수 없는 대체는 하지 않는다 — 과잉 더블은 구현을 복사하는 취약한 테스트를 만든다.</li>
+  <li>더블을 어떻게 끼워 넣는지(주입 메커니즘)는 J12의 주제이고, 상태로 검증할지 행위로 검증할지의 선택 기준은 J5의 주제다. 이 문서는 그 둘의 공통 전제인 "더블이 무엇이고 경계를 어디에 긋는가"를 다룬다.</li>
+</ul>
+
+<h2>1. 단위 테스트의 "단위"는 무엇인가 — 격리는 경계를 정의하는 일</h2>
+<p>
+단위 테스트(unit test)는 "작은 코드 조각을 빠르고 독립적으로 검증하는 테스트"라고 배운다. 그런데 이 정의에는 "단위"가 무엇인지가 빠져 있다. 클래스 하나인가, 메서드 하나인가, 아니면 기능 하나인가.
+실제로 단위는 <strong>테스트가 책임지는 범위</strong>이고, 그 범위는 코드의 크기가 아니라 <strong>"무엇을 진짜로 두고 무엇을 대체했는가"</strong>로 결정된다.
+격리란 바로 그 경계를 긋는 행위다.
+</p>
+<p>
+이 문서 전체를 관통할 예제를 하나 잡자. 주문 서비스 <code>OrderService.place()</code>는 할인 정책으로 금액을 계산하고, 저장소에 주문을 저장하고, 결제 게이트웨이에 결제를 요청하고, 결과를 알림으로 보낸다.
+</p>
+<div class="flow">            ┌──────────────── 단위의 경계 ────────────────┐
+  요청 ──&gt;  │  OrderService.place()                        │
+            │     ├─ DiscountPolicy.apply()   (순수 계산)   │
+            │     ├─ OrderRepository.save()   ─────────────┼──&gt; 데이터베이스
+            │     ├─ PaymentGateway.charge()  ─────────────┼──&gt; 외부 결제 서버
+            │     └─ Notifier.send()          ─────────────┼──&gt; 메시지 발송
+            └──────────────────────────────────────────────┘
+  경계를 어디에 긋느냐 = 이 테스트가 무엇을 검증하느냐</div>
+<p>
+이 서비스의 "단위 테스트"는 어디까지를 포함하는가. 데이터베이스와 결제 서버까지 진짜로 돌리면 느리고, 결제 거절 같은 상황을 마음대로 재현할 수 없으며, 실패했을 때 어느 층이 문제인지 알 수 없다.
+반대로 할인 정책까지 대체해 버리면 <code>place()</code>가 실제로 하는 계산은 하나도 검증되지 않는다.
+경계는 자동으로 정해지지 않는다 — <strong>경계 밖에 놓기로 한 협력자를 "무언가"로 바꿔야</strong> 비로소 경계가 실체를 갖는다. 그 무언가가 테스트 더블이다.
+</p>
+
+<h2>2. 테스트 더블 — 의존성을 대체한다는 것의 공통 정의</h2>
+<p>
+테스트 더블은 영화의 스턴트 대역(stunt double)에서 온 이름이다. 실제 배우와 같은 옷을 입고 같은 자리에 서되, 위험한 장면은 대역이 소화한다.
+코드에서도 같다 — 더블은 <strong>실제 의존 객체와 같은 호출 형태(인터페이스)를 갖되, 그 동작은 테스트가 통제</strong>한다.
+</p>
+<p>
+대체가 가능하려면 한 가지 전제가 필요하다: 테스트 대상 코드가 협력자를 스스로 <code>new</code>로 만들지 않고 <strong>바깥에서 받아야</strong> 한다. 생성자·<code>setter</code>로 넘겨받는 방식, 모듈 이름을 바꿔치기하는 방식 등 구체적 주입 메커니즘은 I4와 J12의 주제이므로, 이 문서는 "바깥에서 넘겨줄 수 있다"를 전제로 두고 진행한다.
+</p>
+<p>왜 대체하는가를 정리하면 목적은 크게 둘로 모인다.</p>
+<table>
+  <tr><th>목적</th><th>질문의 형태</th><th>더블이 하는 일</th></tr>
+  <tr>
+    <td><strong>통제(control)</strong></td>
+    <td>"결제가 거절되면 주문은 어떻게 되는가?"</td>
+    <td>실물로는 재현하기 어려운 <strong>입력 조건</strong>을 만들어 준다 — <em>응답을 제공</em></td>
+  </tr>
+  <tr>
+    <td><strong>관찰(observation)</strong></td>
+    <td>"알림이 정확히 한 번 나갔는가?"</td>
+    <td>테스트 대상이 바깥으로 무엇을 했는지 <strong>기록</strong>해 보여 준다 — <em>호출을 기록</em></td>
+  </tr>
+</table>
+<p>
+속도와 결정성(같은 입력에 항상 같은 결과)은 이 두 목적을 좇다 보면 따라오는 부수 효과이지, 더블의 본질은 아니다.
+그리고 이 두 목적 — <strong>응답 제공 vs 호출 기록</strong> — 이 바로 더블 4종을 가르는 축이다. 먼저 응답을 제공하는 쪽부터 본다.
+</p>
+
+<h2>3. 응답을 제공하는 더블 — stub과 fake</h2>
+<p>
+<strong>stub</strong>은 특정 호출에 <strong>미리 정해 둔 답</strong>을 돌려주는 더블이다. "결제 게이트웨이가 거절을 돌려주면 주문은 실패 상태가 되는가"를 검증하려면 실제 결제 서버에 거절을 요청할 수는 없다. stub은 무조건 거절을 돌려주는 가짜 게이트웨이로 그 조건을 만들어 준다.
+중요한 것은 <strong>stub 자신은 아무것도 검증하지 않는다</strong>는 점이다. stub은 입력 조건일 뿐이고, 검증은 테스트 대상이 그 조건에서 만들어 낸 <em>결과</em>에서 이루어진다.
+</p>
+<p>
+<strong>fake</strong>는 한 걸음 더 나아가 <strong>진짜처럼 동작하는 경량 구현</strong>이다. 데이터베이스 대신 메모리 안의 맵에 저장하는 저장소가 전형이다. stub과의 차이는 "상태를 가진 논리"의 유무다 — stub이 질문마다 정해진 답을 읊는다면, fake는 <code>save()</code>한 것을 <code>findById()</code>로 다시 꺼낼 수 있는 <strong>일관성</strong>을 지킨다. 그래서 여러 호출이 얽힌 시나리오에서는 stub보다 fake가 자연스럽다.
+</p>
+<pre><code>// 손으로 쓴 stub: 어떤 요청이든 "거절"이라는 정해진 답만 돌려준다
+class DecliningPaymentGateway implements PaymentGateway {
+    public PaymentResult charge(Money amount) { return PaymentResult.declined("한도 초과"); }
+}
+
+// fake: 진짜처럼 동작하는 경량 구현 — 저장한 것을 다시 찾을 수 있다
+class InMemoryOrderRepository implements OrderRepository {
+    private final Map&lt;Long, Order&gt; store = new HashMap&lt;&gt;();
+    public void save(Order o) { store.put(o.id(), o); }
+    public Optional&lt;Order&gt; findById(long id) { return Optional.ofNullable(store.get(id)); }
+}
+
+@Test
+void 결제가_거절되면_주문은_실패_상태로_저장된다() {
+    var repo = new InMemoryOrderRepository();
+    var service = new OrderService(repo, new DecliningPaymentGateway(), new NoopNotifier());
+
+    service.place(new Order(1L, Money.of(50_000)));
+
+    // 검증은 더블이 아니라 테스트 대상의 결과(상태)에서 — stub·fake는 조건만 만들었다
+    assertEquals(OrderStatus.FAILED, repo.findById(1L).orElseThrow().status());
+}</code></pre>
+<p>
+fake의 대가는 fake 자체도 코드라는 점이다. 메모리 저장소가 실물 저장소와 미묘하게 다르게 동작하면(예: 중복 키 처리) 테스트는 통과하는데 실물은 실패한다. 이 간극을 메우는 관행(계약 테스트)은 9절에서 다시 만난다.
+</p>
+<p>
+그런데 stub과 fake는 <strong>자신이 무엇을 받았는지 모른다</strong>. "결제 성공 시 알림이 정확히 한 번 나갔는가"처럼 결과가 테스트 대상 밖으로 나가 버려 상태로 확인할 수 없는 질문에는, 응답이 아니라 <strong>호출</strong>을 봐야 한다.
+</p>
+
+<h2>4. 호출을 기록하는 더블 — mock과 spy (그리고 dummy)</h2>
+<p>
+<strong>mock</strong>은 <strong>기대(expectation)를 들고 있는 더블</strong>이다. "이 메서드가 이 인자로 몇 번 호출되어야 한다"는 기대를 갖고 있다가, 테스트 끝에 실제 호출 기록과 대조한다. 3절과 결정적으로 다른 점은 <strong>검증의 주체가 더블 자신</strong>이라는 것이다. 테스트 대상의 출력이 아니라 <em>협력자와의 상호작용</em>을 검증하므로, 알림 발송처럼 결과가 밖으로 사라지는 경우에 정당한 도구가 된다.
+</p>
+<pre><code>def test_결제_성공_시_알림은_정확히_한_번_간다():
+    gateway = Mock(spec=PaymentGateway)
+    gateway.charge.return_value = PaymentResult.approved()   # 이쪽은 stub 역할(응답 제공)
+    notifier = Mock(spec=Notifier)                           # 이쪽은 mock 역할(호출 기록)
+    service = OrderService(InMemoryOrderRepository(), gateway, notifier)
+
+    service.place(Order(id=1, amount=50_000))
+
+    notifier.send.assert_called_once_with(1, "PAID")         # 검증이 더블에서 이루어진다</code></pre>
+<p>
+위 예제가 보여 주듯 <strong>현대 도구의 "mock 객체"는 stub과 mock 역할을 겸하는 만능 객체</strong>다 — 반환값을 설정하면 stub, 호출을 검증하면 mock이다. 그래서 "mock"이라는 단어가 <em>도구가 만들어 주는 객체</em>를 뜻하는지 <em>역할</em>을 뜻하는지 늘 구분해야 한다. 이 문서는 역할의 뜻으로 쓴다.
+</p>
+<p>
+<strong>spy</strong>는 <strong>실물을 감싸 호출을 기록하되, 기본 동작은 실물에 위임</strong>하는 부분 대체다. "실제 저장소가 동작하는 채로, 어떤 호출이 들어왔는지도 알고 싶다"는 상황에 쓴다. 대가는 격리가 반쯤 열린다는 것이다 — 실물이 살아 있으므로 실물의 부작용과 느림이 그대로 새어 들어오고, 읽는 사람은 "이 객체는 어디까지가 진짜인가"를 매번 따져야 한다. 도구마다 spy의 뜻이 조금씩 다른데(메서드 하나를 감시하는 도구, 객체 전체를 부분 대체하는 도구), 이는 8절에서 다룬다.
+</p>
+<blockquote class="info">
+<p><strong>부록 — dummy:</strong> 시그니처를 채우기 위해 넘기지만 <strong>실제로는 쓰이지 않는 값</strong>이다(<code>null</code>, 빈 객체). 응답도 제공하지 않고 호출도 기록하지 않으므로 앞의 두 축 어디에도 속하지 않는다. dummy를 넘겨야 하는 매개변수가 많다면 그 자체가 "이 단위는 필요 이상으로 많은 것을 요구한다"는 설계 신호다.</p>
+</blockquote>
+<p>이제 3·4절의 재료를 한 장의 지도로 정리할 수 있다.</p>
+
+<h2>5. 두 축의 지도 — "무엇을 검증하는가"로 4종을 한 표에</h2>
+<table>
+  <tr><th>종류</th><th>제공하는 것</th><th>검증은 어디서</th><th>전형적 쓰임</th><th>흔한 오용</th></tr>
+  <tr>
+    <td><strong>stub</strong></td>
+    <td>정해진 응답</td>
+    <td>테스트 대상의 결과(상태)</td>
+    <td>거절·예외·경계값 같은 조건 재현</td>
+    <td>stub한 값이 그대로 나오는지 확인(동어반복)</td>
+  </tr>
+  <tr>
+    <td><strong>fake</strong></td>
+    <td>동작하는 경량 구현</td>
+    <td>테스트 대상의 결과(상태)</td>
+    <td>저장소·파일시스템 등 상태 있는 협력자</td>
+    <td>실물과 계약이 어긋난 채 방치</td>
+  </tr>
+  <tr>
+    <td><strong>mock</strong></td>
+    <td>기대 + 호출 기록</td>
+    <td>더블 자신(행위)</td>
+    <td>발송·기록처럼 밖으로 나가는 부작용</td>
+    <td>모든 협력자를 mock으로 — 구현 순서에 결합</td>
+  </tr>
+  <tr>
+    <td><strong>spy</strong></td>
+    <td>실물 동작 + 호출 기록</td>
+    <td>더블 자신(행위), 실물 결과도 가능</td>
+    <td>실물을 살린 채 상호작용만 확인</td>
+    <td>격리가 열린 줄 모르고 부작용 유출</td>
+  </tr>
+</table>
+<blockquote class="ok">
+<p><strong>핵심 대응:</strong> 응답 제공 계열(stub·fake)을 쓰면 검증은 자연히 <strong>테스트 대상의 상태</strong>에서 이루어지고, 호출 기록 계열(mock·spy)을 쓰면 검증은 <strong>더블 안의 기록</strong>에서 이루어진다. 즉 <strong>더블의 종류를 고르는 순간 그 테스트가 무엇을 검증할지가 결정된다.</strong> 어느 쪽이 더 나은 검증인지 — 상태 검증과 행위 검증의 선택 기준 — 는 J5의 주제이고, 이 문서에서 가져갈 것은 "격리 방식이 곧 테스트의 의미"라는 사실이다.</p>
+</blockquote>
+<p>
+지도가 생겼으니 남은 것은 실제 판단이다. 1절의 그림에서 어떤 협력자를 대체하고 어떤 협력자를 진짜로 둘 것인가.
+</p>
+
+<h2>6. 단위 vs 통합 — 무엇을 진짜로 두고 무엇을 대체하는가</h2>
+<p>
+이 질문에는 오래된 두 입장이 있다. <strong>고립형(solitary)</strong> 단위 테스트는 테스트 대상 하나만 남기고 협력자를 전부 대체하고, <strong>사교형(sociable)</strong> 단위 테스트는 순수한 도메인 협력자는 진짜로 둔 채 경계 밖의 것만 대체한다.
+어느 쪽이든 판단의 재료는 같다 — <strong>그 협력자를 진짜로 두면 무엇이 문제가 되는가</strong>.
+</p>
+<div class="flow">협력자를 만났을 때
+   │
+   ├─ 프로세스 밖 자원인가? (데이터베이스·네트워크·파일)      ── 예 ──&gt; 대체 (fake·stub)
+   ├─ 비결정적인가? (시계·난수·환경 변수)                    ── 예 ──&gt; 대체 (stub)
+   ├─ 결과가 밖으로 나가 상태로 확인할 수 없는가? (발송·기록)  ── 예 ──&gt; 대체 (mock)
+   ├─ 아직 없거나 통제할 수 없는가? (외부 API·다른 팀 모듈)   ── 예 ──&gt; 대체 (stub·fake)
+   └─ 그 밖의 순수 계산·도메인 협력자                         ──────&gt; 진짜로 둔다
+
+   경계 밖 실물을 하나라도 진짜로 포함하면 = 통합 테스트</div>
+<p>
+1절의 예제에 대입하면 저장소·결제·알림은 대체 후보이고, <code>DiscountPolicy</code>는 진짜로 둔다. 할인 정책은 빠르고 결정적이며, 대체하면 "정책이 9,000원을 돌려주면 서비스도 9,000원을 저장한다"는 <strong>구현의 복사</strong>만 늘어날 뿐 검증력은 늘지 않는다.
+</p>
+<p>
+여기서 단위와 통합 테스트(integration test)의 경계도 자연히 정해진다. 둘의 차이는 코드의 크기가 아니라 <strong>경계 밖 실물을 포함하는가</strong>다. 진짜 데이터베이스에 저장하고 읽어 오는 테스트는 클래스 하나만 다뤄도 통합 테스트이고, 협력자 열 개를 모두 진짜로 두어도 전부 프로세스 안의 순수 코드라면 여전히 단위 테스트다.
+</p>
+<blockquote class="warn">
+<p><strong>과잉 격리의 대가:</strong> 협력자를 남김없이 대체하면 테스트는 "어떤 메서드를 어떤 순서로 호출했는가"라는 <strong>구현 세부에 결합</strong>된다. 동작은 그대로인데 내부 호출 구조를 바꾸는 리팩토링마다 테스트가 깨진다 — 취약한 테스트(fragile test)의 가장 흔한 발생 경로다. 기준은 단순하다: <strong>대체하는 이유를 한 문장으로 말할 수 없으면 대체하지 않는다.</strong></p>
+</blockquote>
+<p>
+이로써 "무엇이 더블이고(2~5절), 어디에 경계를 긋는가(6절)"가 모였다. 남는 것은 이 판단 주변의 오해들이다.
+</p>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "mock이 곧 테스트 더블의 총칭 아닌가?"</strong> — 도구가 <code>mock()</code>으로 만들어 주는 객체와 mock이라는 <em>역할</em>은 다르다. 반환값만 설정하고 호출을 검증하지 않았다면 그 객체는 stub 역할을 한 것이다. 한 객체에 반환값 설정과 호출 검증을 동시에 걸면 테스트가 두 가지를 한꺼번에 검증하게 되어, 어느 한쪽의 변경에도 깨진다.</p>
+<p><strong>② "stub이 돌려준 값이 정말 반환되는지 확인해야 하지 않나?"</strong> — 그 테스트는 내 코드가 아니라 stub 라이브러리를 검증한다(J10에서 다루는 동어반복). stub은 입력 조건이고, 검증 대상은 <em>그 조건에서 테스트 대상이 무엇을 했는가</em>다.</p>
+<p><strong>③ "실물을 살려 두는 spy가 가장 안전한 선택 아닌가?"</strong> — 부분 대체는 경계가 반쯤 열린 상태다. 실물의 부작용(파일 쓰기, 외부 호출)이 새어 나가고, 읽는 사람은 어디까지가 진짜인지 매번 추적해야 한다. spy는 "격리를 덜 한 것"이지 "더 안전한 격리"가 아니다.</p>
+<p><strong>④ "격리를 잘 했으면 통합 테스트는 필요 없다" / "통합 테스트만 있으면 된다"</strong> — 더블은 협력자와의 계약을 <em>가정</em>으로 바꿔 놓은 것이다. 가정이 틀리면 단위 테스트는 초록인데 실물은 빨강이 된다. 경계 밖 실물을 실제로 통과하는 성긴 통합 테스트가 그 가정을 확인하고, 촘촘한 단위 테스트가 경계 안의 로직을 확인한다 — 둘은 대체재가 아니라 분업이다.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+개념은 언어 중립이지만, 각 언어의 대표 테스트 도구가 "응답 제공"과 "호출 기록"을 어떤 API로 드러내는지, 그리고 그 언어의 객체 모델이 어떤 함정을 만드는지는 서로 다르다. 아래 표는 이 문서의 개념이 각 도구에서 어떤 이름으로 나타나는지의 대응표다.
+</p>
+<table>
+  <tr><th>언어 / 도구</th><th>응답 제공(stub)</th><th>호출 기록(mock)</th><th>부분 대체(spy)</th><th>그 언어만의 함정</th></tr>
+  <tr>
+    <td>Java / JUnit 5 + Mockito</td>
+    <td><code>when(...).thenReturn(...)</code></td>
+    <td><code>verify(...)</code></td>
+    <td><code>spy(실물)</code></td>
+    <td>미사용 스텁을 실패로 처리하는 엄격 모드, spy 설정 시 실물이 실제로 호출됨</td>
+  </tr>
+  <tr>
+    <td>JS·TS / Jest · Vitest</td>
+    <td><code>fn().mockReturnValue(...)</code></td>
+    <td><code>expect(fn).toHaveBeenCalledWith(...)</code></td>
+    <td><code>spyOn(객체, '메서드')</code></td>
+    <td>모듈 단위 대체의 호이스팅, TS 타입이 런타임에 사라져 시그니처 불일치가 조용함</td>
+  </tr>
+  <tr>
+    <td>Python / pytest + unittest.mock</td>
+    <td><code>return_value</code> · <code>side_effect</code></td>
+    <td><code>assert_called_once_with(...)</code></td>
+    <td><code>Mock(wraps=실물)</code></td>
+    <td>없는 속성도 자동 생성 — 오타가 통과, <code>spec</code>이 없으면 계약이 없음</td>
+  </tr>
+  <tr>
+    <td>C++ / GoogleTest + GoogleMock</td>
+    <td><code>ON_CALL(...).WillByDefault(...)</code></td>
+    <td><code>EXPECT_CALL(...)</code></td>
+    <td>(직접 지원 없음 — 실물 위임을 손으로 작성)</td>
+    <td>가상 함수가 있어야 대체 가능, 기대 검증이 객체 소멸 시점에 실행됨</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — JUnit 5 + Mockito</h3>
+<p>
+Mockito가 만들어 주는 mock 객체는 4절에서 말한 <strong>겸용 객체</strong>의 전형이다. 같은 <code>@Mock</code> 필드에 <code>when().thenReturn()</code>을 걸면 stub 역할, <code>verify()</code>를 걸면 mock 역할이 된다. Mockito는 런타임에 대상 클래스의 하위 클래스(또는 바이트코드 변형본)를 생성해 메서드를 가로채는 방식으로 동작하므로, 인터페이스가 없는 구체 클래스도 대체할 수 있다.
+</p>
+<pre><code>@ExtendWith(MockitoExtension.class)        // 이 확장을 쓰면 기본 strictness가 STRICT_STUBS
+class OrderServiceTest {
+    @Mock PaymentGateway gateway;          // Mockito의 mock 객체: stub·mock 역할 겸용
+    @Mock Notifier notifier;
+
+    @Test
+    void 결제가_거절되면_알림을_보내지_않는다() {
+        var repo = spy(new InMemoryOrderRepository());               // 실물을 감싼 spy
+        var service = new OrderService(repo, gateway, notifier);
+        when(gateway.charge(any())).thenReturn(PaymentResult.declined("한도 초과"));   // stub 역할
+
+        service.place(new Order(1L, Money.of(50_000)));
+
+        verify(notifier, never()).send(anyLong(), anyString());       // mock 역할: 호출 기록 검증
+        verify(repo).save(argThat(o -&gt; o.status() == OrderStatus.FAILED));  // spy: 실물 동작 + 기록
+    }
+}</code></pre>
+<p>
+이 언어만의 함정 첫째는 <strong>엄격 스텁(strict stubs)</strong>이다. <code>MockitoExtension</code>을 쓰면 기본값이 <code>STRICT_STUBS</code>여서, 설정해 놓고 한 번도 호출되지 않은 스텁이 있으면 테스트가 실패한다. 처음엔 성가시지만 이는 7-①의 오용 — 검증에 필요 없는 응답을 습관적으로 설정하는 것 — 을 도구가 잡아 주는 장치다.
+둘째는 spy의 설정 방식이다. <code>when(spyRepo.findById(1L))</code>은 인자를 평가하는 과정에서 <strong>실물 메서드가 실제로 실행</strong>된다. 실물 호출이 부작용을 가지면 설정 단계에서 이미 문제가 생기므로, spy에는 <code>doReturn(...).when(spy).method()</code> 형태를 쓴다 — 4절에서 말한 "격리가 반쯤 열린" 상태가 문법에까지 드러나는 사례다.
+동향으로는, 2020년대 중반 기준 Mockito 5부터 <strong>인라인 mock maker가 기본</strong>이 되어 <code>final</code> 클래스·메서드도 별도 설정 없이 대체된다. 과거의 "<code>final</code>은 mock 못 한다"는 조언은 더 이상 기본 상태에는 해당하지 않는다.
+</p>
+
+<h3>8.2 JS·TS — Jest / Vitest</h3>
+<p>
+JS 생태계의 더블은 <code>jest.fn()</code> / <code>vi.fn()</code> 하나로 시작한다. 이 함수 객체는 <code>mockReturnValue()</code>로 응답을 제공하고 <code>toHaveBeenCalledWith()</code>로 호출을 검증하므로, 역시 stub·mock 겸용이다. JS 객체는 프로토타입 기반이라 클래스 선언 없이도 <code>{ charge: vi.fn() }</code> 같은 객체 리터럴이 곧 더블이 되고, TS에서는 구조적 타이핑(이름이 아니라 모양이 맞으면 같은 타입으로 보는 규칙) 덕에 이 리터럴이 <code>PaymentGateway</code> 자리에 그대로 들어간다.
+</p>
+<pre><code>import { vi, it, expect } from 'vitest';      // Jest라면 vi → jest 로 바꾸면 거의 그대로
+import { OrderService } from './OrderService';
+
+it('결제가 거절되면 알림을 보내지 않는다', async () =&gt; {
+  const gateway  = { charge: vi.fn().mockResolvedValue({ approved: false }) };  // stub 역할
+  const notifier = { send: vi.fn() };                                          // mock 역할
+  const service  = new OrderService(new InMemoryOrderRepository(), gateway, notifier);
+
+  await service.place({ id: 1, amount: 50_000 });
+
+  expect(notifier.send).not.toHaveBeenCalled();
+});
+
+// 객체를 주입하지 않고 import 이름 자체를 바꿔치기하는 모듈 단위 대체 (J12의 "이름 패치" 계열)
+vi.mock('./paymentClient', () =&gt; ({ charge: vi.fn().mockResolvedValue({ approved: false }) }));</code></pre>
+<p>
+이 언어만의 특이점은 <strong>모듈 단위 대체</strong>다. <code>vi.mock('./paymentClient')</code>는 객체를 넘겨받을 통로가 없어도 import되는 모듈 자체를 바꿔치기한다. 편리한 만큼 함정이 있다: 이 호출은 파일 상단으로 <strong>호이스팅</strong>되어 import보다 먼저 실행되므로, 코드에 적힌 순서와 실제 실행 순서가 다르다. 그래서 mock 정의 안에서 바깥 변수를 참조하면 아직 초기화되지 않은 값을 만난다.
+둘째 함정은 TS의 <strong>타입 소거</strong>(컴파일하면 타입 정보가 사라져 런타임에는 남지 않음)다. <code>vi.fn()</code>의 반환 타입은 어떤 시그니처에도 맞춰지므로, 실물 <code>charge()</code>의 매개변수가 바뀌어도 더블 쪽은 컴파일 오류 없이 통과한다 — 7-④의 "가정이 틀렸는데 초록"이 타입 수준에서 재현된다. <code>vi.mocked()</code> 같은 타입 보조 함수로 실물 시그니처를 더블에 씌우는 이유다.
+Vitest는 2020년대 중반 기준 Jest의 API를 대부분 그대로 제공하며(<code>jest.*</code>가 <code>vi.*</code>로 바뀌는 정도), 차이는 주로 ES 모듈을 기본으로 다루는 실행 방식과 속도에 있다. 더블의 개념 축은 두 도구가 동일하다.
+</p>
+
+<h3>8.3 Python — pytest + unittest.mock</h3>
+<p>
+표준 라이브러리 <code>unittest.mock</code>의 <code>Mock</code>은 겸용 객체의 극단이다. <code>return_value</code>·<code>side_effect</code>로 응답을 제공하고, <code>assert_called_once_with()</code>로 호출을 검증하며, <code>wraps=실물</code>을 주면 spy가 된다. pytest는 러너이고 더블 자체는 이 표준 모듈이 담당한다(<code>pytest-mock</code>은 그 위의 얇은 편의층이다).
+</p>
+<pre><code>from unittest.mock import Mock, create_autospec
+
+def test_결제가_거절되면_알림을_보내지_않는다():
+    gateway = create_autospec(PaymentGateway, instance=True)     # 시그니처까지 실물과 대조하는 더블
+    gateway.charge.return_value = PaymentResult.declined("한도 초과")   # stub 역할
+    notifier = Mock(spec=Notifier)                                # 실물에 있는 속성만 허용
+    service = OrderService(InMemoryOrderRepository(), gateway, notifier)
+
+    service.place(Order(id=1, amount=50_000))
+
+    notifier.send.assert_not_called()                             # mock 역할
+    # notifier.sned.assert_not_called()  ← spec이 없었다면 'sned'도 자동 생성되어 조용히 통과한다</code></pre>
+<p>
+이 언어만의 함정은 <strong>속성의 자동 생성</strong>이다. <code>Mock()</code>은 존재하지 않는 속성에 접근해도 새 <code>Mock</code>을 만들어 돌려주므로, 실물에는 없는 메서드를 호출해도 에러가 없다. <code>assert</code>로 시작하는 이름의 오타는 예외가 나도록 보완돼 있지만, 메서드 이름 자체의 오타(<code>sned</code>)는 <code>spec</code>이 없으면 그대로 통과한다 — 조용한 실패의 교과서적 사례다. <code>spec=</code>은 속성 존재를, <code>create_autospec</code>은 호출 시그니처까지 실물과 대조하므로 "더블이 실물과 어긋났는데 초록"인 상태를 줄여 준다.
+또 하나, <code>patch("모듈.이름")</code>으로 하는 이름 패치는 객체를 주입하는 것이 아니라 <strong>모듈 네임스페이스의 항목을 바꿔치기</strong>하는 방식이라, "어느 모듈이 그 이름을 조회하는가"를 정확히 지정해야 한다. 이 방식의 원리와 함정은 J12의 주제다.
+</p>
+<p>
+<code>Python 관점의 통찰: 덕 타이핑(객체의 타입이 아니라 "필요한 메서드를 갖고 있는가"만 보는 모델) 덕분에 Python은 인터페이스 선언 없이 어떤 객체든 더블로 세울 수 있는, 더블 만들기가 가장 쉬운 언어다. 그런데 바로 그 자유가 "실물에 없는 메서드도 mock에는 있는" 상태의 근원이다 — 정적 언어에서 컴파일러가 지키는 계약을 이 언어에서는 spec 인자가 대신 지킨다. 이름 패치 역시 모듈이 딕셔너리라는 객체 모델의 산물이어서, 강력하지만 "어디서 조회되는가"라는 실행 시점의 질문을 항상 동반한다.</code>
+</p>
+
+<h3>8.4 C++ — GoogleTest + GoogleMock</h3>
+<p>
+gMock은 4절의 두 축을 매크로 이름에 그대로 새겨 놓았다. <code>ON_CALL</code>은 <strong>기본 동작</strong>(응답 제공, stub 역할)을, <code>EXPECT_CALL</code>은 <strong>기대</strong>(호출 기록, mock 역할)를 뜻한다. 앞의 세 언어와 달리 두 역할을 서로 다른 매크로로 분리한 셈이어서, "이 설정은 조건인가 검증인가"가 코드에 드러난다.
+</p>
+<pre><code>class PaymentGateway {                        // 대체하려면 가상 인터페이스가 필요하다
+public:
+    virtual ~PaymentGateway() = default;
+    virtual PaymentResult Charge(const Money&amp; amount) = 0;
+};
+
+class MockPaymentGateway : public PaymentGateway {
+public:
+    MOCK_METHOD(PaymentResult, Charge, (const Money&amp; amount), (override));
+};
+
+TEST(OrderServiceTest, DeclinedPaymentSendsNoNotification) {
+    ::testing::NiceMock&lt;MockPaymentGateway&gt; gateway;   // 기대 밖 호출을 조용히 허용
+    ::testing::StrictMock&lt;MockNotifier&gt; notifier;      // 기대 밖 호출은 곧 실패
+    ON_CALL(gateway, Charge).WillByDefault(::testing::Return(PaymentResult::Declined()));  // stub 역할
+    EXPECT_CALL(notifier, Send).Times(0);                                                 // mock 역할
+
+    InMemoryOrderRepository repo;
+    OrderService service(repo, gateway, notifier);     // 참조로 주입 — 수명은 테스트 스코프가 보장
+    service.Place(Order{1, Money{50000}});
+}                                                      // 기대 검증은 mock 소멸 시점에 수행된다</code></pre>
+<p>
+이 언어만의 전제는 <strong>대체 가능성이 공짜가 아니라는 것</strong>이다. gMock이 메서드를 가로채려면 그 메서드가 가상 함수여야 한다 — 가상 함수는 vtable(객체마다 "어떤 구현을 호출할지"를 담은 함수 포인터 표)을 통해 런타임에 구현을 고르므로, 파생 클래스인 mock이 끼어들 수 있다. 비가상 메서드는 컴파일 시점에 호출 대상이 고정되어 끼어들 자리가 없다. 그래서 C++에서 더블을 세우는 일은 곧 "이 협력자를 인터페이스로 추상화할 것인가"라는 설계 결정과 붙어 있고, 가상 호출 비용을 피하고 싶다면 템플릿 매개변수로 협력자를 받는 <strong>컴파일 타임 주입</strong>이 대안이 된다.
+두 번째 특이점은 <code>NiceMock</code>·<code>StrictMock</code>이다. 기본 mock은 기대하지 않은 호출을 경고만 하고 넘기는데, <code>StrictMock</code>은 실패로, <code>NiceMock</code>은 무시로 바꾼다 — 7-①에서 말한 "조건용 객체와 검증용 객체"를 타입 수준에서 구분하는 도구다.
+</p>
+<p>
+<code>C++ 관점의 통찰: 다른 세 언어에서는 가비지 컬렉터가 더블의 수명을 알아서 관리하지만, C++에서는 더블도 하나의 스택 객체라 수명이 테스트 코드의 스코프와 결합된다. EXPECT_CALL의 검증은 mock 객체의 소멸자에서 실행되므로 "검증 시점 = 객체가 사라지는 시점"이고, 테스트 대상이 더블을 참조로 들고 있다면 더블이 테스트 대상보다 오래 살아야 한다(반대면 댕글링 참조). 또 mock 클래스는 실물과 vtable 배치를 공유하는 파생 타입이어야 하므로, 실물의 인터페이스가 바뀌면 mock도 컴파일 단계에서 즉시 깨진다 — 8.2·8.3에서 본 "더블이 실물과 어긋났는데 초록"이 이 언어에서는 구조적으로 성립하기 어렵다.</code>
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<p>본문의 축을 확장하는 인접 개념들이다 — 첫째·둘째는 6절의 경계 판단을, 셋째는 3절의 fake를, 넷째는 7-②를, 다섯째는 1절의 경계 그리기 자체를 잇는다.</p>
+<ul>
+  <li><strong>고전파 vs 목 사용파(classical vs mockist)</strong> — 6절의 고립형·사교형 구분을 테스트 철학 수준으로 올린 논쟁. 고전파는 경계 밖만 대체하고 상태로 검증하며, 목 사용파는 협력자를 적극 대체하고 상호작용으로 검증한다. 어느 쪽이든 "격리 = 경계 정의"라는 사실은 같고, 경계를 어디에 두느냐가 다르다.</li>
+  <li><strong>테스트 피라미드</strong> — "경계 안의 촘촘한 단위 + 경계 밖 실물을 통과하는 성긴 통합"(7-④)을 일반화한 모형. 더블로 가정한 계약을 실물로 확인하는 층이 위에 얇게 있어야 하는 이유를 설명한다.</li>
+  <li><strong>계약 테스트(contract test)</strong> — 3절의 fake가 실물과 어긋나는 문제의 해법. 같은 테스트 묶음을 fake와 실물 양쪽에 돌려 두 구현이 같은 계약을 지키는지 확인한다. 가정의 정확성을 도구로 유지하는 방법.</li>
+  <li><strong>테스트 대상 선정(J10의 주제)</strong> — 7-②의 "stub을 되읽는 테스트"는 무엇을 테스트하지 않을지의 기준(동어반복·패스스루)과 직결된다. 더블 설정을 되읽는 테스트는 검증력 없이 유지비만 청구한다.</li>
+  <li><strong>험블 객체(humble object) 패턴</strong> — 경계 밖 실물에 직접 닿는 코드를 로직 없는 얇은 껍데기로 분리해, 대체할 필요 자체를 줄이는 설계. 1절의 경계 그리기를 "테스트 시점"이 아니라 "설계 시점"으로 앞당기는 방법이다.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>테스트 더블은 실제 의존 객체와 같은 호출 형태를 가진 대역이며, 목적은 <strong>통제(응답 제공)</strong>와 <strong>관찰(호출 기록)</strong> 둘이다.</li>
+  <li>4종의 지도: <strong>stub</strong>(정해진 응답) · <strong>fake</strong>(동작하는 경량 구현) → 검증은 테스트 대상의 상태에서 / <strong>mock</strong>(기대 + 기록) · <strong>spy</strong>(실물 + 기록) → 검증은 더블에서. dummy는 자리 채움.</li>
+  <li>도구의 "mock 객체"는 역할 겸용이다 — 반환값을 설정했으면 stub 역할, 호출을 검증했으면 mock 역할. 한 객체에 둘을 동시에 걸지 않는다.</li>
+  <li><strong>격리 = 단위의 경계 정의.</strong> 대체 대상은 프로세스 밖 자원·비결정성·밖으로 나가는 부작용·통제 불가한 것이고, 순수 계산·도메인 협력자는 진짜로 둔다. 경계 밖 실물을 하나라도 포함하면 통합 테스트다.</li>
+  <li>과잉 격리는 구현 세부에 결합된 취약한 테스트를 낳는다 — 대체 이유를 한 문장으로 말할 수 없으면 대체하지 않는다.</li>
+  <li>더블은 협력자와의 계약을 가정으로 바꾼 것이다. 가정은 성긴 통합 테스트(또는 계약 테스트)로 실물과 대조해야 "단위는 초록, 실물은 빨강"을 막는다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="../I 설계·아키텍처/I4 의존성 주입과 테스트 용이성.html">I4 의존성 주입과 테스트 용이성.html</a> — 이 문서가 2절에서 전제로만 둔 "협력자를 바깥에서 받는다"는 조건. 더블을 끼워 넣을 통로가 왜 설계 단계에서 열려 있어야 하는지</li>
+  <li><a href="J12 목킹 주입 2패러다임 — 객체 교체 vs 이름 패치.html">J12 목킹 주입 2패러다임 — 객체 교체 vs 이름 패치.html</a> — 더블을 어떻게 끼워 넣는가의 두 방식. 8.2의 모듈 단위 대체와 8.3의 이름 패치가 객체 주입과 어떻게 다른지의 본론</li>
+  <li><a href="J5 상태 검증 vs 행위 검증.html">J5 상태 검증 vs 행위 검증.html</a> — 5절의 "더블 종류를 고르면 검증 방식이 정해진다"에서 이어지는 선택 기준. 응답 제공 계열과 호출 기록 계열 중 어느 쪽이 더 나은 검증인가</li>
+</ul>
+
+</body>
+</html>
