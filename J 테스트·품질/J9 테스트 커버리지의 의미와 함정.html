@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J9 테스트 커버리지의 의미와 함정</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>J9 테스트 커버리지의 의미와 함정</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>커버리지(coverage)는 <strong>"테스트 중에 어느 코드가 실행됐는가"의 기록</strong>이지, "어느 코드가 검증됐는가"의 기록이 아니다. 계측기는 실행 여부를 세고, 단언(assertion)은 세지 않는다.</li>
+  <li>같은 "100%"라도 <strong>라인·분기·조건·경로</strong> 중 무엇을 셌느냐에 따라 뜻이 전혀 다르다 — 라인 100%는 분기의 절반을 한 번도 안 지나갔을 수 있고, 분기 100%도 조건 조합의 일부는 못 본다.</li>
+  <li>커버리지가 원리적으로 보증하지 못하는 것 네 가지: <strong>쓰지 않은 코드</strong>(빠진 분기는 셀 대상 자체가 없다), <strong>입력 공간</strong>(경계값), <strong>단언의 강도</strong>, <strong>순서·상태·시간</strong>.</li>
+  <li>수치를 채우는 테스트는 세 얼굴로 나타난다: <strong>① 동어반복</strong>(구현을 그대로 단언), <strong>② 검증 부재형</strong>(단언이 아예 없어 항상 통과 — 파이프라인은 초록인데 검증은 0), <strong>③ 리팩터링 전후 같은 케이스 통과</strong>(행위 보존 확인이라는, 셋 중 유일한 순기능).</li>
+  <li>검증 부재형이 특히 위험한 이유: 테스트 결과(초록)와 커버리지 수치(높음)라는 <strong>두 신호가 동시에 거짓</strong>이 되어, 아무도 그 코드를 다시 보지 않게 만든다.</li>
+  <li>결론 — 커버리지는 <strong>"테스트 안 된 로직을 찾는 지도"</strong>이지 채워야 할 <strong>할당량이 아니다</strong>. 낮은 수치는 조사할 곳을 가리키고, 높은 수치는 아무것도 증명하지 않는다.</li>
+</ul>
+
+<h2>1. 전제 — 커버리지는 "실행됐다"의 기록이다</h2>
+<p>
+이 문서에서 커버리지는 <strong>테스트 실행 중 실제로 실행된 코드의 비율</strong>을 뜻한다(무엇을 테스트할지 고르는 기준은 J10의 주제, 대역의 종류는 J1의 주제이므로 여기서는 전제로만 쓴다).
+측정 원리는 언어를 가리지 않고 같다: 도구가 코드에 <strong>계측(instrumentation)</strong> — 각 줄·각 분기 앞에 "여기 지나갔음"을 기록하는 카운터 — 을 심어 두고, 테스트를 한 번 돌린 뒤 카운터가 0인 곳과 아닌 곳을 나눈다.
+</p>
+<div class="flow">테스트 실행
+   ├─ 코드 라인·분기 실행 ──&gt; 카운터 증가 ──&gt; 커버리지 %      ← 계측기가 보는 축
+   └─ 단언(assert) 비교  ──&gt; 통과 / 실패                       ← 검증의 축: 계측기는 이 축을 보지 않는다</div>
+<p>
+그림의 두 축이 서로 독립이라는 점이 이 문서 전체의 출발점이다. 위 축은 "지나갔는가"를, 아래 축은 "결과가 맞는가"를 묻는데, 커버리지 수치는 <strong>위 축만의 집계</strong>다.
+어떤 줄이 실행됐다는 사실은 그 줄의 결과가 무엇과도 비교되지 않았어도 성립한다 — 그래서 커버리지가 높다는 것은 "많이 실행했다"까지만 뜻하고, "많이 검증했다"는 별도의 주장이다.
+</p>
+<p>
+그런데 "실행됐다"조차 한 가지 뜻이 아니다. 줄 단위로 셀 수도, 분기 단위로 셀 수도 있고, 둘은 같은 코드에서 전혀 다른 수치를 낸다. 먼저 이 단위의 차이부터 정리한다.
+</p>
+
+<h2>2. 라인 vs 분기 vs 조건·경로 — 같은 100%가 다른 것을 말한다</h2>
+<p>
+배송비 계산 한 줄로 네 가지 커버리지의 차이를 눈으로 보자.
+</p>
+<pre><code>int shippingFee(Order o) {
+    int fee = 3000;
+    if (o.amount() &gt;= 50000 &amp;&amp; o.isDomestic()) fee = 0;   // 한 줄 안에 분기 2개, 조건 2개
+    return fee;
+}
+
+// 테스트 1: amount=60000, domestic=true  → fee == 0</code></pre>
+<p>
+테스트 1 하나만 있을 때, 네 지표는 이렇게 갈린다.
+</p>
+<table>
+  <tr><th>지표</th><th>세는 단위</th><th>테스트 1만 있을 때</th><th>100%가 되려면</th></tr>
+  <tr>
+    <td><strong>라인 커버리지(line coverage)</strong></td>
+    <td>실행된 줄의 비율</td>
+    <td><strong>100%</strong> — 네 줄 모두 실행됨</td>
+    <td>이미 달성. <code>if</code>가 거짓인 경우는 한 번도 안 봤는데도</td>
+  </tr>
+  <tr>
+    <td><strong>분기 커버리지(branch coverage)</strong></td>
+    <td>각 조건문의 참·거짓 방향 각각</td>
+    <td><strong>50%</strong> — 참 방향만</td>
+    <td>거짓 방향 케이스 1개 추가(예: amount=10000)</td>
+  </tr>
+  <tr>
+    <td><strong>조건 커버리지(condition coverage)</strong></td>
+    <td><code>&amp;&amp;</code>로 묶인 개별 조건의 참·거짓</td>
+    <td>더 낮음 — <code>isDomestic()</code>이 거짓인 경우 없음</td>
+    <td>amount ≥ 50000이면서 해외인 케이스 추가. 단락 평가(앞 조건이 거짓이면 뒤를 평가하지 않는 것) 때문에 amount=10000 케이스로는 채워지지 않는다</td>
+  </tr>
+  <tr>
+    <td><strong>경로 커버리지(path coverage)</strong></td>
+    <td>함수 진입부터 종료까지의 실행 경로 조합</td>
+    <td>이 함수는 경로 2개라 단순</td>
+    <td>분기가 n개 직렬이면 경로는 최대 2ⁿ, 반복문이 있으면 사실상 무한 — 실용 지표가 아니다</td>
+  </tr>
+</table>
+<p>
+표가 말하는 바는 두 가지다. 첫째, <strong>라인 100%는 "모든 줄을 최소 한 번 밟았다"일 뿐</strong>, 조건문이 거짓이 되는 세계를 한 번도 방문하지 않았을 수 있다 — 위 예에서 배송비 3000원이 실제로 청구되는 경우는 검증된 적이 없다.
+둘째, 단위를 촘촘히 할수록 정직해지지만 비용이 급증한다. 분기 커버리지는 라인 커버리지의 착시를 상당 부분 걷어내면서도 비용이 감당되는 균형점이라 <strong>실무 기본 지표로 분기를 권하는 이유</strong>가 여기 있고, 조건 조합까지 요구하는 기준(MC/DC — 각 조건이 단독으로 결과를 바꾸는 케이스를 모두 요구하는 방식)은 항공·자동차 같은 안전 표준 영역에서 쓰인다.
+</p>
+<p>
+그렇다면 비용을 감수하고 분기·조건까지 100%를 달성하면 충분한가. 그래도 남는 것이 있다 — 커버리지라는 측정 방식 자체가 <em>원리적으로</em> 볼 수 없는 영역이다.
+</p>
+
+<h2>3. "100%"가 보증하지 않는 것</h2>
+<p>
+2절의 지표들은 모두 "작성된 코드 중 실행된 비율"이다. 이 정의에서 곧바로 따라 나오는 사각지대가 네 개 있다.
+</p>
+<ul>
+  <li><strong>쓰지 않은 코드.</strong> 커버리지의 분모는 <em>존재하는</em> 코드다. <code>o</code>가 <code>null</code>일 때의 처리를 아예 안 썼다면, 그 빠진 분기는 셀 대상 자체가 없으므로 100%에 아무 흠집도 내지 않는다. 결함의 상당수는 "잘못 쓴 줄"이 아니라 <strong>"안 쓴 줄"</strong>에 있는데, 커버리지는 정의상 후자를 볼 수 없다.</li>
+  <li><strong>입력 공간.</strong> 분기의 참·거짓을 한 번씩 지났다는 것과 경계값(<code>amount == 50000</code>, 0, 음수, 오버플로 근처)을 확인했다는 것은 다른 일이다. 분기 커버리지 100%는 각 방향을 <em>대표 입력 하나로</em> 지나갔다는 뜻이고, 경계에서의 오프바이원은 그 대표 입력이 경계를 피해 가면 잡히지 않는다.</li>
+  <li><strong>단언의 강도.</strong> 1절의 두 축을 다시 떠올리면 — 실행은 됐지만 결과가 무엇과 비교됐는지, 그 비교가 요구사항을 반영하는지는 커버리지 밖의 일이다. <code>fee</code>가 0인지 확인하는 테스트와 <code>fee</code>가 음수가 아닌지만 확인하는 테스트는 같은 커버리지를 낸다.</li>
+  <li><strong>순서·상태·시간.</strong> 두 호출의 순서가 바뀌었을 때, 이전 테스트가 남긴 상태 위에서, 동시에 두 스레드가 들어왔을 때의 동작은 "각 줄이 한 번 실행됐다"로 포착되지 않는다. 커버리지는 실행 경로의 <em>집합</em>을 기록하지 <em>순서와 맥락</em>은 기록하지 않는다.</li>
+</ul>
+<blockquote class="info">
+<p><strong>정리 —</strong> 커버리지가 100%라는 말은 "이 코드에 <em>실행된 적 없는 줄은 없다</em>"까지만 뜻한다. 반대 방향, 즉 "커버리지가 낮다"는 신호는 훨씬 정보량이 크다: 실행된 적 없는 줄이 <em>확실히</em> 있다는 뜻이기 때문이다. 이 비대칭이 6절의 결론(지도이지 할당량이 아니다)으로 이어진다.</p>
+</blockquote>
+<p>
+네 사각지대 중 셋째 — 단언의 강도 — 는 특히 중요하다. 커버리지를 <em>목표</em>로 삼는 순간, 단언이 약하거나 없는 테스트가 수치를 채우는 가장 값싼 방법이 되기 때문이다. 그 테스트들이 어떤 모습인지 유형별로 본다.
+</p>
+
+<h2>4. 무의미 테스트 유형표 — 초록불의 세 얼굴</h2>
+<p>
+"커버리지는 오르는데 검증력은 오르지 않는" 테스트를 <strong>무엇이 틀렸을 때 실패하는가</strong>(J10의 판별 질문)로 분류하면 세 유형이 나온다. 셋 다 실행 기록은 남기므로 커버리지에는 똑같이 기여한다.
+</p>
+<table>
+  <tr><th>유형</th><th>모습</th><th>실패하는 유일한 경우</th><th>커버리지</th><th>검증력</th></tr>
+  <tr>
+    <td><strong>① 동어반복</strong></td>
+    <td>구현이 하는 계산을 테스트가 그대로 재계산해 비교. 또는 대역에 "X를 반환하라" 설정 후 X가 나오는지 확인</td>
+    <td>구현과 테스트를 <em>서로 다르게</em> 틀렸을 때뿐</td>
+    <td>오른다</td>
+    <td>≈ 0 — 요구사항이 아니라 "복사가 일치하는가"를 검증</td>
+  </tr>
+  <tr>
+    <td><strong>② 검증 부재형</strong></td>
+    <td>대상을 호출만 하고 단언이 없다. 골격만 만들고 <code>// TODO assert</code>가 남았거나, 수치를 채우려 호출 목록만 나열한 형태</td>
+    <td>예외가 던져져 실행이 중단될 때뿐</td>
+    <td>오른다</td>
+    <td><strong>0</strong> — "터지지 않는다"만 확인. 항상 통과(always-pass)</td>
+  </tr>
+  <tr>
+    <td><strong>③ 리팩터링 전후 동일 케이스 통과</strong></td>
+    <td>현재 출력을 그대로 기대값으로 박아 둔 테스트(특성화 테스트)를, 동작을 바꾸지 않는 순수 리팩터링 전후에 실행</td>
+    <td>리팩터링이 <em>행위를 바꿨을 때</em></td>
+    <td>그대로</td>
+    <td><strong>있음</strong> — 셋 중 유일한 순기능: "행위 보존" 확인. 단, 그 행위가 <em>옳은지</em>는 여전히 말하지 않는다</td>
+  </tr>
+</table>
+<p>
+①은 J10에서 이미 본 트리비얼 테스트다. ③은 얼핏 ①과 닮았지만(현재 값을 그대로 기대값으로 쓰니까) 질문이 다르다 — "맞는가"가 아니라 "<strong>바뀌지 않았는가</strong>"를 묻는 테스트라서, 순수 리팩터링이라는 특수한 국면에서만 정당한 값을 한다. 리팩터링이 끝나면 이 테스트는 다시 ①로 되돌아가므로 요구사항 기준으로 다시 쓰거나 걷어내야 한다.
+</p>
+<p>
+남는 것은 ②다. ①과 ③은 적어도 <em>무언가를 비교</em>하는데, ②는 비교 자체가 없다. 그래서 가장 값싸게 만들어지고, 가장 발각되기 어렵다. 다음 절은 이 유형만 따로 해부한다.
+</p>
+
+<h2>5. 검증 부재형 — 파이프라인은 초록, 검증은 0</h2>
+<p>
+검증 부재형 테스트의 정체는 한 줄로 요약된다: <strong>이 테스트가 세상에 전하는 정보는 "이 입력으로 예외가 안 났다"가 전부다.</strong>
+</p>
+<pre><code>@Test
+void 할인_적용() {
+    DiscountService service = new DiscountService(new FixedRatePolicy(0.1));
+    service.apply(new Order(10000));          // 호출만. 결과 9000은 어디에도 비교되지 않는다
+}                                              // → 통과. apply()의 모든 줄이 커버리지에 '초록'으로 기록된다</code></pre>
+<p>
+이 테스트는 <code>apply()</code>가 할인을 두 번 적용해도, 아예 적용하지 않아도, 원본 주문을 반환해도 통과한다. 그런데 커버리지 보고서에서는 <code>apply()</code>의 계산 줄이 모두 초록이고, 파이프라인의 테스트 단계도 초록이다.
+<strong>두 신호가 동시에 거짓</strong>이라는 점이 ①보다 나쁜 이유다 — 동어반복 테스트는 최소한 "누군가 기대값을 적었다"는 흔적이라도 남기지만, 검증 부재형은 그 코드가 검증됐다는 인상을 두 지표에 동시에 새겨 두어 아무도 다시 들여다보지 않게 만든다. 이것이 조용한 실패(K5의 주제)의 테스트판이다: 실패해야 할 것이 실패하지 않고, 그 사실을 알리는 신호도 없다.
+</p>
+<p>생기는 경로는 대체로 정해져 있다.</p>
+<ul>
+  <li><strong>골격 잔존</strong>: 테스트 이름과 호출까지 써 놓고 단언을 나중으로 미룬 채 잊는다. 통과하기 때문에 잊힌다.</li>
+  <li><strong>수치 채우기</strong>: 커버리지 임계값을 넘기기 위해 "일단 실행되게" 만든 테스트. 목표가 수치인 순간 단언은 비용이 되므로 생략된다.</li>
+  <li><strong>비동기 누락</strong>: 단언은 있으나 비동기 완료를 기다리지 않아 테스트가 먼저 종료되는 경우 — 단언이 <em>있는데 실행되지 않는</em> 변종이다(★8.2).</li>
+  <li><strong>구문상의 무효 단언</strong>: 단언문처럼 보이지만 언어 규칙상 항상 참이 되거나 아무것도 하지 않는 문장(★8.3).</li>
+</ul>
+<p>
+인접한 결함 하나를 짚어 둔다. 파라미터를 무시하고 항상 같은 값을 돌려주는 스텁 잔존 구현이나 시그니처가 약속하는 것과 다르게 동작하는 오도성 시그니처(I16의 주제)는 검증 부재형 테스트와 정확히 짝을 이룬다 — <strong>단언 없는 테스트는 스텁이 잔존한 구현을 초록으로 덮고, 스텁 잔존 구현은 단언 없는 테스트를 통과시켜 주므로, 둘은 서로를 영원히 발각하지 못한다.</strong>
+</p>
+<blockquote class="ok">
+<p><strong>발각 수단은 세 층이다.</strong> (1) 리뷰의 한 질문 — "이 테스트는 무엇이 틀렸을 때 실패하는가?"에 "예외 날 때뿐"이라고 답하게 되면 검증 부재형이다. (2) 도구 — 단언 없는 테스트를 실패로 취급하는 옵션이나 린트 규칙(★8절에서 언어별로). (3) 뮤테이션 테스트 — 구현을 일부러 망가뜨려도 테스트가 살아남으면 검증력 부재가 <em>정량으로</em> 드러난다(9절).</p>
+</blockquote>
+<p>
+①~③을 모두 걷어내고 나면 커버리지 수치는 처음보다 낮아질 수 있다. 그 낮아진 수치를 어떻게 읽어야 하는가 — 이 문서의 결론이다.
+</p>
+
+<h2>6. 지도이지 할당량이 아니다 — 커버리지를 읽는 법</h2>
+<p>
+3절의 비대칭을 다시 쓰면: <strong>높은 수치는 약한 정보, 낮은 수치는 강한 정보</strong>다. 그래서 커버리지의 올바른 용법은 수치의 <em>총합</em>이 아니라 <em>보고서의 빨간 줄 목록</em>을 읽는 것이다. 빨간 줄 하나하나가 "실행된 적 없는 로직이 여기 있다"는 좌표이고, 각 좌표에 대한 반응은 세 가지 중 하나다.
+</p>
+<div class="flow">커버리지 보고서의 미실행 줄
+   │
+   ├─ 내 로직인데 테스트가 없다      ──&gt; 테스트 추가 (요구사항 기준으로, 단언 포함)
+   ├─ 아무도 안 부르는 코드다        ──&gt; 삭제 후보 (미사용 코드 식별은 K4의 주제)
+   └─ 의도적으로 아직 안 켜진 경로다 ──&gt; 활성화 시점의 위험으로 기록 (J15의 주제)
+
+   세 반응 모두 "수치를 올리는 것"이 아니라 "빨간 줄의 정체를 밝히는 것"이다</div>
+<p>
+반대로 수치를 <strong>할당량</strong>으로 삼으면 — "80% 미만이면 병합 불가" 같은 규칙을 <em>목표</em>로 운용하면 — 4절의 세 유형이 정확히 그 규칙의 산물로 양산된다. 지표가 목표가 되는 순간 좋은 지표이기를 멈춘다는 일반 원리(굿하트의 법칙)의 교과서적 사례다: 수치를 올리는 가장 싼 방법은 검증 없이 실행만 하는 테스트를 추가하는 것이고, 규칙은 그 테스트와 진짜 테스트를 구분하지 못한다.
+</p>
+<p>
+그렇다고 임계값이 무의미한 것은 아니다. 쓰임새를 바꾸면 된다 — <strong>목표가 아니라 후퇴 방지선(래칫)</strong>으로. "지금 수치 아래로 떨어지지 않는다"는 규칙은 새 코드가 테스트 없이 들어오는 것을 막는 데는 유효하고, 특히 변경된 줄만 대상으로 하는 차등 커버리지(diff coverage)는 "이번 변경분에 미실행 로직이 있는가"라는 정확히 지도 용법의 질문을 자동화한다.
+</p>
+<blockquote class="info">
+<p><strong>한 문장 결론 —</strong> 커버리지는 <em>테스트 안 된 로직을 찾는 지도</em>다. 지도는 어디에 가지 않았는지를 알려 주지, 갔던 곳에서 무엇을 확인했는지는 알려 주지 않는다. 후자는 단언의 몫이고, 단언의 품질은 커버리지가 아닌 다른 도구(뮤테이션 테스트)와 리뷰의 질문으로 잰다.</p>
+</blockquote>
+<p>
+남는 위험은 지표 자체를 둘러싼 오해들이다. 자주 만나는 네 가지를 짚는다.
+</p>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "분기 커버리지 100%면 조건 조합을 다 본 것"?</strong> — 아니다. 2절의 예처럼 <code>a &amp;&amp; b</code>는 분기(참·거짓 방향)로는 2개지만 조건 조합은 더 많고, 단락 평가 때문에 <code>a</code>가 거짓인 케이스는 <code>b</code>를 평가조차 하지 않는다. 분기 100%는 "각 조건문이 양쪽으로 한 번씩 갈렸다"까지다.</p>
+<p><strong>② "커버리지가 낮은 모듈 = 품질이 낮은 모듈"?</strong> — 낮은 수치가 뜻하는 것은 "미실행 로직이 확실히 있다"이지 "결함이 있다"가 아니고, 높은 수치는 그 반대조차 뜻하지 않는다(3절). 수치는 조사 순서를 정하는 데 쓰고, 품질 판정은 조사 결과로 한다.</p>
+<p><strong>③ "통합·E2E 테스트가 지나간 줄도 커버된 것이니 같은 값"?</strong> — 계측기는 누가 지나갔는지 구분하지 않으므로 수치상으로는 같다. 그러나 화면 하나를 여는 E2E가 스쳐 지나간 서비스 로직 50줄은 "실행됐지만 그 결과가 무엇과도 비교되지 않은" 줄, 즉 검증 부재형과 같은 상태다. 출처가 섞인 커버리지는 지도로서의 해상도가 떨어진다 — 단위 테스트 커버리지를 따로 보는 이유다.</p>
+<p><strong>④ "분모에 무엇을 넣느냐는 사소한 설정"?</strong> — 생성 코드·설정 클래스·테스트 코드 자체를 분모에 넣느냐 빼느냐로 수치는 쉽게 10~20%p 움직인다. 같은 설정끼리만 비교가 성립하고, 제외 규칙의 변경은 수치의 변화가 아니라 <em>자의 변경</em>이다. 임계값을 넘기기 위해 제외 규칙을 손대는 것은 6절의 할당량 함정이 설정 파일로 옮겨 간 형태다.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+원리는 같지만, "실행 기록"을 어떻게 얻는지(계측 방식), 분기 커버리지가 기본으로 켜져 있는지, 그리고 <strong>검증 부재형이 그 언어에서 어떤 구문으로 숨는지</strong>는 도구마다 다르다. 표는 네 생태계의 대표 조합을 대조하고, 소제목마다 그 조합만의 함정을 코드로 보인다.
+</p>
+<table>
+  <tr><th>언어 / 도구</th><th>커버리지 측정</th><th>검증 부재형 탐지 수단</th><th>그 언어만의 함정</th></tr>
+  <tr>
+    <td>Java — JUnit 5 + Mockito</td>
+    <td>JaCoCo(바이트코드 계측, 라인·분기 카운터 기본 제공)</td>
+    <td>단언 없는 테스트를 도구가 막지 않는다. Mockito의 엄격한 스텁 검사는 <em>쓰이지 않은 스텁</em>만 잡는다</td>
+    <td>바이트코드 수준 분기는 소스에 없는 분기를 포함 — 소스만 보고 100%를 설계할 수 없다</td>
+  </tr>
+  <tr>
+    <td>JS·TS — Jest / Vitest</td>
+    <td>Jest는 소스 계측(istanbul) 기본, Vitest는 엔진 내장 카운터(v8) 기본; 둘 다 <code>coverageThreshold</code></td>
+    <td><code>expect.hasAssertions()</code> / <code>expect.assertions(n)</code>, 린트 규칙 <code>expect-expect</code></td>
+    <td>비동기 단언이 <code>await</code> 없이 테스트 종료 뒤에 실행 — 단언이 있는데도 검증 부재</td>
+  </tr>
+  <tr>
+    <td>Python — pytest + unittest.mock</td>
+    <td>coverage.py(pytest-cov); <strong>분기 측정은 기본 꺼짐</strong>(<code>--cov-branch</code>)</td>
+    <td>내장 수단 없음 — 리뷰와 뮤테이션 테스트에 의존</td>
+    <td><code>assert obj.method</code>(괄호 누락)·<code>mock.assert_called()</code>의 괄호 누락은 항상 통과</td>
+  </tr>
+  <tr>
+    <td>C++ — GoogleTest + GoogleMock</td>
+    <td>컴파일러 계측(gcov/lcov, llvm-cov); 분기는 명시적으로 켜야 함</td>
+    <td>없음 — <code>EXPECT_*</code>가 없는 <code>TEST</code>는 통과. <code>EXPECT_CALL</code>은 단언, <code>ON_CALL</code>은 아님</td>
+    <td>예외 언와인드 경로·미인스턴스화 템플릿이 분모를 왜곡, 최적화 수준이 라인 매핑을 바꿈</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — JUnit 5 + Mockito: 엄격한 스텁 검사가 잡는 것과 못 잡는 것</h3>
+<p>
+JUnit 5는 단언이 하나도 없는 테스트를 정상 통과로 처리한다 — 검증 부재형을 막는 내장 장치는 없다. 이 지점에서 자주 생기는 오해가 Mockito의 엄격 모드다. <code>MockitoExtension</code>은 기본적으로 <strong>엄격한 스텁 검사</strong>를 켜서, 설정했지만 실행 중 한 번도 호출되지 않은 스텁을 <code>UnnecessaryStubbingException</code>으로 실패시킨다. 이것은 "쓸모없는 <em>설정</em>"을 잡는 것이지 "빠진 <em>단언</em>"을 잡는 것이 아니다.
+</p>
+<pre><code>@ExtendWith(MockitoExtension.class)          // 기본 엄격 모드(STRICT_STUBS)
+class DiscountServiceTest {
+    @Mock DiscountPolicy policy;
+    @InjectMocks DiscountService service;
+
+    @Test
+    void 할인_적용_검증부재형() {
+        when(policy.rateFor(any())).thenReturn(0.1);
+        service.apply(new Order(10000));      // 스텁은 '사용'됐으므로 엄격 모드도 조용하다 → 통과
+    }
+
+    @Test
+    void 할인_적용() {
+        when(policy.rateFor(any())).thenReturn(0.1);
+        Order result = service.apply(new Order(10000));
+        assertEquals(9000, result.amount());  // 결과 단언 — 검증의 본체
+        verify(policy).rateFor(any());        // 상호작용 검증 — 결과 단언의 보조이지 대체가 아니다
+    }
+}</code></pre>
+<p>
+첫 테스트에서 스텁은 실제로 호출되므로 엄격 모드는 아무 말도 하지 않는다. 즉 <strong>엄격 모드가 초록이라는 사실은 검증 부재형에 대해 아무 정보도 주지 않는다</strong>. 둘째 테스트의 <code>verify()</code>도 조심할 대목이다 — 상호작용 검증만 있고 결과 단언이 없는 테스트는 "정책을 물어보긴 했다"까지만 확인하는 절반의 검증 부재형이다.
+</p>
+<p>
+커버리지 쪽의 Java 고유 함정은 측정 단위가 <strong>바이트코드</strong>라는 점이다. JaCoCo는 소스가 아니라 클래스 파일에 계측을 넣으므로, 분기 카운터는 소스의 <code>if</code>가 아니라 바이트코드의 조건 점프를 센다. 문자열 <code>switch</code>, 동기화 블록, 리소스 자동 해제 구문 등은 소스에 없는 분기를 바이트코드에 만들고, 도구가 그중 일부를 걸러 주지만 전부는 아니다. 그래서 소스만 보며 "분기 100%"를 설계했는데 보고서에는 노란 마름모가 남는 일이 생기며, 그 잔여 분기는 3절의 "안 쓴 코드"가 아니라 <em>컴파일러가 쓴 코드</em>라 테스트로 채울 대상이 아니다. 클래스 로딩 시 실행되는 정적 초기화 블록이 "테스트에서 그 클래스를 건드리기만 해도" 초록이 되는 것도 같은 계열의 착시다.
+</p>
+
+<h3>8.2 JS·TS — Jest / Vitest: 단언이 있는데도 실행되지 않는 변종</h3>
+<p>
+Jest와 Vitest는 API가 거의 호환되고(Vitest는 Jest 스타일 <code>expect</code>를 그대로 채택), 커버리지 설정도 같은 이름(<code>coverageThreshold</code>)을 쓴다. 측정 방식은 다르다 — Jest는 기본적으로 소스에 카운터를 삽입하는 istanbul 방식이고, Vitest는 자바스크립트 엔진에 내장된 실행 카운터를 읽는 v8 방식이 기본이다. 2020년대 중반 기준으로 Vitest의 v8 방식은 구문 트리 기반 재매핑을 기본 적용해 istanbul과 사실상 같은 보고서를 내므로, 두 방식의 수치 차이는 과거만큼 크지 않다. TS는 타입이 컴파일 시 지워지므로 커버리지는 변환된 JS 위에서 재고 소스맵으로 되돌려 표시한다 — 타입 단언(<code>as</code>)이나 타입 가드 함수는 런타임에 존재하지 않거나 한 줄로 접히므로, "타입이 맞는지"는 커버리지의 대상이 아니라 컴파일러의 대상이다.
+</p>
+<p>
+이 생태계 고유의 검증 부재형은 5절에서 예고한 <strong>비동기 누락</strong>이다. 단언이 분명히 있는데, 테스트 함수가 끝난 <em>뒤에</em> 실행된다.
+</p>
+<pre><code>test('할인 적용', () =&gt; {
+  applyDiscount(order, 0.1).then((r) =&gt; {
+    expect(r.amount).toBe(9000);   // 이 단언은 테스트가 '통과'로 끝난 뒤에야 실행된다
+  });                               // return도 await도 없다 → 단언이 있는 검증 부재형
+});
+
+test('할인 적용 (교정)', async () =&gt; {
+  expect.hasAssertions();           // 단언이 하나도 실행되지 않으면 실패시킨다
+  const r = await applyDiscount(order, 0.1);
+  expect(r.amount).toBe(9000);
+});</code></pre>
+<p>
+첫 테스트는 프로미스를 반환하지도 기다리지도 않으므로 러너는 동기 부분이 끝나는 순간 통과로 기록하고, 단언은 그 뒤 이벤트 루프에서 실행된다 — 실패하더라도 이미 끝난 테스트에 귀속되지 않거나 다른 테스트를 오염시킨다. <code>expect.hasAssertions()</code>는 "이 테스트 안에서 단언이 최소 하나는 <em>실행되어야</em> 한다"는 선언이라 정확히 이 변종을 잡고, <code>expect.assertions(n)</code>은 개수까지 고정한다. 린트 규칙 <code>expect-expect</code>(Jest·Vitest용 플러그인 모두 제공)는 단언 호출이 구문상 없는 테스트를 정적으로 잡아, 골격 잔존형까지 커버한다. 이 세 장치는 네 생태계 중 검증 부재형에 대한 도구 지원이 가장 두터운 편이다.
+</p>
+
+<h3>8.3 Python — pytest + unittest.mock: 괄호 하나가 단언을 무효화한다</h3>
+<p>
+pytest의 단언은 언어 내장 <code>assert</code> 문이고, pytest는 이 문을 다시 써서(assertion rewriting) 실패 시 좌우 값을 보여 준다. 편리하지만, <strong><code>assert</code>가 언어 구문이라는 사실</strong>이 Python 고유의 검증 부재형을 만든다: 언어 규칙상 항상 참이 되는 식을 단언하면 구문은 멀쩡한데 검증은 없다.
+</p>
+<pre><code>from unittest.mock import Mock
+
+def test_confirm_notifies_no_assert():
+    notifier = Mock()
+    Order(10000).confirm(notifier)          # 호출만 — 순수 검증 부재형
+
+def test_confirm_notifies_silent():
+    notifier = Mock()
+    order = Order(10000)
+    order.confirm(notifier)
+    assert order.is_confirmed               # 괄호 누락: 바운드 메서드 객체는 항상 참 → 통과
+    notifier.send.assert_called_once        # 괄호 누락: 속성 접근만 하고 아무것도 하지 않음 → 통과
+
+def test_confirm_notifies():
+    notifier = Mock()
+    order = Order(10000)
+    order.confirm(notifier)
+    assert order.is_confirmed()
+    notifier.send.assert_called_once_with("confirmed")</code></pre>
+<p>
+둘째 테스트의 두 줄은 각각 다른 이유로 무효다. <code>order.is_confirmed</code>는 메서드 객체이고 객체는 기본적으로 참이므로 <code>assert</code>가 통과한다. <code>notifier.send.assert_called_once</code>는 <code>Mock</code>의 검증 메서드를 <em>참조만</em> 한 것이라 아무 검사도 일어나지 않는다(<code>Mock</code>은 <code>assret_</code> 같은 <em>오타</em>는 잡아 주지만, 정확한 이름을 호출하지 않은 것은 잡지 못한다). 정적 검사기나 린터가 "효과 없는 식"으로 경고할 수 있으니, 이 언어에서는 린터가 검증 부재형 탐지 장치의 일부다.
+</p>
+<p>
+커버리지 쪽에서는 <strong>분기 측정이 기본 꺼짐</strong>이라는 점을 알아야 한다. coverage.py는 라인만 기본으로 재고, 분기는 <code>--cov-branch</code>(또는 설정의 <code>branch = true</code>)로 켜야 한다. 켜지 않은 채 "커버리지 90%"를 말하면 2절의 가장 느슨한 지표를 말하고 있는 것이다. 또 함수 정의 <code>def</code> 줄은 모듈을 <em>임포트하기만 해도</em> 실행되므로(정의는 실행문이다), 테스트가 하나도 없는 모듈도 임포트만으로 상당한 라인 커버리지를 얻는다 — 라인 지표가 Python에서 특히 후한 이유다.
+</p>
+<p>
+<code>Python 관점의 통찰: 이 언어에서 미실행 경로는 정적 언어보다 무겁다. 이름 오타·속성 오류·인자 개수 불일치가 컴파일 단계 없이 실행 시점에야 발각되므로, 커버리지가 0인 분기는 "테스트 안 된 로직"일 뿐 아니라 "한 번도 해석된 적 없는 코드"이고, 그 안에는 실행 즉시 예외를 내는 오탈자가 잠복해 있을 수 있다(J15가 다루는 활성화 리스크의 Python판). 반대로 def 줄이 임포트만으로 초록이 되는 현상은 같은 원리의 뒷면이다 — 정의가 실행문이라 실행 기록은 후하게 남지만, 그 기록이 함수 본문의 검증과 무관하다는 점에서 커버리지와 검증의 괴리가 언어 차원에서 내장돼 있다.</code>
+</p>
+
+<h3>8.4 C++ — GoogleTest + GoogleMock: 소멸자에서 검증되는 기대와 분모를 흔드는 컴파일러</h3>
+<p>
+GoogleTest에서 <code>EXPECT_*</code>가 하나도 없는 <code>TEST</code>는 통과한다 — 검증 부재형에 대한 내장 방어는 없고, 오히려 이 프레임워크에는 "여기까지 오면 성공"을 명시하는 <code>SUCCEED()</code>까지 있어 의도적 무단언 테스트가 문법적으로 정당화된다. gMock에서는 구분 하나가 결정적이다: <strong><code>EXPECT_CALL</code>은 단언이고 <code>ON_CALL</code>은 단언이 아니다.</strong> 전자는 "이렇게 호출되어야 한다"는 기대이고, 후자는 "호출되면 이렇게 동작하라"는 기본 동작 설정일 뿐이다.
+</p>
+<pre><code>class Notifier {
+public:
+    virtual ~Notifier() = default;
+    virtual void send(const std::string&amp; msg) = 0;
+};
+class MockNotifier : public Notifier {
+public:
+    MOCK_METHOD(void, send, (const std::string&amp;), (override));
+};
+
+TEST(OrderTest, ConfirmNotifies_NoAssert) {
+    MockNotifier n;
+    ON_CALL(n, send(testing::_)).WillByDefault(testing::Return());   // 동작 설정일 뿐 — 검증 아님
+    Order o(10000);
+    o.confirm(n);                                                     // 라인 초록, 검증 0
+}
+
+TEST(OrderTest, ConfirmNotifies) {
+    MockNotifier n;
+    EXPECT_CALL(n, send(testing::HasSubstr("confirmed"))).Times(1);   // 기대 — n의 소멸 시점에 검증된다
+    Order o(10000);
+    o.confirm(n);
+    EXPECT_EQ(o.status(), Status::Confirmed);                         // 결과 단언
+}</code></pre>
+<p>
+<code>EXPECT_CALL</code>의 검증 시점이 <strong>목 객체의 소멸자</strong>라는 점이 이 언어만의 함정을 낳는다. 목을 힙에 만들고 해제하지 않으면 소멸자가 돌지 않아 기대가 영원히 검증되지 않는데, gMock은 이를 "누수된 목"으로 감지해 기본적으로 실패시킨다(<code>--gmock_catch_leaked_mocks</code>). 즉 이 프레임워크에서 기대의 검증은 <em>객체 수명</em>에 묶여 있고, 수명을 잘못 다루면 단언이 있어도 검증 부재가 된다 — 8.2의 비동기 누락과 구조가 같다(단언이 "테스트 안에서" 실행되지 않는다).
+</p>
+<p>
+커버리지 측정은 컴파일러 계측이다 — GCC/Clang의 <code>--coverage</code>(gcov/lcov)나 Clang의 <code>-fprofile-instr-generate -fcoverage-mapping</code>(llvm-cov). 분기 커버리지는 lcov에서 명시적으로 켜야 하고, 켜는 순간 수치가 크게 떨어지는 경우가 많다: 예외가 던져질 수 있는 호출마다 컴파일러가 언와인드(스택을 되감아 소멸자를 호출하는 예외 전파) 분기를 만들고, 이 분기는 예외를 실제로 던지는 테스트 없이는 영원히 빨간색이다. 최적화 수준도 결과를 바꾼다 — 인라이닝과 코드 재배치로 줄과 기계어의 대응이 흐트러지므로, 커버리지 빌드는 최적화를 끈 별도 구성으로 두는 것이 관례다.
+</p>
+<p>
+<code>C++ 관점의 통찰: 이 언어의 커버리지 분모는 다른 언어보다 유동적이다. 인스턴스화되지 않은 템플릿 코드는 기계어가 생성되지 않으므로 분모에도 들어가지 않는다 — "커버리지 100%"인 템플릿 라이브러리가 실은 테스트가 인스턴스화한 타입에 대해서만 100%이고, 다른 타입에서의 동작은 측정된 적조차 없다. 헤더의 인라인 함수는 포함되는 번역 단위마다 따로 세어지고, 소멸자·복사 생성자 같은 컴파일러 생성 함수는 소스에 줄이 없어 보고서에 나타나지 않는다. 그리고 가장 근본적으로, 미정의 동작 위에서는 "실행됐고 단언도 통과했다"조차 올바름을 뜻하지 않으므로, C++에서 커버리지와 단언은 새니타이저·정적 분석과 나란히 놓여야 비로소 검증의 지도가 된다.</code>
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<p>본문의 축을 확장하는 것들이다 — 첫째는 5절의 발각 수단 (3)을, 둘째는 2절의 조건 커버리지를, 셋째는 4절 유형 ③을, 넷째는 6절의 래칫 용법을, 다섯째는 3절의 입력 공간 사각지대를 잇는다.</p>
+<ul>
+  <li><strong>뮤테이션 테스트(mutation testing)</strong> — 구현을 자동으로 조금씩 변형(<code>&gt;=</code>를 <code>&gt;</code>로, 상수를 0으로, 반환값 삭제)한 뒤 테스트가 그 변이를 잡아내는 비율을 재는 기법. 커버리지가 "실행됐는가"를 잰다면 이것은 "실행된 것이 <em>검증됐는가</em>"를 잰다 — 4절의 세 유형 모두 변이를 못 잡는 것으로 정량 발각된다. 실행 비용이 커서 전체 코드에 상시 적용하기보다 핵심 모듈이나 변경분에 선별 적용하는 것이 일반적이다(Java·JS·Python 각각 대표 도구가 있다).</li>
+  <li><strong>MC/DC(modified condition/decision coverage)</strong> — 복합 조건에서 각 개별 조건이 단독으로 결과를 뒤집는 케이스를 모두 요구하는 기준. 2ⁿ 조합 전부를 요구하는 대신 n+1개 안팎으로 조건 독립성을 확인하는 절충으로, 안전 표준에서 요구되는 커버리지의 상한선을 보여 준다.</li>
+  <li><strong>특성화 테스트(characterization test)</strong> — 요구사항을 모르는 기존 코드의 현재 출력을 그대로 기대값으로 고정하는 테스트. 4절 유형 ③의 정식 명칭으로, 리팩터링 안전망으로 쓴 뒤 요구사항 기준 테스트로 교체하는 것이 정석이다.</li>
+  <li><strong>차등 커버리지(diff coverage)</strong> — 변경된 줄만을 분모로 하는 커버리지. 전체 수치의 할당량화를 피하면서 "이번 변경에 미실행 로직이 있는가"를 자동으로 묻는, 6절 지도 용법의 파이프라인 구현.</li>
+  <li><strong>속성 기반 테스트(property-based testing)</strong> — 대표 입력 하나 대신 입력을 무작위 생성해 "모든 입력에서 성립해야 할 성질"을 검증하는 방식. 분기를 한 번 지나는 것과 입력 공간을 탐색하는 것의 차이(3절 둘째 사각지대)를 메우는 도구.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>커버리지 = <strong>실행 기록</strong>. 계측기는 "지나갔는가"를 세고, "결과가 맞는가"(단언)는 세지 않는다 — 두 축은 독립이다.</li>
+  <li>단위가 다르면 100%의 뜻이 다르다: <strong>라인 &lt; 분기 &lt; 조건 &lt; 경로</strong> 순으로 정직해지고 비싸진다. 기본 지표는 분기, 경로는 실용 지표가 아니다.</li>
+  <li>100%가 보증하지 않는 네 가지: <strong>안 쓴 코드 · 입력 공간 · 단언의 강도 · 순서와 상태</strong>. 높은 수치는 약한 정보, 낮은 수치는 강한 정보.</li>
+  <li>무의미 테스트 세 얼굴: <strong>동어반복</strong>(복사 일치 검증), <strong>검증 부재형</strong>(단언 없음 → 항상 통과, 초록불과 수치가 동시에 거짓), <strong>리팩터링 전후 동일 통과</strong>(행위 보존 확인 — 유일한 순기능, 리팩터링이 끝나면 교체).</li>
+  <li>검증 부재형은 언어마다 다른 구문으로 숨는다: 비동기 <code>await</code> 누락, 괄호 빠진 <code>assert</code>, <code>ON_CALL</code>만 있는 목, <code>verify()</code>만 있는 테스트. 발각은 리뷰의 질문 + 도구(단언 강제·린트) + 뮤테이션 테스트.</li>
+  <li><strong>지도이지 할당량이 아니다.</strong> 빨간 줄은 "테스트 추가 / 삭제 / 활성화 위험 기록" 중 하나로 처리하고, 임계값은 목표가 아니라 후퇴 방지선으로만 쓴다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="J1 테스트 더블과 단위 테스트 격리.html">J1 테스트 더블과 단위 테스트 격리.html</a> — 이 문서가 전제로만 쓴 대역(mock/stub)의 기초. "대역 설정을 되읽는 테스트"(4절 유형 ①)와 "동작 설정과 기대의 구분"(★8.4의 <code>ON_CALL</code> vs <code>EXPECT_CALL</code>)이 왜 생기는지의 메커니즘 층위</li>
+  <li><a href="J10 테스트 대상 선정 — 무엇을 테스트하지 않을지.html">J10 테스트 대상 선정 — 무엇을 테스트하지 않을지.html</a> — "무엇이 틀렸을 때 실패하는가"라는 판별 질문을 이 문서가 4~5절에서 그대로 빌려 쓴다. 저쪽이 테스트 예산을 <em>어디에</em> 쓸지를 다룬다면 이쪽은 쓴 결과를 <em>어떻게 읽을지</em>를 다룬다</li>
+  <li><a href="J15 미실행 경로와 활성화 리스크.html">J15 미실행 경로와 활성화 리스크.html</a> — 6절 흐름도의 셋째 갈래. 커버리지 0인 경로가 "아직 안 켜진 코드"일 때, 그 경로가 처음 실행되는 순간의 위험을 다루는 후속 문서</li>
+</ul>
+
+</body>
+</html>
