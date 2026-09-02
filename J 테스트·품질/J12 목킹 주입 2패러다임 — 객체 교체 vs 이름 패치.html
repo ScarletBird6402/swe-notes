@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J12 목킹 주입 2패러다임 — 객체 교체 vs 이름 패치</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>J12 목킹 주입 2패러다임 — 객체 교체 vs 이름 패치</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>대역(test double)을 만드는 것과 대상 코드에 <strong>"넣는" 것</strong>은 다른 문제다. 넣는 방식은 근본적으로 두 가지뿐이다 — <strong>객체 교체</strong>와 <strong>이름 패치</strong>.</li>
+  <li><strong>객체 교체</strong>는 대상 코드가 생성자·인터페이스로 받는 협력자 자리에 대역 <em>인스턴스</em>를 넣는다(의존성 주입 기반). 잘못 넣으면 <strong>컴파일러·타입 검사가 시끄럽게 잡는다</strong>.</li>
+  <li><strong>이름 패치</strong>는 모듈·네임스페이스에 묶인 <em>이름</em>의 바인딩을 실행 중에 바꿔치기한다(Python <code>patch</code>, JS <code>vi.mock</code>/<code>jest.mock</code>). 대상 코드에 이음새가 없어도 되지만, <strong>경로 불일치는 조용히 무의미</strong>하다 — 패치는 성공했는데 아무도 그 이름을 조회하지 않아 진짜 협력자가 호출된다.</li>
+  <li>이름 패치의 제1원리: <strong>정의된 곳이 아니라 조회되는 곳을 패치한다.</strong> <code>from x import f</code>는 <code>f</code>의 바인딩을 현재 모듈에 <em>복사</em>하므로, 원본 <code>x.f</code>를 바꿔도 복사본은 그대로다.</li>
+  <li>이름 패치의 조용한 실패를 시끄럽게 만드는 안전장치: <code>autospec=True</code>·<code>spec_set</code>(대역이 원본의 시그니처를 따르게), 대역에 대한 <strong>명시적 단언</strong>(호출됐는지 확인), 그리고 ESM 정적 바인딩·호이스팅 규칙의 이해.</li>
+  <li>선택 기준: <strong>이음새가 있으면 교체, 이음새를 만들 수 없는 경계에서만 패치.</strong> 패치가 늘어난다면 대상 코드에 의존성 주입 이음새가 부족하다는 설계 신호다.</li>
+</ul>
+
+<h2>1. 전제 — 대역은 만드는 것보다 "넣는" 것이 어렵다</h2>
+<p>
+J1에서 대역의 종류(mock·stub·fake 등)를 보았다면, 이 문서는 그다음 질문을 다룬다: <strong>만들어 둔 대역을 대상 코드가 실제로 쓰게 만드는 방법</strong>은 무엇인가.
+대상 코드는 협력자를 어딘가에서 <em>얻어 와야</em> 하는데, 얻어 오는 경로가 곧 대역이 끼어들 수 있는 자리다. 이 자리를 이 문서에서는 <strong>이음새(seam)</strong>라고 부른다 — 코드를 편집하지 않고도 동작을 바꿔 넣을 수 있는 지점이라는 뜻이다.
+</p>
+<p>
+협력자를 얻어 오는 경로는 크게 둘이다. 하나는 <strong>밖에서 건네받는 것</strong>(생성자 매개변수, 인터페이스 타입의 필드) — I4에서 본 의존성 주입(dependency injection)의 구조다.
+다른 하나는 <strong>이름으로 찾아 쓰는 것</strong> — 모듈 상단에서 <code>import</code>한 함수, 전역 네임스페이스의 클래스, 정적 메서드처럼 코드에 이름이 박혀 있고 실행 시점에 그 이름을 조회해 호출하는 구조다.
+대역을 넣는 두 패러다임은 정확히 이 두 경로에 대응한다. 먼저 건네받는 쪽부터 보자.
+</p>
+
+<h2>2. 패러다임 1 — 객체 교체: 협력자 인스턴스를 바꿔 넣는다</h2>
+<p>
+객체 교체는 대상 코드가 <strong>협력자를 값으로 받는다</strong>는 사실을 그대로 이용한다. 생성자가 <code>MailSender</code> 타입을 받는다면, 테스트는 그 자리에 <code>MailSender</code>를 구현한 대역을 건넨다. 대상 코드는 자기가 받은 것이 진짜인지 대역인지 알 필요도, 알 방법도 없다.
+</p>
+<pre><code>// 대상 코드: 협력자를 밖에서 받는다 (이음새 = 생성자 매개변수)
+class OrderService {
+    private final MailSender sender;
+    OrderService(MailSender sender) { this.sender = sender; }
+    void place(Order o) { sender.send(o.email(), "주문 " + o.id() + " 접수"); }
+}
+
+// 테스트: 그 자리에 대역 인스턴스를 넣는다
+MailSender fake = mock(MailSender.class);
+new OrderService(fake).place(new Order(7, "a@b.c"));
+verify(fake).send("a@b.c", "주문 7 접수");</code></pre>
+<p>
+이 방식의 특징은 <strong>대역이 지나가는 통로에 타입이 붙어 있다</strong>는 점이다. 통로의 타입은 컴파일러(또는 타입 검사기)가 감시하므로, 대역이 인터페이스를 잘못 구현했거나 엉뚱한 자리에 들어가면 <em>테스트가 실행되기 전에</em> 실패한다. 실패가 이르고 시끄럽다 — 이 성질은 5절에서 반대편과 나란히 놓고 다시 본다.
+</p>
+<p>
+대신 조건이 있다: <strong>대상 코드에 이음새가 이미 있어야 한다.</strong> 협력자를 생성자 안에서 직접 <code>new</code>하거나, 모듈 상단에서 import한 함수를 그대로 부르는 코드에는 대역을 건넬 자리가 없다.
+그런 코드에 대역을 넣고 싶을 때, 코드를 고치지 않고도 되는 방법이 있을까? 두 번째 패러다임이 그 답이다.
+</p>
+
+<h2>3. 패러다임 2 — 이름 패치: 바인딩을 실행 중에 바꿔치기한다</h2>
+<p>
+동적 언어의 모듈은 결국 <strong>이름 → 객체</strong>의 표(네임스페이스)다. 함수 호출 <code>send_mail(...)</code>은 "현재 모듈의 네임스페이스에서 <code>send_mail</code>이라는 이름을 찾아 그것을 호출하라"는 뜻이고, 이 조회는 <em>호출할 때마다</em> 일어난다.
+이름 패치(name patching)는 이 사실을 이용해 <strong>표의 항목을 테스트 동안만 대역으로 바꿔 놓는다</strong>. 대상 코드는 평소처럼 이름을 조회하지만, 조회 결과가 대역이다.
+</p>
+<pre><code># notifier.py — 협력자를 이름으로 찾아 쓴다 (이음새가 없어 보인다)
+from smtp_client import send_mail
+
+def notify(order):
+    return send_mail(order.email, f"주문 {order.id} 접수")
+
+# test_notifier.py — 이름의 바인딩을 테스트 동안만 바꾼다
+from unittest.mock import patch
+
+def test_notify_sends_mail():
+    with patch("notifier.send_mail", autospec=True) as fake_send:
+        notify(Order(7, "a@b.c"))
+    fake_send.assert_called_once_with("a@b.c", "주문 7 접수")</code></pre>
+<p>
+JS의 <code>vi.mock("./smtp-client")</code>·<code>jest.mock(...)</code>도 같은 부류다 — 바꾸는 단위가 개별 이름이 아니라 <strong>모듈 레지스트리의 항목</strong>(어떤 경로를 import하면 무엇을 돌려줄지)이라는 차이만 있다.
+장점은 분명하다: 이음새를 만들지 않아도 된다. 표준 라이브러리 함수, 시간, 모듈 수준 함수처럼 생성자로 받기 어색한 것도 대역으로 바꿀 수 있다.
+</p>
+<p>
+그런데 위 예제의 패치 대상 문자열을 보자. <code>send_mail</code>이 <em>정의된</em> 모듈은 <code>smtp_client</code>인데, 패치한 문자열은 <code>"notifier.send_mail"</code>이다. 왜 정의된 곳이 아니라 다른 곳을 패치하는가 — 이것이 이름 패치의 전부라 해도 좋을 원리다.
+</p>
+
+<h2>4. 정의된 곳이 아니라 조회되는 곳을 패치한다</h2>
+<p>
+<code>from smtp_client import send_mail</code>이 실행되면 Python은 <code>smtp_client</code> 모듈을 로드한 뒤, 그 네임스페이스의 <code>send_mail</code> 항목이 가리키는 함수 객체를 <strong><code>notifier</code>의 네임스페이스에 같은 이름으로 복사</strong>한다. 이제 함수 객체 하나를 두 개의 표가 각각 가리킨다.
+</p>
+<div class="flow">  smtp_client (정의처)                        notifier (조회처)
+  ┌───────────────────────┐   import 시점에   ┌───────────────────────┐
+  │ "send_mail" ──► 함수 f0│ ── 바인딩 복사 ──► │ "send_mail" ──► 함수 f0│
+  └───────────────────────┘                   └───────────────────────┘
+            ▲                                           ▲
+            │ patch("smtp_client.send_mail")            │ notify()가 실제로 조회하는 표
+            │ → 이 표의 항목만 대역으로 바뀜             │ → patch("notifier.send_mail")이
+            │   notifier의 항목은 여전히 f0              │   바꿔야 할 곳은 여기
+            │   ⇒ 진짜 f0가 호출된다                     │</div>
+<p>
+<code>patch("smtp_client.send_mail")</code>은 <em>정의처</em>의 표를 고친다. 패치 자체는 성공한다 — 예외도 없고 경고도 없다. 그러나 <code>notify()</code>는 자기 모듈의 표에서 <code>send_mail</code>을 조회하고, 그 항목은 여전히 진짜 함수를 가리킨다. 결과: <strong>대역은 만들어졌고 설치도 됐지만 아무도 조회하지 않는다.</strong>
+</p>
+<blockquote class="ok">
+<p><strong>원리:</strong> 패치할 문자열은 "그 이름이 어디서 정의됐는가"가 아니라 <strong>"대상 코드가 그 이름을 어느 표에서 찾는가"</strong>로 정한다. <code>import smtp_client</code> 후 <code>smtp_client.send_mail(...)</code>로 부르는 코드라면 조회처가 <code>smtp_client</code>의 표이므로 <code>"smtp_client.send_mail"</code>이 맞고, <code>from ... import</code>로 복사했다면 복사본이 있는 모듈이 조회처다.</p>
+</blockquote>
+<p>
+JS에도 같은 구조가 있다. <code>vi.mock</code>은 모듈 레지스트리를 바꾸므로 <code>from ... import</code> 복사 문제는 없지만, <strong>같은 모듈 안의 내부 호출</strong>은 레지스트리를 거치지 않는다 — <code>notifier.ts</code>의 <code>notify()</code>가 같은 파일에 정의된 <code>format()</code>을 직접 부른다면, <code>notifier</code> 모듈의 <code>format</code> export를 대역으로 바꿔도 내부 호출은 원본을 그대로 쓴다. 조회 경로가 다르면 패치가 닿지 않는다는 점에서 동일한 원리다.
+</p>
+<p>
+이제 두 패러다임이 <em>잘못됐을 때</em> 어떻게 다른 얼굴을 보이는지 나란히 놓을 차례다.
+</p>
+
+<h2>5. 실패 모드의 비대칭 — 시끄러운 실패 vs 조용한 무의미</h2>
+<p>
+4절의 잘못된 패치가 위험한 이유는 <strong>테스트가 여전히 통과할 수 있다</strong>는 데 있다. 대역에 "메일 발송을 막는" 목적만 있고 호출 여부를 단언하지 않았다면, 진짜 발송 함수가 호출되어도(개발 환경에서 성공하거나 조용히 예외를 삼키면) 초록불이 켜진다.
+K5가 다룬 조용한 실패(silent failure)의 테스트판이다 — <strong>오타나 경로 불일치가 오류가 아니라 "아무 효과 없음"으로 나타나고, 아무도 보지 않으므로 발각되지 않는다.</strong>
+</p>
+<table>
+  <tr><th></th><th>객체 교체</th><th>이름 패치</th></tr>
+  <tr>
+    <td>대역이 지나가는 통로</td>
+    <td>타입이 붙은 매개변수·필드</td>
+    <td>문자열로 지목한 이름(경로)</td>
+  </tr>
+  <tr>
+    <td>잘못 넣었을 때</td>
+    <td>컴파일·타입 오류 — <strong>이르고 시끄럽다</strong></td>
+    <td>패치 성공 + 미조회 — <strong>늦고 조용하다</strong>(테스트가 통과할 수 있음)</td>
+  </tr>
+  <tr>
+    <td>대상 코드에 요구하는 것</td>
+    <td>이음새(주입 지점)가 있어야 함</td>
+    <td>없어도 됨 — 대신 조회 경로를 정확히 알아야 함</td>
+  </tr>
+  <tr>
+    <td>영향 범위</td>
+    <td>그 테스트가 만든 인스턴스 하나</td>
+    <td>프로세스 전역 상태 — 반드시 복원해야 하고, 병렬 실행과 충돌할 수 있음</td>
+  </tr>
+  <tr>
+    <td>대상 코드 변경에 대한 반응</td>
+    <td>시그니처가 바뀌면 테스트도 컴파일 실패로 따라 바뀜</td>
+    <td>이름이 바뀌거나 import 방식이 바뀌면 패치가 <em>조용히</em> 헛돎</td>
+  </tr>
+</table>
+<p>
+비대칭의 뿌리는 단순하다. 객체 교체에서는 <strong>대역이 지나가는 통로를 언어가 검사</strong>하지만, 이름 패치에서는 통로가 <strong>문자열</strong>이라 언어의 검사 밖에 있다. 문자열은 오타가 나도 유효한 문자열이고, 존재하는 다른 모듈로 풀려도 유효한 경로다.
+마지막 행의 함정은 특히 리팩토링 때 드러난다: <code>import smtp_client</code>를 <code>from smtp_client import send_mail</code>로 바꾸는 사소한 정리만으로 조회처가 이동하고, 정의처를 패치하던 테스트가 헛돌기 시작한다 — 그런데도 초록불이다.
+</p>
+<p>
+그렇다면 이름 패치를 쓰는 한 이 조용함을 감수해야만 하는가. 다행히 조용한 실패를 <em>시끄럽게 바꾸는</em> 장치들이 있다.
+</p>
+
+<h2>6. 안전장치 — 조용한 실패를 시끄럽게 만드는 세 겹</h2>
+<p>
+안전장치는 실패의 세 단계 각각에 대응한다: <strong>대역이 원본과 다르게 생긴 것</strong>, <strong>대역이 조회되지 않은 것</strong>, <strong>패치가 애초에 엉뚱한 시점·경로에 설치된 것</strong>.
+</p>
+<p>
+<strong>① 대역의 모양을 원본에 묶는다 — <code>autospec</code>·<code>spec_set</code>.</strong> 아무 제약 없는 <code>Mock</code>은 어떤 속성을 조회해도, 어떤 인자로 불러도 새 <code>Mock</code>을 돌려주며 성공한다. 대상 코드가 <code>send_mail(to, body)</code>를 <code>send_mail(to)</code>로 잘못 불러도, 존재하지 않는 <code>sender.send_bulk()</code>를 불러도 통과한다.
+<code>patch(..., autospec=True)</code>(또는 <code>create_autospec</code>)는 대역이 <strong>원본의 시그니처와 속성 목록을 그대로 따르게</strong> 만들어 인자 개수 불일치·없는 속성 접근을 즉시 예외로 바꾼다. <code>spec_set</code>은 여기에 "없는 속성에 대입도 금지"를 더한다.
+</p>
+<pre><code>from unittest.mock import patch
+
+with patch("notifier.send_mail") as loose:            # 제약 없음
+    loose("a@b.c")                                     # 인자 하나 빠져도 통과
+    loose.send_bulk(["a@b.c"])                         # 없는 메서드도 통과
+
+with patch("notifier.send_mail", autospec=True) as strict:
+    strict("a@b.c")                                    # TypeError: 인자 부족 — 시끄럽게 실패
+    strict.send_bulk(["a@b.c"])                        # AttributeError — 시끄럽게 실패</code></pre>
+<p>
+<strong>② 대역이 실제로 조회됐는지 단언한다.</strong> "메일이 안 나가게만 하려고" 패치하더라도 <code>assert_called_once_with(...)</code> 하나를 붙이면, 4절의 정의처 패치 실수는 즉시 "호출 0회"로 발각된다. 이는 이름 패치에 대한 가장 값싼 보험이다.
+Java·Mockito 쪽의 대응물은 <strong>strict stubs</strong>다 — "<code>when(...)</code>으로 준비한 스텁이 한 번도 쓰이지 않았다"를 오류로 승격시킨다. 패치했는데 아무도 조회하지 않은 상황을 도구가 대신 알아채는 셈이다.
+</p>
+<p>
+<strong>③ 설치 시점과 경로 규칙을 이해한다.</strong> ES 모듈의 <code>import</code> 바인딩은 <strong>정적</strong>이다 — 모듈 평가 전에 연결되고 재대입이 금지된다. 그래서 테스트 코드에서 <code>sendMail = vi.fn()</code>처럼 바인딩을 덮어쓸 수 없고, 모듈 mock은 <strong>모듈이 평가되기 전에 레지스트리에 끼어들어야</strong> 한다. <code>vi.mock</code>·<code>jest.mock</code>이 파일 최상단으로 <em>호이스팅</em>되는 이유이며, 호이스팅 때문에 <code>vi.mock</code> 팩토리 안에서는 그보다 아래에 선언된 지역 변수를 쓸 수 없다(Vitest는 이를 위해 <code>vi.hoisted</code>를 둔다). 경로 문자열은 테스트 파일 기준 상대 경로로 풀리므로, 대상 코드가 import한 경로와 <em>같은 모듈로 해석되는지</em>가 전부다.
+</p>
+<p>
+세 겹을 갖추면 이름 패치도 충분히 안전해진다. 그러면 남는 질문은 "언제 어느 패러다임을 쓰는가"다.
+</p>
+
+<h2>7. 선택 기준 — 이음새가 있으면 교체, 없는 경계에서만 패치</h2>
+<div class="flow">대역을 넣어야 할 협력자
+   │
+   ├─ Q1. 대상 코드가 이 협력자를 밖에서 받는가(생성자·매개변수·인터페이스)?
+   │        예 ──&gt; 객체 교체 (타입이 지켜 준다. 끝)
+   │
+   ├─ Q2. 이음새를 만드는 것이 합리적인가(협력자가 도메인 수준의 의존성인가)?
+   │        예 ──&gt; 먼저 이음새를 만들고(I4의 주입) 객체 교체
+   │
+   └─ Q3. 이음새를 만들기 어색한 경계인가(시간·난수·표준 라이브러리·모듈 함수)?
+            예 ──&gt; 이름 패치 — 단, 조회처 + autospec + 단언 세트로</div>
+<p>
+순서가 곧 우선순위다. 객체 교체가 기본인 이유는 실패가 시끄럽기 때문만이 아니라, <strong>이음새가 설계를 드러내기 때문</strong>이다 — 생성자에 협력자가 나열된 코드는 "이 클래스가 무엇에 의존하는가"를 읽는 사람에게 말해 준다. 이름 패치는 그 정보를 테스트 파일의 문자열 속에 숨긴다.
+</p>
+<p>
+그래서 이름 패치의 개수는 설계 신호로 읽을 수 있다. 테스트 하나에 <code>patch</code>가 대여섯 개 쌓인다면, 대상 코드가 협력자를 이름으로 너무 많이 찾고 있다는 뜻이고, 그중 도메인 수준의 의존성(저장소, 발송기, 결제 게이트웨이)은 이음새를 열어 주입으로 승격시키는 편이 테스트와 설계 모두에 낫다.
+반대로 <code>datetime.now</code>·<code>random</code>·파일 시스템처럼 <strong>모든 곳에서 쓰이는 얇은 경계</strong>는 이름 패치가 자연스러운 자리다 — 이런 것까지 생성자로 받으면 주입이 소음이 된다.
+</p>
+<p>
+기준이 섰으니, 두 패러다임 사이에서 자주 생기는 오해를 정리하고 언어별 도구로 내려가자.
+</p>
+
+<h2>8. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "패치가 성공했으니 대역이 쓰인다"</strong> — 패치의 성공은 "표의 항목을 바꿨다"는 뜻일 뿐, "대상 코드가 그 표를 본다"는 보장이 아니다. 둘은 다른 사건이다. 대역이 쓰였는지는 호출 단언으로만 확인된다.</p>
+<p><strong>② "정의처를 패치하면 모든 사용처에 퍼진다"</strong> — <code>import x; x.f()</code>처럼 매번 정의처의 표를 조회하는 코드에만 참이다. <code>from x import f</code>로 복사한 모듈은 자기 복사본을 보므로 퍼지지 않는다. 같은 함수를 두 방식으로 쓰는 모듈이 섞여 있으면, 패치 하나로 절반만 바뀌는 상태가 된다.</p>
+<p><strong>③ "객체 교체는 타입이 지켜 주니 단언이 필요 없다"</strong> — 타입이 지키는 것은 "대역이 올바른 자리에 올바른 모양으로 들어갔다"까지다. 대역이 <em>올바른 인자로 호출됐는가</em>는 여전히 테스트가 단언해야 한다. 컴파일러는 통로를 검사하지 내용을 검사하지 않는다.</p>
+<p><strong>④ "제약 없는 Mock이 더 유연하니 좋다"</strong> — 유연함의 정체는 "무엇을 해도 성공한다"이고, 이는 대상 코드의 오타·인자 실수를 테스트가 <em>흡수</em>한다는 뜻이다. J10이 말한 "무엇이 틀렸을 때 실패하는가"를 물어 보면 답이 줄어든다. 기본값을 <code>autospec</code>으로 두고, 정말 필요할 때만 푼다.</p>
+</blockquote>
+
+<h2>★ 9. 언어별 대조</h2>
+<p>
+같은 두 패러다임이지만, 언어의 바인딩 모델이 어느 쪽을 <em>기본</em>으로 만들고 어느 쪽을 <em>예외</em>로 밀어내는지가 다르다. 정적으로 바인딩되는 언어일수록 이름 패치가 성립하기 어렵고, 동적 언어일수록 이름 패치가 쉬운 만큼 조용한 실패의 면적이 넓다.
+</p>
+<table>
+  <tr><th>언어 / 도구</th><th>기본 패러다임과 API</th><th>다른 쪽 패러다임의 형태</th><th>그 언어만의 함정</th></tr>
+  <tr>
+    <td>Java — JUnit 5 + Mockito</td>
+    <td>객체 교체: <code>@Mock</code>·<code>mock()</code> → 생성자 주입</td>
+    <td>이름 패치는 사실상 없음. 정적 메서드만 <code>mockStatic</code>이 예외적으로 담당</td>
+    <td>준비한 스텁이 안 쓰이는 조용함 → strict stubs가 오류로 승격</td>
+  </tr>
+  <tr>
+    <td>JS·TS — Jest / Vitest</td>
+    <td>이름 패치: <code>vi.mock</code>·<code>jest.mock</code>(모듈 레지스트리 교체)</td>
+    <td>객체 교체는 생성자·매개변수로 fake를 넘기면 됨 — 구조적 타이핑이라 싸다</td>
+    <td>경로 문자열 불일치의 조용한 실패, 호이스팅, 같은 모듈 내부 호출 미적용</td>
+  </tr>
+  <tr>
+    <td>Python — pytest + unittest.mock</td>
+    <td>이름 패치: <code>patch("모듈.이름")</code></td>
+    <td>객체 교체는 덕 타이핑으로 어떤 객체든 넘기면 됨</td>
+    <td>정의처/조회처 혼동, 제약 없는 <code>Mock</code> → <code>autospec</code></td>
+  </tr>
+  <tr>
+    <td>C++ — GoogleTest + gMock</td>
+    <td>객체 교체: 가상 인터페이스 + <code>MOCK_METHOD</code>, 또는 템플릿 주입</td>
+    <td>이름 패치가 성립하지 않음. 링크 타임 교체가 가장 가까운 대응물</td>
+    <td>가상 함수가 아니면 대역이 끼어들 자리가 없음 — 이음새를 설계 단계에서 확보</td>
+  </tr>
+</table>
+
+<h3>9.1 Java — 객체 교체가 기본, 이름 패치는 정적 메서드에만 예외적으로</h3>
+<p>
+Java의 메서드 호출은 컴파일 시점에 클래스와 시그니처가 결정되고, 모듈 수준의 "이름 표"를 실행 중에 바꿀 통로가 언어에 없다. 그래서 Mockito의 기본 흐름은 철저히 객체 교체다 — <code>@Mock</code>으로 만든 대역을 생성자로 건넨다.
+JUnit 5의 확장 모델(<code>@ExtendWith(MockitoExtension.class)</code>)이 대역의 생성과 검증 시점을 테스트 생명주기에 끼워 넣는다.
+</p>
+<pre><code>@ExtendWith(MockitoExtension.class)          // 기본 strictness = STRICT_STUBS
+class OrderServiceTest {
+    @Mock MailSender sender;                  // 객체 교체용 대역
+
+    @Test
+    void 주문하면_접수_메일을_보낸다() {
+        OrderService service = new OrderService(sender);     // 생성자 주입 = 이음새
+        service.place(new Order(7, "a@b.c"));
+        verify(sender).send("a@b.c", "주문 7 접수");
+    }
+
+    @Test
+    void 정적_메서드는_예외적으로_이름을_바꾼다() {
+        try (MockedStatic&lt;IdGenerator&gt; ids = mockStatic(IdGenerator.class)) {
+            ids.when(IdGenerator::next).thenReturn(7L);       // 이 스코프·스레드 안에서만
+            assertEquals(7L, IdGenerator.next());
+        }                                                     // 닫히면 원본으로 복원
+    }
+}</code></pre>
+<p>
+이 언어의 이름 패치는 <code>mockStatic</code> 하나로 좁혀진다. 정적 메서드는 인스턴스가 없어 객체 교체가 불가능하므로, 바이트코드를 실행 중에 고쳐 호출을 가로채는 방식(inline mock maker)이 예외적으로 동원된다 — 2020년대 중반 기준 Mockito 5부터 이 방식이 기본 mock maker가 되어 별도 의존성 없이 쓸 수 있다.
+<code>try-with-resources</code> 스코프 밖에서는 효력이 없고 같은 스레드에만 적용된다는 제약이, "전역 상태를 바꾸는 패치는 반드시 복원해야 한다"는 5절의 표 마지막 행을 언어가 강제하는 형태다.
+</p>
+<p>
+Java에서 조용한 실패는 경로가 아니라 <strong>스텁</strong>에서 온다. <code>when(sender.send(...)).thenReturn(...)</code>을 준비했는데 대상 코드가 다른 인자로 불러 스텁이 한 번도 맞지 않으면, 대역은 기본값(<code>null</code>·0·false)을 돌려주고 테스트는 엉뚱한 이유로 통과하거나 실패한다. <code>MockitoExtension</code>의 기본 strict stubs는 "쓰이지 않은 스텁"을 <code>UnnecessaryStubbingException</code>으로 승격시켜 이 조용함을 시끄럽게 만든다 — 6절 ②의 Java판이다.
+</p>
+
+<h3>9.2 JS·TS — 모듈 mock은 이름 패치이고, 경로 문자열이 곧 위험이다</h3>
+<p>
+ES 모듈에서 <code>import { sendMail } from "./smtp-client"</code>의 <code>sendMail</code>은 <strong>정적 바인딩</strong>이다: 모듈 그래프가 연결될 때 원본 모듈의 export에 묶이고, 테스트 코드가 <code>sendMail = ...</code>으로 덮어쓸 수 없다. 그래서 JS의 대역 주입은 바인딩이 만들어지기 <em>전</em>, 즉 모듈 레지스트리 단계에서 "이 경로를 요청하면 이 대역 모듈을 줘라"로 끼어드는 이름 패치가 된다. Jest의 <code>jest.mock</code>과 Vitest의 <code>vi.mock</code>은 이 지점에서 같고, 둘 다 호출을 파일 최상단으로 호이스팅한다(Vitest는 Vite의 모듈 변환 위에서 동작하고 ESM을 기본으로 다룬다는 점, 설정 없이 <code>vi.hoisted</code>를 제공한다는 점이 실무적 차이다).
+</p>
+<pre><code>// notifier.ts
+import { sendMail } from "./smtp-client";
+export function notify(order: { id: number; email: string }) {
+  return sendMail(order.email, `주문 ${order.id} 접수`);
+}
+
+// notifier.test.ts (Vitest; Jest는 vi → jest)
+import { vi, test, expect } from "vitest";
+import { notify } from "./notifier";
+import { sendMail } from "./smtp-client";
+
+vi.mock("./smtp-client");        // 호이스팅됨 — 위의 import보다 먼저 레지스트리에 등록
+// vi.mock("./smtp_client");     // 오타: 다른 경로로 풀리면 진짜 모듈이 그대로 쓰인다
+
+test("주문하면 접수 메일을 보낸다", () => {
+  notify({ id: 7, email: "a@b.c" });
+  expect(vi.mocked(sendMail)).toHaveBeenCalledWith("a@b.c", "주문 7 접수");   // 이 단언이 보험
+});</code></pre>
+<p>
+함정은 경로 문자열에 집중된다. <code>vi.mock</code>의 경로는 <strong>테스트 파일 기준</strong>으로 풀리는데, 대상 코드가 import한 경로와 <em>같은 모듈로 해석되어야만</em> 대역이 적용된다. 별칭(alias)이 걸린 경로와 상대 경로가 서로 다른 모듈 id로 계산되는 경우가 대표적이고, 이때 패치는 성공하지만 대상 코드는 원본을 받는다 — 5절의 조용한 무의미가 그대로 재현된다. 존재하지 않는 경로는 도구·설정에 따라 오류를 내기도 하지만, <em>존재하는 다른 모듈</em>로 풀리는 오타는 어느 도구도 잡아 주지 않는다.
+또 하나, 모듈 mock은 레지스트리를 거치는 import만 가로채므로 같은 파일 안의 함수끼리 직접 부르는 내부 호출에는 닿지 않는다(4절).
+</p>
+<p>
+반대편인 객체 교체는 TS의 <strong>구조적 타이핑</strong>(이름이 아니라 모양이 같으면 같은 타입으로 보는 규칙) 덕에 유난히 싸다. <code>MailSender</code> 인터페이스를 명시적으로 구현하지 않아도 <code>{ send: vi.fn() }</code> 같은 객체 리터럴이 그 자리에 들어가며, 타입 검사기가 모양 불일치를 잡아 준다. 협력자를 매개변수로 받는 코드라면 모듈 mock 없이 이 길이 먼저다 — 7절의 Q1이 JS에서는 "함수 인자로 받을 수 있는가"로 읽힌다.
+</p>
+
+<h3>9.3 Python — 이름 패치의 본고장, 그래서 조회처 규칙과 autospec이 필수</h3>
+<p>
+Python의 모듈·클래스·인스턴스는 모두 <code>__dict__</code>라는 이름 표를 가진 객체이고, 속성 조회는 실행 시점마다 이 표를 뒤진다. <code>patch</code>는 이 표의 항목을 <code>setattr</code>로 바꿨다가 종료 시 되돌리는 도구일 뿐이며, 그래서 어떤 이름이든 패치할 수 있고 어떤 실수든 조용할 수 있다.
+</p>
+<pre><code># notifier.py
+from smtp_client import send_mail            # 바인딩이 notifier.__dict__에 복사됨
+
+def notify(order):
+    return send_mail(order.email, f"주문 {order.id} 접수")
+
+# test_notifier.py
+from unittest.mock import patch
+import pytest
+
+@patch("smtp_client.send_mail")               # 정의처 — 패치는 성공하나 notify는 못 본다
+def test_wrong_target(fake):
+    notify(Order(7, "a@b.c"))
+    fake.assert_called_once()                 # 실패: 호출 0회 (단언이 없었다면 통과했을 것)
+
+@patch("notifier.send_mail", autospec=True)   # 조회처 + 원본 시그니처 강제
+def test_right_target(fake):
+    notify(Order(7, "a@b.c"))
+    fake.assert_called_once_with("a@b.c", "주문 7 접수")
+
+def test_with_fixture(monkeypatch):           # pytest 관용구: 같은 원리, 자동 복원
+    calls = []
+    monkeypatch.setattr("notifier.send_mail", lambda to, body: calls.append((to, body)))
+    notify(Order(7, "a@b.c"))
+    assert calls == [("a@b.c", "주문 7 접수")]</code></pre>
+<p>
+<code>patch</code>는 대상 속성이 존재하지 않으면 기본적으로 <code>AttributeError</code>를 낸다 — 이름 자체의 오타(<code>send_mial</code>)는 시끄럽게 잡힌다. 조용한 쪽은 <strong>존재하는 다른 표</strong>를 지목하는 정의처 패치이고, 이는 도구가 아니라 4절의 규칙으로만 막을 수 있다. 여기에 <code>autospec=True</code>를 습관으로 두면 인자 불일치·없는 속성까지 예외로 승격되어, 이름 패치의 세 안전장치(6절) 중 둘이 한 줄로 갖춰진다.
+pytest의 <code>monkeypatch</code> 픽스처는 같은 <code>setattr</code> 원리에 테스트 종료 시 자동 복원을 얹은 것으로, 문자열 경로 규칙은 동일하게 적용된다.
+</p>
+<p>
+<code>Python 관점의 통찰: 이름 패치가 가능한 근본 이유는 함수 호출이 "주소로 점프"가 아니라 "이름 표 조회 → 얻은 객체 호출"이라는 두 단계로 실행되기 때문이다. 이 두 단계 사이에 끼어드는 것이 patch이고, 같은 이유로 패치 비용은 0이 아니다 — 조회는 매 호출마다 일어나므로, 패치된 이름은 원본이든 대역이든 항상 한 번의 딕셔너리 탐색을 거친다. 덕 타이핑 환경에서 객체 교체는 "인터페이스 구현" 없이도 되지만, 그 대가로 대역의 모양이 원본과 어긋나도 언어가 말해 주지 않는다 — autospec은 언어가 하지 않는 모양 검사를 테스트 시점에 대신 수행하는 장치이며, 타입 힌트와 정적 검사기를 도입해도 Mock 객체 자체는 그 검사 밖에 있다는 점을 기억해야 한다.</code>
+</p>
+
+<h3>9.4 C++ — 이름 패치가 성립하지 않는 언어, 이음새는 설계로 확보한다</h3>
+<p>
+C++의 함수 호출은 컴파일·링크 단계에서 <strong>주소로 고정</strong>된다. 실행 중에 뒤질 이름 표가 없으므로 이름 패치는 성립하지 않고, 대역이 끼어들 자리는 "호출이 실행 시점에 결정되는" 지점뿐이다. 그 지점이 바로 가상 함수다 — vtable(가상 함수 테이블: 객체가 가리키는, 가상 함수의 주소 목록)을 통해 실제 객체 타입에 따라 호출 대상이 실행 시점에 골라진다. gMock은 이 가상 인터페이스 위에 <code>MOCK_METHOD</code>로 대역을 만들고, 객체 교체로 넣는다.
+</p>
+<pre><code>class MailSender {                          // 가상 인터페이스 = 이음새
+ public:
+  virtual ~MailSender() = default;
+  virtual void Send(const std::string&amp; to, const std::string&amp; body) = 0;
+};
+
+class MockMailSender : public MailSender {
+ public:
+  MOCK_METHOD(void, Send, (const std::string&amp;, const std::string&amp;), (override));
+  // (override): 원본 시그니처와 다르면 컴파일 오류 — 대역의 모양을 컴파일러가 검사
+};
+
+class OrderService {
+ public:
+  explicit OrderService(MailSender&amp; sender) : sender_(sender) {}
+  void Place(const Order&amp; o) { sender_.Send(o.email, "주문 " + std::to_string(o.id) + " 접수"); }
+ private:
+  MailSender&amp; sender_;                      // 참조로 받는다 — 수명은 호출자가 책임
+};
+
+TEST(OrderServiceTest, SendsMailOnPlace) {
+  MockMailSender sender;
+  EXPECT_CALL(sender, Send("a@b.c", "주문 7 접수")).Times(1);
+  OrderService(sender).Place(Order{7, "a@b.c"});
+}                                           // 소멸자에서 기대가 검증된다</code></pre>
+<p>
+가상 함수를 두고 싶지 않다면 <strong>템플릿 주입</strong>이 두 번째 길이다. <code>template &lt;class Sender&gt; class OrderService</code>로 협력자 타입을 매개변수화하면, 테스트는 <code>OrderService&lt;MockMailSender&gt;</code>를 인스턴스화한다 — 인터페이스 상속 없이도 "같은 메서드를 가진 타입이면 된다"는 컴파일 타임 덕 타이핑이며, 모양이 어긋나면 인스턴스화 시점에 컴파일 오류가 난다. 세 번째로 <strong>링크 타임 교체</strong>가 있다: 같은 함수 시그니처를 가진 다른 구현 파일을 테스트 바이너리에만 링크하는 방식으로, 이름 패치에 가장 가까운 대응물이지만 단위가 "테스트 하나"가 아니라 "바이너리 하나"이고 한 바이너리에 정의는 하나뿐(단일 정의 규칙)이라 자유로운 교체와는 거리가 멀다.
+</p>
+<p>
+gMock의 함정은 조용함의 방향이 반대라는 데 있다. 기대하지 않은 호출(<code>EXPECT_CALL</code>에 없는 호출)은 기본 <code>NaggyMock</code>에서 경고만 내고 통과하며, <code>StrictMock</code>으로 감싸야 실패가 된다. 즉 이 언어에서는 "대역이 쓰이지 않는" 실패가 아니라 "대역이 <em>예상 밖으로</em> 쓰이는" 실패가 조용할 수 있다.
+</p>
+<p>
+<code>C++ 관점의 통찰: 이름 패치가 없다는 사실은 불편이 아니라 성질이다 — 호출 대상이 컴파일·링크 시점에 고정되기에 대역의 모양 오류는 전부 빌드 실패로 나타나고, 5절의 "조용한 무의미"는 이 언어에 거의 존재하지 않는다. 대가는 이음새를 미리 설계해야 한다는 점이다: 가상 함수는 vtable 간접 호출과 인라이닝 제약이라는 실행 비용을, 템플릿은 코드 크기와 컴파일 시간을 청구한다. 수명 관점도 빠뜨릴 수 없다 — 대역을 참조·포인터로 주입하면 대상 객체보다 대역이 먼저 소멸해서는 안 되며, 위 예제에서 대역을 테스트 함수의 지역 변수로 먼저 선언한 순서가 그 규칙을 지키는 방식이다(지역 변수는 선언의 역순으로 소멸하므로 대상 객체가 먼저 사라진다).</code>
+</p>
+
+<h2>10. 함께 알면 좋은 것</h2>
+<p>본문의 축을 확장하는 인접 개념들이다 — 첫째·둘째는 1절의 이음새를, 셋째는 6절의 안전장치를, 넷째는 5절의 전역 상태 행을, 다섯째는 7절의 판별을 잇는다.</p>
+<ul>
+  <li><strong>이음새(seam) 분류</strong> — 코드를 편집하지 않고 동작을 바꿔 넣을 수 있는 지점을 <em>객체 이음새</em>(다형성·주입), <em>링크 이음새</em>(링크·모듈 해석 시점의 교체), <em>전처리 이음새</em>(매크로) 등으로 나누는 어휘. 이 문서의 두 패러다임은 앞의 둘에 대응한다.</li>
+  <li><strong>험블 객체(humble object)</strong> — 테스트하기 어려운 경계(UI·시간·외부 입출력)를 로직이 거의 없는 얇은 껍데기로 분리해, 이름 패치 없이도 로직 쪽을 객체 교체만으로 테스트하게 만드는 설계. 7절 Q2의 "이음새를 만드는" 구체적 방법.</li>
+  <li><strong>계약 검증이 붙은 대역</strong> — <code>autospec</code>처럼 대역이 원본의 계약(시그니처·속성)을 자동으로 따르게 하는 접근의 일반화. 대역과 원본이 따로 진화해 어긋나는 "거짓 초록불"을 막는다. 소비자·제공자 사이의 계약 테스트와 같은 문제의식이다.</li>
+  <li><strong>테스트 격리와 병렬 실행</strong> — 이름 패치는 프로세스 전역 상태를 바꾸므로, 테스트가 병렬로 돌면 한 테스트의 패치가 다른 테스트에 새어 들어갈 수 있다. 복원 보장(컨텍스트 매니저·픽스처·<code>try-with-resources</code>)과 프로세스 단위 격리가 대응책.</li>
+  <li><strong>의존성 주입 컨테이너의 테스트 프로파일</strong> — 프레임워크가 관리하는 객체 그래프에서 특정 빈(bean)만 대역으로 바꾸는 기능. 객체 교체를 컨테이너 수준에서 수행하는 것이지만, 이름(빈 이름·타입)으로 지목한다는 점에서 이름 패치의 조용함이 일부 섞여 든다 — 잘못 지목하면 진짜 빈이 그대로 남는다.</li>
+</ul>
+
+<h2>11. 한 장 요약</h2>
+<ul>
+  <li>대역을 넣는 길은 둘: <strong>객체 교체</strong>(협력자 인스턴스를 타입 붙은 통로로 건넴)와 <strong>이름 패치</strong>(이름 표의 항목을 실행 중 바꿈).</li>
+  <li>실패 모드가 비대칭이다 — 교체는 <strong>컴파일러가 이르고 시끄럽게</strong>, 패치는 <strong>경로 불일치가 늦고 조용하게</strong>(패치 성공 + 미조회 = 진짜 협력자 호출, 테스트는 초록불).</li>
+  <li>이름 패치의 제1원리: <strong>정의된 곳이 아니라 조회되는 곳</strong>. <code>from x import f</code>는 바인딩을 복사하고, 같은 모듈 내부 호출은 레지스트리를 거치지 않는다.</li>
+  <li>안전장치 세 겹: <code>autospec</code>/<code>spec_set</code>으로 대역의 모양을 원본에 묶고, 호출 <strong>단언</strong>으로 조회 여부를 확인하며, 정적 바인딩·호이스팅·경로 해석 규칙을 이해한다.</li>
+  <li>선택 기준: 이음새가 있으면 교체, 만들 가치가 있으면 만들어서 교체, 얇은 경계(시간·난수·표준 라이브러리)에서만 패치. <strong>패치의 개수는 설계 신호</strong>다.</li>
+  <li>언어의 바인딩 모델이 기본을 정한다: Java·C++은 교체가 기본이고 이름 패치는 예외(<code>mockStatic</code>)거나 부재, JS·Python은 패치가 기본이라 조회처 규칙과 스펙 강제가 필수다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="J1 테스트 더블과 단위 테스트 격리.html">J1 테스트 더블과 단위 테스트 격리.html</a> — 이 문서가 전제로 삼은 대역의 종류와 격리의 목적. J1이 "무엇을 넣는가"라면 이 문서는 "어떻게 넣는가"이며, 1절의 이음새 개념이 그 접점이다</li>
+  <li><a href="../I 설계·아키텍처/I4 의존성 주입과 테스트 용이성.html">I4 의존성 주입과 테스트 용이성.html</a> — 객체 교체 패러다임이 서 있는 기반. 2절의 생성자 이음새와 7절의 "패치가 늘면 주입으로 승격"이 I4의 설계 원리를 테스트 쪽에서 되짚는 지점이다</li>
+  <li><a href="../K 개발 방법론·협업/K5 조용한 실패와 오타.html">K5 조용한 실패와 오타.html</a> — 5절의 "경로 불일치가 조용히 무의미"는 K5가 다룬 조용한 실패의 테스트판이다: 오타가 오류가 아니라 무효과로 나타나고, 아무도 보지 않아 발각되지 않는다는 구조가 같다</li>
+</ul>
+
+</body>
+</html>
