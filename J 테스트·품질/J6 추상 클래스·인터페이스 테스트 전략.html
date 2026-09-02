@@ -1,0 +1,508 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J6 추상 클래스·인터페이스 테스트 전략</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>J6 추상 클래스·인터페이스 테스트 전략</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>추상 계층은 <strong>인스턴스가 없는 코드</strong>다. 그래서 테스트 대상이 둘로 갈라진다 — 추상 클래스에 <em>이미 적혀 있는</em> 구체 로직(템플릿 메서드)과, 인터페이스가 <em>구현들에게 요구하는</em> 계약. 무엇을 검증하려는지에 따라 경로가 달라진다.</li>
+  <li>경로 ① <strong>테스트 안 익명 구현</strong>: 추상 메서드만 최소로 채워 추상 클래스의 구체 로직을 실행한다. 검증 대상은 부모의 로직이지, 익명 구현 자체가 아니다.</li>
+  <li>경로 ② <strong>테스트 전용 최소 구체 클래스</strong>: 익명 구현이 여러 테스트에서 반복되거나 관찰 지점이 필요해지면 이름을 붙인다. 단, "또 하나의 구현"으로 자라 그것을 테스트하게 되는 순간 목적이 뒤집힌다.</li>
+  <li>경로 ③ <strong>계약 테스트(contract test)</strong>: 추상 테스트 클래스 하나를 모든 구현이 상속해 같은 규약을 검증한다. 검증 대상은 <em>구현 간 일관성</em>이며, 구현 고유의 로직은 각자의 테스트 몫이다.</li>
+  <li>대역 도구의 <code>spy</code>/<code>CALLS_REAL_METHODS</code>는 추상 클래스를 "부분 실행"하는 지름길이지만, 생성자 미실행·부분 스텁의 자기 호출 문제·구현을 되읽는 테스트로 흐르는 함정이 따라온다.</li>
+  <li>설계의 역방향: <strong>인터페이스가 테스트 가능성을 결정한다.</strong> 구체 클래스에 의존하면 대역을 끼울 자리가 없고, 인터페이스로 받으면 의존성 주입으로 무엇이든 끼울 수 있다 — 테스트하기 어렵다는 사실은 의존 방향의 설계 신호다.</li>
+</ul>
+
+<h2>1. 전제 — 추상 계층은 "인스턴스가 없는 코드"다</h2>
+<p>
+단위 테스트의 기본 절차는 단순하다: 대상을 만들고(<code>new</code>), 호출하고, 결과를 확인한다(대역으로 의존성을 격리하는 방법은 J1의 주제다).
+그런데 추상 클래스(abstract class)와 인터페이스는 이 첫 단계에서 막힌다 — <strong>인스턴스를 만들 수 없기 때문</strong>이다. 추상 클래스는 "아직 안 채워진 메서드"를 품고 있어 언어가 생성을 거부하고, 인터페이스는 애초에 실행할 본문이 없다.
+</p>
+<p>
+여기서 먼저 정리할 것은 "그럼 뭘 테스트하느냐"다. 추상 계층에는 성격이 다른 두 가지가 들어 있다.
+</p>
+<table>
+  <tr><th>구분</th><th>무엇이 들어 있나</th><th>테스트하고 싶은 것</th></tr>
+  <tr>
+    <td><strong>추상 클래스</strong></td>
+    <td>구체 로직(공통 절차·검증·조합) + 자식이 채울 빈칸(추상 메서드)</td>
+    <td>구체 로직이 빈칸을 올바르게 호출·조합하는가 — 이른바 <strong>템플릿 메서드(template method)</strong>의 흐름</td>
+  </tr>
+  <tr>
+    <td><strong>인터페이스</strong></td>
+    <td>메서드 서명과 (문서·주석·이름에 담긴) 약속 — 본문 없음</td>
+    <td>이 인터페이스를 구현한 <em>모든</em> 클래스가 같은 약속을 지키는가 — <strong>계약(contract)</strong></td>
+  </tr>
+</table>
+<p>이 문서 전체를 관통할 예제를 두 개 잡는다. 하나는 구체 로직을 품은 추상 클래스, 하나는 약속만 있는 인터페이스다.</p>
+<pre><code>// 예제 A: 추상 클래스 — "알림을 보내는 절차"는 공통, "어디로 어떻게 전달하나"만 빈칸
+public abstract class NotificationSender {
+    public final SendResult send(Order order) {          // 템플릿 메서드: 절차는 여기에 고정
+        if (order.amount() == 0) return SendResult.skipped();   // 구체 로직 ① 분기
+        String message = format(order);                          // 구체 로직 ② 변환
+        deliver(order.customerEmail(), message);                 // 빈칸 호출
+        return SendResult.sent();
+    }
+    protected String format(Order order) { return "주문 " + order.id() + " 확인"; }
+    protected abstract void deliver(String recipient, String message);   // 빈칸
+}
+
+// 예제 B: 인터페이스 — 서명뿐, 약속은 이름과 문서에 있다
+public interface DiscountPolicy {
+    /** 반환값은 0 이상이고 amount를 넘지 않는다. amount가 0이면 0. */
+    int apply(int amount);
+}</code></pre>
+<p>
+예제 A에서 검증하고 싶은 것은 "금액 0이면 전달을 건너뛴다"와 "전달에 넘기는 메시지가 규칙대로 만들어진다"라는 <em>부모의 로직</em>이다. 예제 B에서 검증하고 싶은 것은 정률 할인이든 정액 할인이든 <em>주석의 약속</em>을 지키는가다.
+둘 다 인스턴스가 없다는 같은 벽에 막히지만, 벽을 넘는 방법은 목적에 따라 다르다. 가장 가벼운 방법부터 본다.
+</p>
+
+<h2>2. 경로 ① — 테스트 안 익명 구현: 빈칸만 최소로 채운다</h2>
+<p>
+추상 클래스를 만들 수 없는 이유는 빈칸 때문이니, <strong>테스트 코드 안에서 빈칸만 채운 일회용 자식</strong>을 만들면 된다. 대부분의 언어가 이름 없는 자식 클래스(익명 클래스, anonymous class)나 그에 준하는 문법을 제공한다.
+</p>
+<pre><code>@Test
+void 금액이_0이면_전달하지_않는다() {
+    List&lt;String&gt; delivered = new ArrayList&lt;&gt;();
+    NotificationSender sender = new NotificationSender() {       // 익명 구현
+        @Override protected void deliver(String to, String msg) { delivered.add(to + ":" + msg); }
+    };
+
+    SendResult result = sender.send(new Order(1, 0, "a@example.com"));
+
+    assertEquals(SendResult.skipped(), result);
+    assertTrue(delivered.isEmpty());          // 빈칸이 호출되지 않았음을 관찰
+}</code></pre>
+<p>
+핵심은 <strong>익명 구현이 하는 일이 "기록"뿐</strong>이라는 점이다. 전달 로직을 흉내 내지 않고, 부모가 빈칸에 무엇을 넘겼는지만 남긴다. 그래야 테스트가 실패했을 때 원인이 부모의 로직에 있다고 확신할 수 있다 — 익명 구현에 로직이 들어가는 순간 실패 원인이 둘로 늘어난다.
+</p>
+<blockquote class="ok">
+<p><strong>경로 ①이 검증하는 것 / 못 하는 것:</strong> 검증하는 것은 추상 클래스의 <em>구체 로직</em>(분기·변환·빈칸 호출 순서)이다. 못 하는 것은 실제 구현들의 동작 — 이메일 구현이 정말 보내는지, 문자 구현이 길이 제한을 지키는지는 이 테스트의 관심 밖이다. 익명 구현은 "부모를 실행시키기 위한 최소 장치"이지 대역의 한 종류로 오해하면 안 된다(J1의 어휘로는 관찰만 하는 스파이에 가깝다).</p>
+</blockquote>
+<p>
+이 방법의 비용은 <strong>반복</strong>이다. 같은 추상 클래스에 테스트가 열 개면 익명 구현도 열 번 적힌다. 그리고 관찰할 것이 늘어나면(넘겨받은 인자, 호출 횟수, 호출 순서) 익명 구현이 조금씩 커진다. 어느 시점에 이 일회용 자식에게 이름을 줘야 할까?
+</p>
+
+<h2>3. 경로 ② — 테스트 전용 최소 구체 클래스: 반복되면 이름을 준다</h2>
+<p>
+익명 구현이 두세 테스트에서 똑같이 반복되거나 관찰 훅이 두 개 이상 필요해지면, <strong>테스트 소스 트리 안에</strong> 이름 있는 최소 구체 클래스를 둔다.
+</p>
+<pre><code>// 테스트 소스 트리에만 존재 — 프로덕션 코드가 아니다
+class RecordingSender extends NotificationSender {
+    final List&lt;String&gt; recipients = new ArrayList&lt;&gt;();
+    final List&lt;String&gt; messages   = new ArrayList&lt;&gt;();
+    @Override protected void deliver(String to, String msg) { recipients.add(to); messages.add(msg); }
+}
+
+@Test
+void 메시지는_주문번호를_포함한다() {
+    RecordingSender sender = new RecordingSender();
+    sender.send(new Order(42, 1000, "a@example.com"));
+    assertEquals("주문 42 확인", sender.messages.get(0));
+}</code></pre>
+<p>
+경로 ②가 검증하는 것은 경로 ①과 같다 — 여전히 부모의 로직이다. 달라진 것은 관찰 장치의 <em>재사용성</em>뿐이다. 그래서 판단 기준도 하나다: <strong>이 클래스에 로직이 생기기 시작하는가?</strong>
+</p>
+<blockquote class="warn">
+<p><strong>목적이 뒤집히는 순간:</strong> "테스트가 쉬우려면 전달이 실패하는 경우도 흉내 내야지" 하고 <code>RecordingSender</code>에 실패 조건, 재시도 카운트, 형식 검증이 들어가면 그것은 더 이상 관찰 장치가 아니라 <em>또 하나의 구현</em>이다. 이제 테스트는 부모의 로직과 이 가짜 구현의 로직을 동시에 검증하고, 실패하면 어느 쪽 탓인지 알 수 없다. 테스트 전용 클래스가 커지면 그 클래스에 대한 테스트가 필요해지는 역설 — 여기가 멈출 선이다. 로직이 필요하다면 그것은 J1의 페이크(fake)이고, 페이크는 자기 테스트를 가진 별도의 자산으로 다뤄야 한다.</p>
+</blockquote>
+<p>
+또 하나의 경계는 <strong>위치</strong>다. 테스트 전용 클래스가 프로덕션 소스 트리에 들어가면 누군가 실제 코드에서 참조하기 시작하고, "테스트용"이라는 이름만 남은 채 운영 경로에 스며든다(K4가 다루는 정체불명 코드의 전형적 출처다). 테스트 소스 트리에 두는 것은 관례가 아니라 격리 장치다.
+</p>
+<p>
+경로 ①·②는 모두 "빈칸을 내가 채운다"는 방식이었다. 그런데 대역 도구가 이미 있는데 왜 손으로 채우나 — 도구가 빈칸을 자동으로 채우고 나머지는 진짜를 실행하게 할 수는 없을까?
+</p>
+
+<h2>4. 부분 실행 — spy와 CALLS_REAL_METHODS로 추상 클래스를 열기</h2>
+<p>
+대역 도구는 보통 "전부 가짜"(mock)를 만들지만, 반대 설정도 있다: <strong>스텁하지 않은 메서드는 진짜 본문을 실행</strong>하는 대역이다. Mockito의 <code>spy(AbstractX.class)</code>나 <code>mock(AbstractX.class, CALLS_REAL_METHODS)</code>가 그것으로, 추상 메서드는 자동으로 "아무것도 안 하는 스텁"이 되고 구체 메서드는 그대로 실행된다. 익명 구현을 한 줄로 대체하는 셈이다.
+</p>
+<pre><code>@Test
+void 부분_실행으로_템플릿_메서드를_검증한다() {
+    NotificationSender sender = Mockito.spy(NotificationSender.class);   // 추상 메서드는 빈 스텁, 나머지는 진짜
+
+    sender.send(new Order(42, 1000, "a@example.com"));
+
+    verify(sender).deliver("a@example.com", "주문 42 확인");   // 빈칸에 무엇이 넘어갔는지 검증
+}</code></pre>
+<p>편리한 만큼 함정이 세 가지 따라온다. 셋 다 "진짜를 부분적으로 실행한다"는 성격에서 나온다.</p>
+<table>
+  <tr><th>함정</th><th>무슨 일이 일어나나</th><th>왜</th></tr>
+  <tr>
+    <td>① 생성자 미실행</td>
+    <td>필드가 초기화되지 않은 채(null·0) 진짜 메서드가 돈다</td>
+    <td>도구는 객체를 <em>생성자 없이</em> 만들어 낸다. 생성자 로직이 필요하면 생성자를 명시적으로 쓰라고 설정해야 한다(Java 절 참조)</td>
+  </tr>
+  <tr>
+    <td>② 부분 스텁과 자기 호출</td>
+    <td>구체 메서드 하나를 스텁했더니 그것을 호출하던 다른 진짜 메서드의 동작이 바뀐다</td>
+    <td>부분 실행 대역에서는 <code>this</code>를 통한 내부 호출도 대역을 거친다. 스텁 하나가 클래스 내부 흐름을 잘라 버린다</td>
+  </tr>
+  <tr>
+    <td>③ 구현을 되읽는 테스트</td>
+    <td>"<code>format</code>이 호출되고, 그 결과로 <code>deliver</code>가 호출된다"를 검증하게 된다</td>
+    <td>내부 메서드 호출을 verify하기 시작하면 테스트가 구현 순서의 복사본이 된다 — J10의 동어반복이 부분 실행의 옷을 입고 돌아온 것</td>
+  </tr>
+</table>
+<p>
+그래서 부분 실행은 "익명 구현 대신 쓰는 일반 도구"가 아니라, <strong>추상 메서드가 많아 손으로 채우기 번거롭고 생성자 로직이 없는 경우의 지름길</strong>로 자리를 좁혀 두는 것이 안전하다. 검증 대상이 여전히 "부모의 로직"이라는 점은 경로 ①·②와 같다.
+</p>
+<p>
+여기까지의 세 방법은 모두 예제 A, 즉 <em>추상 클래스에 적혀 있는 로직</em>을 겨냥했다. 예제 B의 인터페이스에는 적혀 있는 로직이 없다. 그렇다면 인터페이스는 테스트할 것이 없는가 — 아니면, 테스트할 대상이 인터페이스 <em>바깥</em>에 있는가?
+</p>
+
+<h2>5. 경로 ③ — 계약 테스트: 약속을 모든 구현에 같은 테스트로 들이댄다</h2>
+<p>
+인터페이스의 실체는 서명이 아니라 <strong>약속</strong>이다. <code>DiscountPolicy.apply</code>의 주석 "0 이상, 원금 이하, 0이면 0"은 컴파일러가 강제하지 못한다. 정률 할인은 지키고 정액 할인은 어기면(1,000원 할인을 500원 주문에 적용해 −500을 반환) 인터페이스는 멀쩡히 컴파일되지만 호출자는 깨진다.
+이 약속을 검증하려면 테스트를 <em>구현마다 따로</em> 쓰는 대신, <strong>약속을 한 번 적고 모든 구현이 그것을 통과하게</strong> 만든다. 이것이 계약 테스트다.
+</p>
+<pre><code>// 추상 테스트 클래스: "무엇을 검증할지"는 여기에, "무엇으로 검증할지"는 자식이
+abstract class DiscountPolicyContract {
+    protected abstract DiscountPolicy create();          // 구현 공급 지점
+
+    @Test void 결과는_음수가_아니다()   { assertTrue(create().apply(500) &gt;= 0); }
+    @Test void 결과는_원금을_넘지_않는다() { assertTrue(create().apply(500) &lt;= 500); }
+    @Test void 원금이_0이면_0()         { assertEquals(0, create().apply(0)); }
+}
+
+class RateDiscountTest  extends DiscountPolicyContract { protected DiscountPolicy create() { return new RateDiscount(0.1); } }
+class FixedDiscountTest extends DiscountPolicyContract { protected DiscountPolicy create() { return new FixedDiscount(1000); } }
+// FixedDiscountTest는 "원금을 넘지 않는다"에서 실패한다 — 계약 위반이 처음으로 눈에 보이는 순간</code></pre>
+<div class="flow">          DiscountPolicyContract (추상 테스트: 약속 3개)
+                 │  상속
+      ┌──────────┼──────────┐
+ RateDiscountTest  FixedDiscountTest  NoDiscountTest
+ create()→정률      create()→정액       create()→무할인
+      │              │                  │
+   약속 3개 통과    약속 1개 실패        약속 3개 통과
+                  (원금 초과)</div>
+<p>
+구조의 요점은 <strong>테스트 쪽의 추상 메서드</strong>다. 프로덕션의 추상 클래스가 자식에게 빈칸을 맡기듯, 추상 테스트 클래스는 자식 테스트에게 "검증할 인스턴스를 공급하라"는 빈칸 하나를 맡긴다. 테스트 프레임워크는 상속된 테스트 메서드를 자식마다 다시 실행하므로, 약속 하나를 추가하면 모든 구현이 즉시 재검증된다.
+</p>
+<blockquote class="ok">
+<p><strong>경로 ③이 검증하는 것 / 못 하는 것:</strong> 검증하는 것은 <em>구현 간 일관성</em> — 어떤 구현을 끼워도 호출자가 같은 전제를 믿을 수 있는가(치환 가능성)다. 못 하는 것은 구현 고유의 로직이다: 정률 할인이 10%를 정확히 계산하는지는 계약이 아니라 <code>RateDiscount</code> 자신의 테스트가 검증한다. 계약 테스트에 특정 구현의 기대값("500의 10%는 50")을 넣는 순간, 다른 구현이 통과할 수 없는 테스트가 되어 계약이 아니게 된다.</p>
+</blockquote>
+<p>
+계약 테스트가 특히 값진 지점은 <strong>대역과의 관계</strong>다. 호출자 테스트에서 <code>DiscountPolicy</code>를 대역으로 바꿀 때, 대역에 "음수를 반환하라"고 설정하는 것은 계약상 일어날 수 없는 상황을 만드는 것이다. 계약 테스트가 있으면 대역이 흉내 낼 수 있는 동작의 범위가 명문화되고, 호출자 테스트와 구현 테스트가 같은 약속 위에 서게 된다.
+</p>
+<p>
+세 경로를 모았다. 그런데 이 모든 이야기는 "추상 계층이 <em>이미 있을 때</em>"의 이야기다. 그것이 없을 때 — 호출자가 구체 클래스를 직접 붙잡고 있을 때 — 테스트는 어떻게 되는가?
+</p>
+
+<h2>6. 설계 역방향 — 인터페이스가 테스트 가능성을 결정한다</h2>
+<p>
+지금까지는 "추상 계층을 어떻게 테스트하나"였다. 마지막 절은 방향을 뒤집는다: <strong>추상 계층이 있어야 다른 것을 테스트할 수 있다.</strong>
+</p>
+<pre><code>// (가) 구체 클래스에 의존 — 대역을 끼울 자리가 없다
+public class OrderService {
+    private final EmailSender sender = new EmailSender("smtp.example.com");   // 안에서 직접 생성
+    public void place(Order order) { /* ... */ sender.send(order); }
+}
+
+// (나) 인터페이스로 받음 — 무엇이든 끼울 수 있다
+public class OrderService {
+    private final NotificationSender sender;
+    public OrderService(NotificationSender sender) { this.sender = sender; }   // 밖에서 주입
+    public void place(Order order) { /* ... */ sender.send(order); }
+}</code></pre>
+<p>
+(가)의 <code>OrderService</code>를 테스트하면 반드시 이메일 전송이 일어난다. 대역을 넣고 싶어도 <code>new EmailSender(...)</code>가 클래스 안에 박혀 있어 손댈 자리가 없다. (나)는 생성자로 받으므로 테스트가 2절의 익명 구현이든 대역 도구의 mock이든 원하는 것을 넘길 수 있다 — 이것이 의존성 주입(dependency injection)이 테스트 용이성과 같은 말인 이유이며, I4가 정면으로 다루는 주제다.
+</p>
+<p>이 관계는 <strong>진단 도구</strong>로 쓸 수 있다. 어떤 클래스가 테스트하기 어렵다면, 십중팔구 그 클래스가 구체적인 것을 직접 붙잡고 있다는 뜻이다:</p>
+<div class="flow">  "이 클래스는 테스트하기 어렵다"
+        │
+        ▼
+  무엇을 직접 생성·참조하고 있나?  (new, static 호출, 전역 싱글턴, 구체 클래스 타입)
+        │
+        ▼
+  그 의존을 인터페이스(또는 추상 클래스)로 받도록 방향을 뒤집는다
+        │
+        ▼
+  테스트가 대역을 주입할 수 있게 된다   ← 부수 효과: 구현 교체·모듈 경계도 함께 생긴다</div>
+<p>
+다만 역방향에도 트레이드오프가 있다. 첫째, <strong>구현이 하나뿐인 인터페이스</strong>가 늘어난다 — "테스트를 위해서만 존재하는 추상화"는 추상화가 아니라 간접 호출 비용이라는 비판이 있고, 정당하다. 둘째, 2020년대 중반 기준 대역 도구들은 인터페이스 없이도 구체 클래스(심지어 <code>final</code> 클래스)를 대역으로 만들 수 있어, "대역을 위해 인터페이스가 필요하다"는 명제는 기술적으로는 약해졌다.
+그럼에도 인터페이스로 받는 설계가 남는 이유는 도구가 아니라 <strong>방향</strong>에 있다: 도구로 구체 클래스를 억지로 대역화하면 호출자와 구현의 결합은 그대로이고 테스트만 그 결합을 우회한다. 인터페이스로 받으면 결합 자체가 사라지고, 대역은 그 부산물로 공짜가 된다. 어느 쪽이든 테스트는 돌아가지만, 설계 신호를 읽은 쪽과 무시한 쪽의 차이는 다음 변경에서 드러난다.
+</p>
+<p>세 경로와 역방향까지 모였으니, 이 주제를 둘러싸고 자주 뒤섞이는 오해들을 짚는다.</p>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "익명 구현을 테스트하는 건가, 추상 클래스를 테스트하는 건가?"</strong> — 후자다. 익명 구현은 실행을 가능하게 하는 장치이고 검증 대상은 부모의 로직이다. 이 구분이 흐려지는 신호는 익명 구현 안에 분기가 생기는 것 — 그 순간 실패 원인이 둘이 되고, 테스트는 두 코드를 동시에 검증하는 상태가 된다.</p>
+<p><strong>② "계약 테스트에 구현별 기대값을 넣어도 되나?"</strong> — 안 된다. 계약은 <em>모든</em> 구현이 통과해야 하는 것만 담는다. "500의 10%는 50"은 정률 할인의 로직이지 계약이 아니다. 구현별 기대값이 필요하면 그 구현의 테스트 클래스에 별도 테스트 메서드로 추가한다 — 상속 구조는 그것을 막지 않는다.</p>
+<p><strong>③ "spy로 추상 클래스를 열었는데 필드가 null이다"</strong> — 부분 실행 대역은 생성자를 거치지 않고 만들어진다. 생성자에서 초기화하는 필드에 의존하는 로직은 그대로 실행하면 null 참조로 죽는다. 도구에 생성자 사용을 명시하거나, 생성자 로직이 있는 클래스는 경로 ①·②로 돌아가는 편이 단순하다.</p>
+<p><strong>④ "인터페이스 대역 테스트가 통과하는데 실제 구현을 끼우면 깨진다"</strong> — 대역이 계약 밖의 동작(또는 계약이 없어서 아무 동작)을 흉내 냈기 때문이다. 대역은 내가 설정한 대로만 움직이므로, 계약이 명문화되지 않으면 호출자 테스트는 "내 상상 속 구현"에 대해 통과한다. 경로 ③의 계약 테스트가 대역의 허용 범위를 고정하는 장치다.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+세 경로의 원리는 언어 무관이지만, "추상 계층이 런타임에 무엇으로 존재하는가"가 언어마다 달라서 <strong>인스턴스화 불가라는 벽의 높이</strong>와 <strong>대역 도구가 인터페이스를 다루는 방식</strong>이 달라진다. 벽이 높은 언어(Java·C++)는 우회 문법이 필요하고, 벽이 낮은 언어(JS·TS·Python)는 문제 자체가 성립하지 않는 대신 다른 종류의 함정이 생긴다.
+</p>
+<table>
+  <tr><th>언어 / 도구</th><th>경로 ① 익명 구현</th><th>경로 ② 부분 실행</th><th>경로 ③ 계약 테스트</th><th>그 언어만의 함정</th></tr>
+  <tr>
+    <td>Java / JUnit 5 + Mockito</td>
+    <td>익명 클래스 문법 그대로</td>
+    <td><code>spy(AbstractX.class)</code>, <code>CALLS_REAL_METHODS</code></td>
+    <td>추상 테스트 클래스 상속, 또는 <code>@TestFactory</code>로 구현 목록 순회</td>
+    <td>부분 실행 시 생성자 미실행, <code>final</code> 메서드는 스텁 불가</td>
+  </tr>
+  <tr>
+    <td>JS·TS / Jest·Vitest</td>
+    <td>객체 리터럴이 곧 구현 — <code>implements</code> 불필요</td>
+    <td>클래스 상속 + <code>vi.fn()</code>/<code>jest.fn()</code> 필드</td>
+    <td>구현 팩토리 배열을 <code>describe.each</code>로 순회</td>
+    <td>TS 인터페이스는 런타임 소거 — "구현했는지"를 런타임에 검사할 수 없다</td>
+  </tr>
+  <tr>
+    <td>Python / pytest + unittest.mock</td>
+    <td>테스트 안 서브클래스, 또는 <code>__abstractmethods__</code> 비우기</td>
+    <td><code>patch.object</code>로 추상 메서드만 교체</td>
+    <td>비수집 베이스 클래스 + 픽스처 재정의</td>
+    <td><code>Protocol</code>은 상속 관계가 없어 <code>spec=</code> 없는 대역이 아무 속성이나 받아 준다</td>
+  </tr>
+  <tr>
+    <td>C++ / GoogleTest + gMock</td>
+    <td>테스트용 파생 클래스</td>
+    <td>gMock 파생 클래스 + <code>ON_CALL</code>로 진짜 위임</td>
+    <td>타입 매개변수화 테스트(<code>TYPED_TEST_SUITE_P</code>)</td>
+    <td>비가상 메서드는 mock 불가 — 인터페이스가 <code>virtual</code>이어야 대역이 성립</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — 익명 클래스·spy·상속 기반 계약 테스트가 모두 일급 문법인 언어</h3>
+<p>
+Java는 세 경로가 모두 언어·도구에 직접 대응한다. 경로 ①은 익명 클래스, 경로 ③은 상속 — JUnit 5는 부모 클래스의 <code>@Test</code> 메서드를 자식마다 실행하므로 5절의 코드가 그대로 동작한다. 구현 목록이 데이터에 가깝다면 상속 대신 <code>@TestFactory</code>로 동적 테스트를 생성하는 방법도 있다.
+</p>
+<pre><code>// 계약 테스트의 다른 형태: 구현 목록 × 약속 목록을 동적 테스트로 펼친다
+@TestFactory
+Stream&lt;DynamicTest&gt; 모든_할인정책은_계약을_지킨다() {
+    List&lt;DiscountPolicy&gt; impls = List.of(new RateDiscount(0.1), new FixedDiscount(100), new NoDiscount());
+    return impls.stream().map(p -&gt; DynamicTest.dynamicTest(p.getClass().getSimpleName(), () -&gt; {
+        assertTrue(p.apply(500) &gt;= 0);
+        assertTrue(p.apply(500) &lt;= 500);
+        assertEquals(0, p.apply(0));
+    }));
+}
+
+// 부분 실행에서 생성자가 필요할 때: 생성자 실행을 명시한다
+NotificationSender sender = Mockito.mock(NotificationSender.class,
+        Mockito.withSettings().useConstructor("기본 서명").defaultAnswer(Answers.CALLS_REAL_METHODS));</code></pre>
+<p>
+Mockito 쪽의 특이점은 <strong>부분 실행의 기본 설정</strong>이다. <code>spy(클래스)</code>는 생성자를 호출하지 않으므로 4절 표의 함정 ①이 그대로 나타나고, 생성자 인자가 필요하면 위처럼 <code>useConstructor</code>를 명시해야 한다. 또 하나는 <code>final</code>: 템플릿 메서드를 <code>final</code>로 잠그는 것은 설계상 옳지만(자식이 절차를 뒤집지 못하게), 그 메서드는 스텁할 수 없다 — 다행히 스텁할 이유도 없다. 스텁 대상은 빈칸(추상 메서드)이지 절차가 아니기 때문이다.
+2020년대 중반 기준 Mockito 5는 인라인 mock maker가 기본이라 <code>final</code> 클래스도 대역화되고, <code>MockitoExtension</code>의 엄격 스텁(strict stubs) 기본값 덕에 "설정했지만 쓰이지 않은 스텁"이 실패로 보고된다 — 부분 실행에서 불필요한 스텁이 내부 흐름을 잘라 버리는 함정 ②를 도구가 일부 잡아 준다.
+6절의 역방향 논쟁도 여기서 구체화된다: 인라인 mock maker 덕에 <em>기술적으로는</em> (가)의 <code>EmailSender</code>도 대역화할 수 있지만, 클래스 안의 <code>new</code>는 여전히 주입 자리가 없으므로 생성 자체를 가로채는 무거운 장치가 필요하다. 도구가 벽을 넘게 해 준다고 벽이 없어지는 것은 아니다.
+</p>
+
+<h3>8.2 JS·TS — 인터페이스가 런타임에 사라지므로 "구현"은 모양이 맞는 객체다</h3>
+<p>
+TS의 인터페이스는 <strong>컴파일 시 타입 소거</strong>된다 — 타입 검사에만 쓰이고 생성되는 JS에는 흔적이 남지 않는다. 그리고 TS는 구조적 타이핑(structural typing: 이름이 아니라 <em>모양</em>이 같으면 같은 타입으로 취급)이므로, <code>implements</code>를 쓰지 않은 객체 리터럴도 필요한 속성만 갖추면 곧 그 인터페이스의 구현이다. 경로 ①이 문법 없이 성립한다.
+</p>
+<pre><code>interface DiscountPolicy { apply(amount: number): number; }
+
+// 경로 ①: 객체 리터럴이 곧 구현 — satisfies는 모양을 검사하되 추론 타입을 넓히지 않는다
+const stub = { apply: vi.fn((a: number) =&gt; a - 50) } satisfies DiscountPolicy;
+
+// 경로 ③: 구현 팩토리 배열을 순회 — 상속 대신 데이터 주도
+const impls: Array&lt;[string, () =&gt; DiscountPolicy]&gt; = [
+  ['rate',  () =&gt; new RateDiscount(0.1)],
+  ['fixed', () =&gt; new FixedDiscount(100)],
+  ['none',  () =&gt; new NoDiscount()],
+];
+describe.each(impls)('DiscountPolicy 계약: %s', (_, create) =&gt; {
+  it('결과는 음수가 아니다',       () =&gt; expect(create().apply(500)).toBeGreaterThanOrEqual(0));
+  it('결과는 원금을 넘지 않는다',   () =&gt; expect(create().apply(500)).toBeLessThanOrEqual(500));
+  it('원금이 0이면 0',            () =&gt; expect(create().apply(0)).toBe(0));
+});</code></pre>
+<p>
+추상 클래스는 사정이 다르다. TS의 <code>abstract class</code>는 컴파일 후 <em>보통의 클래스</em>로 남고, <code>abstract</code> 표시만 사라진다. 즉 "인스턴스화 불가"는 컴파일러의 판정일 뿐 런타임 벽이 아니다 — 경로 ①·②는 <code>class Minimal extends NotificationSender { deliver = vi.fn(); }</code>처럼 상속 한 줄로 끝나고, 부분 실행 도구가 따로 필요 없다.
+이 언어의 함정은 반대편에 있다. 인터페이스가 런타임에 없으므로 <strong>"이 객체가 계약을 구현했는가"를 런타임에 검사할 방법이 없고</strong>, 대역 객체에 속성 이름 하나를 오타 내면 TS 없는 JS에서는 조용히 <code>undefined</code>를 호출하다 죽는다(K5의 조용한 실패). <code>satisfies</code>나 명시적 타입 표기로 <em>대역까지 타입 검사에 태우는 것</em>이 이 언어에서 경로 ①을 안전하게 쓰는 조건이다.
+도구 차이는 짧다: Jest의 <code>jest.fn()</code>·<code>jest.spyOn()</code>과 Vitest의 <code>vi.fn()</code>·<code>vi.spyOn()</code>은 의도적으로 같은 API이고, 갈리는 곳은 모듈 대역(<code>vi.mock</code>)의 호이스팅 범위 규칙 정도다 — 이 문서의 경로들은 객체 수준이라 그 차이를 타지 않는다.
+</p>
+
+<h3>8.3 Python — ABC는 벽을 세우고, Protocol은 벽을 없앤다</h3>
+<p>
+Python에는 추상 계층을 표현하는 길이 둘이다. <code>abc.ABC</code> + <code>@abstractmethod</code>는 Java식으로 <strong>인스턴스화를 런타임에 거부</strong>하고(<code>TypeError</code>), <code>typing.Protocol</code>은 TS처럼 <strong>모양만 맞으면 구현</strong>으로 본다 — 덕 타이핑(duck typing: 상속 관계가 아니라 "그 메서드가 있느냐"로 객체를 취급하는 방식)을 타입 힌트로 명문화한 것이다.
+</p>
+<pre><code>from abc import ABC, abstractmethod
+from unittest.mock import patch
+import pytest
+
+class NotificationSender(ABC):
+    def send(self, order) -&gt; str:
+        if order.amount == 0: return "skipped"
+        self.deliver(order.email, f"주문 {order.id} 확인")
+        return "sent"
+    @abstractmethod
+    def deliver(self, to: str, msg: str) -&gt; None: ...
+
+# 경로 ①: 테스트 안 서브클래스 — 빈칸만 채운다
+class _Recording(NotificationSender):
+    def __init__(self): self.log = []
+    def deliver(self, to, msg): self.log.append((to, msg))
+
+# 경로 ②의 우회: 추상 메서드 목록을 비워 인스턴스화 벽을 없앤다 (도구 없이 부분 실행)
+def test_skip_when_zero():
+    with patch.multiple(NotificationSender, __abstractmethods__=set()):
+        sender = NotificationSender()                      # 이제 생성된다
+        assert sender.send(Order(1, 0, "a@example.com")) == "skipped"
+
+# 경로 ③: Test로 시작하지 않는 베이스는 수집되지 않는다 — 자식이 픽스처만 재정의
+class DiscountContract:
+    @pytest.fixture
+    def policy(self): raise NotImplementedError
+    def test_non_negative(self, policy):  assert policy.apply(500) &gt;= 0
+    def test_not_over_amount(self, policy): assert policy.apply(500) &lt;= 500
+
+class TestRateDiscount(DiscountContract):
+    @pytest.fixture
+    def policy(self): return RateDiscount(0.1)</code></pre>
+<p>
+경로 ③의 pytest 관례가 특이점이다. 클래스 이름이 <code>Test</code>로 시작하지 않으면 수집되지 않으므로 베이스 클래스는 <em>자동으로</em> 추상 테스트가 되고, 자식이 픽스처 하나만 재정의하면 상속된 테스트 메서드가 전부 실행된다 — Java의 <code>protected abstract create()</code>가 픽스처 재정의로 바뀐 것이다(이름 대신 <code>__test__ = False</code>로 수집을 막을 수도 있다).
+함정은 <code>Protocol</code> 쪽에 있다. 상속 관계가 없으니 <code>MagicMock()</code>은 아무 속성이나 받아 주고, 오타 난 메서드를 호출해도 조용히 새 mock을 돌려준다. <code>MagicMock(spec=DiscountPolicy)</code>나 <code>create_autospec</code>으로 <strong>대역의 모양을 계약에 묶는 것</strong>이 이 언어에서 경로 ①의 안전장치이며, 이는 TS의 <code>satisfies</code>와 정확히 같은 역할이다.
+</p>
+<p>
+<code>Python 관점의 통찰: ABC의 "인스턴스화 불가"는 언어 문법이 아니라 메타클래스가 관리하는 클래스 속성(__abstractmethods__)의 검사이므로, 위처럼 그 집합을 비우면 벽이 사라진다 — 추상성이 컴파일 타임 개념이 아니라 런타임 객체 모델의 한 속성이라는 뜻이다. 같은 이유로 patch.object로 추상 메서드 자리에 대역을 꽂는 것도 그저 클래스 딕셔너리의 항목 교체다. 이 유연함은 경로 ②를 도구 없이 가능하게 하지만, 반대로 "이 클래스는 단독 생성될 수 없다"는 설계 의도를 테스트가 너무 쉽게 무시할 수 있다는 뜻이기도 하다. 우회는 템플릿 메서드 검증에 한정하고, 생성자 로직이 있는 클래스는 서브클래스 경로로 돌아가는 편이 의도를 보존한다.</code>
+</p>
+
+<h3>8.4 C++ — 인터페이스는 vtable이고, gMock은 그 인터페이스의 구현 생성기다</h3>
+<p>
+C++의 인터페이스는 순수 가상 함수(<code>= 0</code>)만 가진 클래스이고, 다형 호출은 vtable(가상 함수 테이블: 객체가 가리키는 함수 포인터 표로, 실행 시 어느 파생 클래스의 함수를 부를지 여기서 찾는다)을 통해 이루어진다. 경로 ①은 곧 <strong>테스트용 파생 클래스</strong>이며, gMock의 <code>MOCK_METHOD</code>는 바로 그 파생 클래스를 매크로로 생성해 주는 장치다 — 즉 gMock은 "인터페이스 구현 생성기"이지, 마법이 아니다.
+</p>
+<pre><code>class NotificationSender {
+public:
+    virtual ~NotificationSender() = default;                 // 다형 삭제를 위한 가상 소멸자
+    std::string send(const Order&amp; order) {                   // 템플릿 메서드 — 비가상
+        if (order.amount == 0) return "skipped";
+        deliver(order.email, "주문 " + std::to_string(order.id) + " 확인");
+        return "sent";
+    }
+protected:
+    virtual void deliver(const std::string&amp; to, const std::string&amp; msg) = 0;   // 빈칸
+};
+
+// 경로 ①/②: gMock이 파생 클래스를 만들어 준다 — 빈칸만 대역, send()는 진짜
+class MockSender : public NotificationSender {
+public:
+    MOCK_METHOD(void, deliver, (const std::string&amp;, const std::string&amp;), (override));
+};
+
+TEST(NotificationSenderTest, DeliversFormattedMessage) {
+    MockSender sender;
+    EXPECT_CALL(sender, deliver("a@example.com", "주문 42 확인")).Times(1);
+    EXPECT_EQ(sender.send(Order{42, 1000, "a@example.com"}), "sent");
+}
+
+// 경로 ③: 타입 매개변수화 테스트 — 같은 테스트 본문을 구현 타입마다 인스턴스화
+template &lt;typename T&gt; class DiscountContract : public ::testing::Test { protected: T policy; };
+TYPED_TEST_SUITE_P(DiscountContract);
+TYPED_TEST_P(DiscountContract, NonNegative)    { EXPECT_GE(this-&gt;policy.apply(500), 0); }
+TYPED_TEST_P(DiscountContract, NotOverAmount)  { EXPECT_LE(this-&gt;policy.apply(500), 500); }
+REGISTER_TYPED_TEST_SUITE_P(DiscountContract, NonNegative, NotOverAmount);
+using Impls = ::testing::Types&lt;RateDiscount, FixedDiscount, NoDiscount&gt;;
+INSTANTIATE_TYPED_TEST_SUITE_P(AllPolicies, DiscountContract, Impls);</code></pre>
+<p>
+이 언어 고유의 벽은 <strong>비가상 메서드는 mock할 수 없다</strong>는 것이다. vtable에 없는 함수는 파생 클래스가 가로챌 수 없으므로, 6절의 (가)처럼 구체 클래스를 직접 붙잡은 코드는 도구로도 대역화가 안 된다 — Java의 인라인 mock maker 같은 우회가 없다. 역방향 원칙이 가장 강하게 성립하는 언어인 셈이며, 대안은 둘뿐이다: 의존을 <code>virtual</code> 인터페이스로 뽑거나, 호출자를 템플릿으로 만들어 컴파일 타임에 타입을 갈아 끼우거나. 위 예제에서 <code>send</code>가 비가상인 것은 의도적이다 — 템플릿 메서드는 스텁 대상이 아니므로 가상일 이유가 없고, 비가상이면 파생 클래스가 절차를 뒤집을 수도 없다.
+</p>
+<p>
+<code>C++ 관점의 통찰: gMock 객체는 소멸자에서 EXPECT_CALL의 충족 여부를 검증한다 — 즉 "기대가 지켜졌는가"는 mock의 수명이 끝나는 시점에 판정되므로, mock을 힙에 두고 누수시키면 검증이 조용히 사라진다(Mock::VerifyAndClearExpectations로 명시 판정 가능). 또 계약 테스트에서 타입 매개변수화를 쓰는 것은 런타임 다형성이 아니라 컴파일 타임 인스턴스화이므로, 구현 타입마다 테스트 본문이 별도 코드로 생성되고 vtable을 거치지 않는다 — 인터페이스 없이도 "같은 모양의 타입들"에 같은 약속을 들이댈 수 있다는 점에서 C++의 계약 테스트는 덕 타이핑에 가장 가까운 형태를 띤다. 마지막으로 가상 소멸자: 인터페이스 포인터로 파생 객체를 삭제하는 경로(std::unique_ptr&lt;NotificationSender&gt;)가 테스트에 한 번이라도 있으면 가상 소멸자 부재는 미정의 동작이며, 테스트가 통과했다는 사실이 그것을 보증하지 않는다.</code>
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<p>세 경로와 역방향을 인접 어휘로 확장한 것들이다 — 첫째는 5절의 "치환 가능성"을, 둘째는 1절의 템플릿 메서드를, 셋째는 3절의 경계선을, 넷째는 6절의 트레이드오프를, 다섯째는 5절 계약 테스트의 이웃 개념을 잇는다.</p>
+<ul>
+  <li><strong>리스코프 치환 원칙(Liskov substitution principle)</strong> — "부모 타입 자리에 어떤 자식을 넣어도 프로그램의 올바름이 유지돼야 한다"는 원칙. 경로 ③의 계약 테스트는 이 원칙을 <em>실행 가능한 형태</em>로 적은 것이다 — 계약 테스트에 실패하는 구현은 치환 불가능한 자식이다.</li>
+  <li><strong>템플릿 메서드 vs 전략(strategy)</strong> — 절차를 부모에 고정하고 빈칸을 상속으로 채우는 것(템플릿 메서드)과, 절차를 가진 객체가 빈칸을 인터페이스로 <em>주입받는</em> 것(전략)의 대비. 전략으로 바꾸면 경로 ①·②가 필요 없어지고 6절의 역방향 구조가 바로 나온다 — 상속을 합성으로 바꾸는 것이 테스트 경로를 단순화하는 이유다.</li>
+  <li><strong>테스트 픽스처(fixture)와 페이크의 경계</strong> — 3절의 "관찰만 하는 최소 클래스"가 로직을 갖기 시작하면 J1의 페이크가 된다. 페이크는 인메모리 저장소처럼 <em>동작하는</em> 대체물이며, 자기 테스트(종종 계약 테스트!)를 가져야 하는 별도 자산이다.</li>
+  <li><strong>헤더 인터페이스(header interface)</strong> — 구현이 하나뿐인데 그 구현의 메서드 목록을 그대로 베낀 인터페이스를 가리키는 비판적 용어. 6절의 "테스트를 위해서만 존재하는 추상화"가 이것이다 — 인터페이스는 <em>호출자가 필요한 것</em>을 기준으로 잘라야 대역도 작아지고 결합도 낮아진다.</li>
+  <li><strong>소비자 주도 계약 테스트</strong> — 5절의 계약 테스트를 프로세스 경계(프론트↔백엔드 API)로 확장한 것. 같은 코드베이스 안의 인터페이스 계약이 클래스 상속으로 검증된다면, 서비스 경계의 계약은 별도 도구로 양쪽이 같은 명세를 공유해 검증한다.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>추상 계층의 테스트 대상은 둘: 추상 클래스에 <strong>적혀 있는 로직</strong>(템플릿 메서드)과 인터페이스가 <strong>요구하는 약속</strong>(계약). 목적이 경로를 정한다.</li>
+  <li>경로 ① 익명 구현·② 테스트 전용 최소 클래스는 <strong>부모의 로직</strong>을 검증한다. 빈칸을 채우는 코드에 로직이 생기면 검증 대상이 둘이 되는 신호 — 그때가 멈출 선이다.</li>
+  <li>부분 실행(<code>spy</code>/<code>CALLS_REAL_METHODS</code>)은 지름길이되 <strong>생성자 미실행·자기 호출 절단·구현 되읽기</strong>의 세 함정을 동반한다. 추상 메서드가 많고 생성자 로직이 없을 때로 좁혀 쓴다.</li>
+  <li>경로 ③ 계약 테스트는 <strong>구현 간 일관성</strong>을 검증한다. 모든 구현이 통과해야 하는 약속만 담고, 구현 고유 기대값은 각자의 테스트로 보낸다. 대역이 흉내 낼 수 있는 범위를 고정하는 장치이기도 하다.</li>
+  <li>역방향: <strong>인터페이스가 테스트 가능성을 결정한다.</strong> 테스트하기 어려운 클래스는 구체적인 것을 직접 붙잡고 있다는 진단이고, 처방은 도구의 우회가 아니라 의존 방향의 반전이다.</li>
+  <li>언어별로 벽의 높이가 다르다: Java·C++은 우회 문법(익명 클래스·파생 클래스·gMock)이 필요하고, TS·Python은 인터페이스가 런타임에 사라지거나 뚫려 있어 문제가 성립하지 않는 대신 <strong>대역의 모양을 계약에 묶는 장치</strong>(<code>satisfies</code>·<code>spec=</code>)가 필요하다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="J1 테스트 더블과 단위 테스트 격리.html">J1 테스트 더블과 단위 테스트 격리.html</a> — 이 문서의 익명 구현·최소 클래스가 대역 분류(스파이·페이크)의 어디에 놓이는지, 그리고 계약 테스트가 대역의 허용 동작을 어떻게 고정하는지의 접점</li>
+  <li><a href="../I 설계·아키텍처/I4 의존성 주입과 테스트 용이성.html">I4 의존성 주입과 테스트 용이성.html</a> — 6절 "인터페이스가 테스트 가능성을 결정한다"의 설계 쪽 본진: 인터페이스로 받은 의존을 생성자·<code>setter</code>로 주입해 대역으로 갈아 끼우는 메커니즘</li>
+</ul>
+
+</body>
+</html>
