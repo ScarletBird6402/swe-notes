@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J3 Mockito 기본 3단계</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>J3 Mockito 기본 3단계</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>mock을 쓰는 단위 테스트는 어떤 도구든 <strong>준비(stub) → 실행 → 검증(verify)</strong>의 3단계로 읽힌다. 준비는 "조건을 만든다", 실행은 "대상을 한 번 부른다", 검증은 "결과나 호출을 판정한다" — 각각 <strong>한 가지 일만</strong> 한다.</li>
+  <li>3단계가 분리되어 있는 이유는 문체가 아니라 <strong>테스트가 하나의 질문이 되게 하기 위해서</strong>다. 준비와 검증이 섞이면 테스트는 대상 코드가 아니라 자기 자신의 설정을 되읽게 되고, 실행 뒤에 준비가 오면 조건은 대상에 닿지 못한 채 조용히 무시된다.</li>
+  <li>Mockito는 이 3단계를 API 이름에 새겨 놓았다: <code>when(...).thenReturn(...)</code>·<code>doReturn(...).when(...)</code>이 준비, 테스트 대상 메서드 호출이 실행, <code>verify(...)</code>가 검증이다. 두 준비 문법의 차이는 취향이 아니라 <strong>"스텁 대상 메서드가 실제로 호출되는 시점"</strong>의 차이다.</li>
+  <li><code>@Mock</code>은 더블을 만들고, <code>@InjectMocks</code>는 테스트 대상을 만들어 더블을 끼워 넣으며, <code>MockitoExtension</code>은 그 둘을 테스트마다 실행하고 끝나면 정리한다. 확장이 없으면 어노테이션은 아무 일도 하지 않는다.</li>
+  <li><code>@InjectMocks</code>는 <strong>생성자 → <code>setter</code> → 필드</strong> 순으로 주입 전략을 시도하고, 인자는 타입으로 먼저, 같은 타입이 여럿이면 이름으로 맞춘다. 어느 전략도 맞지 않으면 <strong>예외 없이 그 의존을 <code>null</code>로 둔다</strong> — 이 조용한 실패가 이 도구의 가장 큰 함정이다.</li>
+  <li>엄격 스텁(strict stubs)은 "준비했지만 실행이 건드리지 않은 조건"을 실패로 보고한다. 성가신 검사가 아니라 <strong>"이 테스트가 정말 한 가지 질문인가"를 도구가 대신 묻는 장치</strong>다.</li>
+</ul>
+
+<h2>1. 왜 3단계인가 — 테스트는 하나의 질문이다</h2>
+<p>
+J1에서 더블이 무엇이고 단위의 경계를 어디에 긋는지를 보았다. 이 문서는 그 경계 안에서 <strong>더블을 실제로 부려 쓰는 절차</strong>를 다룬다 — 도구는 Mockito를 중심에 두지만, 절차 자체는 도구가 아니라 단위 테스트의 구조에서 나온다.
+</p>
+<p>
+좋은 단위 테스트는 하나의 질문에 답한다: <em>"이 조건에서 대상은 무엇을 하는가."</em> 이 문장에는 세 부분이 있다 — 조건, 대상의 행동, 그리고 그것을 판정하는 기준. 이 셋을 코드에서도 분리해 쓰는 관행이 <strong>준비-실행-검증(Arrange-Act-Assert, AAA)</strong> 패턴이다. Given-When-Then이라는 이름으로도 불리는데, 이름은 달라도 구조는 같다.
+</p>
+<div class="flow">준비(Arrange)  조건을 만든다        — 더블에 응답을 설정하고, 대상을 조립한다
+     │
+실행(Act)      대상을 한 번 부른다   — 테스트하려는 메서드를 딱 한 번 호출한다
+     │
+검증(Assert)   판정한다             — 반환값·상태를 단언하거나, 더블의 호출 기록을 대조한다</div>
+<p>
+왜 굳이 분리하는가. 섞였을 때 무엇이 무너지는지를 보면 답이 나온다.
+</p>
+<ul>
+  <li><strong>준비 안에 검증이 섞이면</strong> — 더블에 "X를 돌려줘라"라고 설정해 놓고 X가 나오는지 확인하는 형태가 된다. 이 테스트는 대상 코드가 무엇을 했든 통과한다. 검증 대상이 <em>대상의 행동</em>이 아니라 <em>자기 설정</em>이 되어 버리는 것이다(J10이 말하는 동어반복).</li>
+  <li><strong>실행 뒤에 준비가 오면</strong> — 조건이 대상에 닿지 못한다. 대상은 이미 더블의 기본값(<code>null</code>·0·빈 컬렉션)을 보고 실행을 끝냈고, 뒤늦은 설정은 아무 효과 없이 지나간다. 예외도 나지 않는다.</li>
+  <li><strong>실행이 여러 번이면</strong> — 어느 호출이 실패의 원인인지 검증 단계가 말해 주지 못한다. "한 테스트 = 한 실행"이어야 실패 메시지가 곧 진단이 된다.</li>
+</ul>
+<p>
+즉 3단계 분리는 <strong>테스트가 검증하는 것이 정확히 "대상의 행동"이 되도록 보장하는 구조</strong>다. Mockito는 이 구조를 API 이름에 그대로 새겨 놓았고, 그래서 이 문서는 각 단계를 Mockito의 어휘로 하나씩 따라간다. 첫 단계, 준비에서는 정확히 무엇을 하는가.
+</p>
+
+<h2>2. 준비 — 스텁은 조건이지 검증이 아니다</h2>
+<p>
+준비 단계의 핵심 동작은 <strong>스텁(stub)</strong>이다: 더블에게 "이 호출을 받으면 이 답을 돌려줘라"라고 정해 두는 일. J1의 어휘로는 <em>응답 제공</em>이고, 이 문서의 어휘로는 <em>조건 만들기</em>다. 스텁은 아무것도 검증하지 않는다 — 검증은 그 조건에서 대상이 만들어 낸 결과에서 이루어진다.
+</p>
+<pre><code>// 준비: "결제 게이트웨이가 거절을 돌려주는 조건"을 만든다
+when(gateway.charge(any())).thenReturn(PaymentResult.declined("한도 초과"));
+
+// 같은 뜻의 다른 문법
+doReturn(PaymentResult.declined("한도 초과")).when(gateway).charge(any());</code></pre>
+<p>
+두 문법이 왜 둘 다 있는지가 준비 단계의 첫 번째 원리다. <code>when(gateway.charge(any()))</code>는 Java 표현식이므로 <strong>괄호 안의 <code>gateway.charge(any())</code>가 먼저 실제로 실행</strong>된다. 대상이 mock이면 이 호출은 기본값을 돌려주고 "방금 이 메서드가 이 인자로 불렸다"는 기록만 남기며, 바깥의 <code>when()</code>이 그 마지막 기록을 집어 스텁으로 바꾼다. 반면 <code>doReturn(...).when(gateway)</code>는 더블을 <strong>먼저 스텁 모드로 전환</strong>한 뒤에 <code>.charge(any())</code>를 받으므로, 이 호출은 실제로 실행되지 않고 "무엇을 스텁할지"의 서술로만 쓰인다.
+</p>
+<p>이 차이가 실제로 갈리는 자리는 두 곳이다.</p>
+<table>
+  <tr><th>상황</th><th><code>when(...).thenReturn</code></th><th><code>doReturn(...).when(...)</code></th></tr>
+  <tr>
+    <td>반환값이 없는(<code>void</code>) 메서드</td>
+    <td>불가 — <code>void</code> 호출은 표현식이 될 수 없어 <code>when()</code>의 인자로 넣을 수 없다</td>
+    <td>가능 — <code>doNothing()</code>·<code>doThrow()</code>로 동작을 지정</td>
+  </tr>
+  <tr>
+    <td>실물을 감싼 <code>spy</code></td>
+    <td>위험 — 괄호 안 호출이 <strong>실물 메서드를 실제로 실행</strong>한다(부작용·예외가 준비 단계에서 발생)</td>
+    <td>안전 — 실물 호출 없이 스텁만 등록</td>
+  </tr>
+  <tr>
+    <td>일반 mock의 일반 메서드</td>
+    <td>가능 — 타입 검사가 더 강해 읽기 쉽고 오타에 강함(기본 선택)</td>
+    <td>가능 — 반환 타입 검사가 느슨함</td>
+  </tr>
+</table>
+<p>
+준비 단계의 두 번째 원리는 <strong>스텁하지 않은 호출의 기본값</strong>이다. Mockito의 mock은 설정되지 않은 메서드에 대해 예외를 던지지 않고 타입별 기본값을 돌려준다 — 참조 타입은 <code>null</code>, 숫자는 0, <code>boolean</code>은 <code>false</code>, 컬렉션은 빈 컬렉션, <code>Optional</code>은 <code>Optional.empty()</code>. 편리하지만, "설정을 빠뜨렸다"가 "<code>null</code>이 대상 코드 안을 흘러 다닌다"로 나타나는 근원이 여기 있다. 5절에서 다시 만난다.
+</p>
+<blockquote class="info">
+<p><strong>미사용 스텁의 의미:</strong> 준비했는데 실행이 한 번도 건드리지 않은 스텁은 <em>이 테스트의 질문과 무관한 조건</em>이다. 무관한 조건이 남아 있으면 읽는 사람은 "이 테스트는 무엇을 검증하는가"를 잘못 짚게 되고, 대상 코드가 바뀌어 스텁이 무의미해져도 아무도 알아채지 못한다. Mockito의 엄격 스텁은 이런 스텁을 테스트 실패로 보고한다 — 자세한 동작은 8.1에서.</p>
+</blockquote>
+<p>
+조건은 만들었다. 그런데 이 더블은 아직 테스트 코드의 지역 변수일 뿐이다. 대상 객체 안에 끼워 넣어져야 실행 단계에서 대상이 그것을 만난다 — 누가, 어떻게 끼워 넣는가.
+</p>
+
+<h2>3. 배선 — @Mock·@InjectMocks·MockitoExtension의 역할 분담</h2>
+<p>
+더블을 대상에 끼워 넣는 가장 정직한 방법은 생성자를 직접 부르는 것이다. Mockito의 어노테이션은 이 손 배선을 대신해 주는 편의 장치이고, 세 부품이 역할을 나눠 맡는다.
+</p>
+<table>
+  <tr><th>부품</th><th>하는 일</th><th>없으면</th></tr>
+  <tr>
+    <td><code>@Mock</code></td>
+    <td>필드 타입의 <strong>더블을 만들어</strong> 필드에 넣는다 — <code>mock(PaymentGateway.class)</code>와 같음</td>
+    <td>필드는 <code>null</code>(어노테이션 자체는 아무 코드도 실행하지 않는다)</td>
+  </tr>
+  <tr>
+    <td><code>@InjectMocks</code></td>
+    <td><strong>테스트 대상을 생성</strong>하고, 같은 테스트 클래스의 <code>@Mock</code>·<code>@Spy</code>를 그 안에 <strong>끼워 넣는다</strong></td>
+    <td>대상을 <code>new</code>로 직접 조립해야 함(사실 이쪽이 더 명시적이다)</td>
+  </tr>
+  <tr>
+    <td><code>MockitoExtension</code></td>
+    <td>JUnit 5 확장으로서 <strong>각 테스트 직전에</strong> 위 두 어노테이션을 처리하고, <strong>테스트 직후에</strong> 엄격 스텁 검사와 정리를 수행</td>
+    <td>어노테이션이 전부 주석이 됨 — <code>@Mock</code> 필드도 <code>@InjectMocks</code> 대상도 <code>null</code></td>
+  </tr>
+</table>
+<pre><code>@ExtendWith(MockitoExtension.class)           // 이 줄이 없으면 아래 어노테이션은 아무 일도 하지 않는다
+class OrderServiceTest {
+    @Mock OrderRepository repository;         // 더블 생성
+    @Mock PaymentGateway gateway;
+    @Mock Notifier notifier;
+    @InjectMocks OrderService service;        // 대상 생성 + 위 세 더블을 끼워 넣음
+
+    @Test
+    void 결제가_승인되면_주문을_저장하고_알림을_보낸다() {
+        when(gateway.charge(any())).thenReturn(PaymentResult.approved());   // 준비
+
+        service.place(new Order(1L, Money.of(50_000)));                      // 실행
+
+        verify(repository).save(any(Order.class));                           // 검증
+        verify(notifier).send(1L, "PAID");
+    }
+}</code></pre>
+<p>
+확장 모델을 쓸 수 없는 상황(다른 확장과의 조합, 옛 러너)에서는 <code>MockitoAnnotations.openMocks(this)</code>를 <code>@BeforeEach</code>에서 직접 호출해 같은 처리를 할 수 있다. 어느 쪽이든 핵심은 같다 — <strong>어노테이션은 선언이고, 누군가가 그 선언을 실행해 줘야 한다.</strong> 더블의 생성·정리 시점을 어떻게 잡을지(필드 vs <code>@BeforeEach</code> vs 지역 변수)는 J7의 주제다.
+</p>
+<p>
+여기서 눈여겨볼 것은 <code>@InjectMocks</code>가 하는 일의 성격이다. 손 배선 <code>new OrderService(repository, gateway, notifier)</code>는 "이 인자를 이 자리에"라고 <em>내가</em> 정한다. <code>@InjectMocks</code>는 그 대응을 <strong>도구가 추측</strong>한다. 추측에는 규칙이 있고, 규칙이 맞지 않는 경우가 있다 — 그 규칙이 다음 절이다.
+</p>
+
+<h2>4. @InjectMocks의 해석 규칙 — 생성자 → setter → 필드</h2>
+<p>
+Mockito 공식 문서가 밝히는 <code>@InjectMocks</code>의 주입 전략은 세 가지이고, <strong>이 순서로 시도</strong>된다. 앞 전략이 성공하면 뒤 전략은 시도하지 않는다.
+</p>
+<div class="flow">@InjectMocks 대상 클래스
+   │
+   ├─ 1. 생성자 주입
+   │     가장 인자가 많은 생성자를 고른다
+   │     각 인자를 테스트의 @Mock·@Spy에서 "타입"으로 찾는다
+   │     ├─ 인자를 못 찾은 자리 ──&gt; null을 넘긴다 (예외 없음)
+   │     └─ 생성자가 실행됐으면 ──&gt; 여기서 끝. 2·3은 시도하지 않는다
+   │
+   ├─ 2. setter 주입  (인자 있는 생성자가 없을 때 — 기본 생성자로 만든 뒤)
+   │     타입으로 찾는다 → 같은 타입이 여럿이면 "setter 이름 ↔ mock 필드 이름"으로 맞춘다
+   │     └─ 이름도 안 맞으면 ──&gt; 주입하지 않는다 (예외 없음)
+   │
+   └─ 3. 필드 주입
+         타입으로 찾는다 → 같은 타입이 여럿이면 "필드 이름 ↔ mock 필드 이름"으로 맞춘다
+         static·final 필드는 무시
+         └─ 못 맞추면 ──&gt; 주입하지 않는다 (예외 없음)</div>
+<p>
+규칙을 하나씩 뜯어 보면, 각 단계에 "맞지 않는 경우"가 하나씩 숨어 있다.
+</p>
+<table>
+  <tr><th>전략</th><th>해석 규칙</th><th>맞지 않는 경우</th></tr>
+  <tr>
+    <td>생성자</td>
+    <td>인자 수가 가장 많은 생성자 선택 → 각 인자를 <strong>타입</strong>으로 대응</td>
+    <td>테스트에 없는 타입의 인자 → <strong>그 자리에 <code>null</code></strong>. 생성자는 정상 실행된 것으로 취급되어 뒤 전략으로 넘어가지 않는다</td>
+  </tr>
+  <tr>
+    <td><code>setter</code></td>
+    <td>타입 → (중복 시) 이름</td>
+    <td>같은 타입의 <code>setter</code>가 둘인데 mock 필드 이름이 안 맞음 → 주입 생략 또는 뒤바뀜</td>
+  </tr>
+  <tr>
+    <td>필드</td>
+    <td>타입 → (중복 시) 이름</td>
+    <td>같은 타입 필드 중복 + 이름 불일치, 또는 <code>final</code> 필드 → 주입 생략</td>
+  </tr>
+</table>
+<pre><code>// 대상: 생성자 인자 3개
+public class OrderService {
+    public OrderService(OrderRepository repository, PaymentGateway gateway, Notifier notifier) { ... }
+}
+
+// 테스트: @Mock이 2개뿐 — Notifier가 없다
+@ExtendWith(MockitoExtension.class)
+class OrderServiceTest {
+    @Mock OrderRepository repository;
+    @Mock PaymentGateway gateway;
+    @InjectMocks OrderService service;   // new OrderService(repository, gateway, null) 과 같다
+}</code></pre>
+<p>
+"타입으로 먼저, 이름은 나중"이라는 규칙에는 한 가지 함의가 더 있다. 같은 타입의 의존이 둘 이상이면(예: 두 개의 저장소, 두 개의 알림 채널) 타입만으로는 구분이 안 되므로 <strong>mock 필드 이름을 대상 쪽 필드·<code>setter</code> 이름과 맞추는 것이 계약</strong>이 된다. 문서는 이 경우 이름을 맞추지 않으면 "주입이 일어나지 않을 수 있다"고 명시한다.
+</p>
+<p>
+여기까지가 규칙이다. 그런데 표의 오른쪽 열을 다시 읽어 보자 — "<code>null</code>을 넘긴다", "주입 생략". 어디에도 "예외를 던진다"가 없다. 이 규칙에서 <em>실패</em>는 어떤 모습으로 나타나는가.
+</p>
+
+<h2>5. "주입 안 됨"은 조용하다 — null로 남는 실패</h2>
+<p>
+<code>@InjectMocks</code>의 설계 원칙은 문서 한 줄에 요약되어 있다: <strong>어느 전략이 실패해도 Mockito는 실패를 보고하지 않는다.</strong> 의도는 있다 — 일부 의존은 테스트가 직접 넣고 싶을 수 있으니, 도구가 "다 채우지 못했다"고 막아서지 않겠다는 것이다. 그 결과 주입되지 못한 의존은 <strong>예외 없이 <code>null</code>인 채로 대상 객체가 완성</strong>된다. K5가 다루는 조용한 실패의 전형이다: 오류가 발생한 지점(준비)과 발각되는 지점(실행 또는 영영 발각되지 않음)이 어긋난다.
+</p>
+<p>발각되는 방식은 세 가지 얼굴을 갖는다.</p>
+<table>
+  <tr><th>얼굴</th><th>무슨 일이 일어나는가</th><th>왜 오해를 부르는가</th></tr>
+  <tr>
+    <td>① 실행 단계의 <code>NullPointerException</code></td>
+    <td>대상 코드가 <code>notifier.send(...)</code>를 호출하는 줄에서 터진다</td>
+    <td>스택 트레이스가 <strong>대상 코드</strong>를 가리키므로 대상의 버그로 읽힌다. 원인은 테스트의 배선인데 수리는 대상 쪽에서 시작된다</td>
+  </tr>
+  <tr>
+    <td>② 통과하는 초록불</td>
+    <td>대상이 <code>null</code>을 허용하거나 우회하면(<code>if (notifier != null)</code>, 선택적 의존) 실행이 정상 종료</td>
+    <td>알림 발송 <code>verify</code>가 없다면 테스트는 통과한다 — <strong>검증되지 않은 경로가 검증된 것처럼 보인다</strong></td>
+  </tr>
+  <tr>
+    <td>③ 뒤바뀐 주입</td>
+    <td>같은 타입 둘의 이름이 안 맞아 A 자리에 B의 더블이 들어감</td>
+    <td>스텁은 걸었는데 엉뚱한 더블에 걸려 있어, 조건이 대상에 닿지 않는다. 엄격 스텁이 있으면 "미사용 스텁"으로 잡히지만, 없으면 조용하다</td>
+  </tr>
+</table>
+<p>
+방어는 규칙을 아는 것에서 시작한다. 생성자 주입을 쓰는 대상이라면 <strong>생성자 인자 수와 테스트의 <code>@Mock</code> 수(타입)가 일치하는지</strong>가 첫 점검이고, 같은 타입이 둘 이상이면 <strong>이름을 맞춘다</strong>. 의심이 들 때의 가장 싼 진단은 실행 전에 <code>assertNotNull</code> 하나를 두거나, 아예 <code>@InjectMocks</code>를 걷어내고 생성자를 직접 부르는 것이다 — 컴파일러가 인자 수와 타입을 대신 검사해 주므로 이 부류의 조용한 실패는 손 배선에서 구조적으로 사라진다.
+</p>
+<blockquote class="ok">
+<p><strong>판단 기준:</strong> <code>@InjectMocks</code>는 <em>편의</em>이지 <em>보증</em>이 아니다. 생성자 하나에 의존이 명확한 대상에는 편의가 크고, 같은 타입이 겹치거나 의존이 선택적인 대상에는 손 배선이 더 안전하다. "주입이 안 됐는데 초록"이 가능한 구조라는 사실을 아는 것이 이 도구를 쓰는 조건이다.</p>
+</blockquote>
+<p>
+준비(2절)와 배선(3~5절)이 끝나면 실행은 한 줄이다 — 대상 메서드를 한 번 부른다. 남은 것은 마지막 단계, 실행이 남긴 흔적을 판정하는 검증이다.
+</p>
+
+<h2>6. 검증 — verify는 무엇을 보고, 무엇을 보면 안 되는가</h2>
+<p>
+<code>verify(mock).method(args)</code>는 <strong>더블의 호출 기록</strong>을 대조한다 — "이 메서드가 이 인자로 (기본값) 정확히 한 번 호출되었는가". <code>times(n)</code>·<code>never()</code>·<code>atLeastOnce()</code>로 횟수를 조정한다. J1의 어휘로 이것은 <em>호출 기록</em> 계열의 검증, 즉 행위 검증이다.
+</p>
+<pre><code>service.place(new Order(1L, Money.of(50_000)));        // 실행
+
+verify(notifier).send(1L, "PAID");                     // 밖으로 나간 부작용 — verify가 정당한 자리
+verify(notifier, never()).send(anyLong(), eq("FAILED"));
+// verify(gateway).charge(any());                      // ← 2절에서 스텁한 것을 되읽음: 동어반복</code></pre>
+<p>
+검증 단계의 원칙은 <strong>"무엇을 verify할 것인가"보다 "무엇을 verify하지 않을 것인가"</strong>에 있다.
+</p>
+<ul>
+  <li><strong>스텁한 호출을 verify하지 않는다.</strong> <code>when(gateway.charge(...))</code>로 조건을 만든 뒤 <code>verify(gateway).charge(...)</code>까지 걸면, 그 더블은 조건이면서 동시에 판정 기준이 된다. 1절에서 본 "준비와 검증이 섞인" 상태다 — 대상이 결제를 호출하지 않으면 스텁이 무의미해지므로 결과 검증이 이미 실패하고, verify는 정보를 더하지 않으면서 <em>호출 방식</em>에 테스트를 결합시킨다.</li>
+  <li><strong>상태로 검증할 수 있으면 상태로 한다.</strong> 반환값이나 저장된 결과로 판정이 가능하면 verify보다 그쪽이 구현 변경에 강하다. 어느 쪽을 택할지의 기준은 J5의 주제다. verify가 정당한 자리는 결과가 밖으로 나가 상태로 확인할 수 없는 것 — 발송·기록·외부 호출이다.</li>
+  <li><strong>한 더블에 조건과 판정을 함께 걸지 않는다.</strong> 같은 mock에 <code>when</code>과 <code>verify</code>가 동시에 걸리면 이 테스트는 두 질문을 한 번에 묻는 셈이 되고, 실패했을 때 어느 질문이 틀렸는지 메시지가 말해 주지 못한다.</li>
+</ul>
+<p>
+인자를 어디까지 정확히 대조할지(<code>any()</code>와 실제 값의 혼용 규칙), 넘겨진 인자를 붙잡아 내용을 검사하는 방법(<code>ArgumentCaptor</code>)은 검증 단계의 심화로 J4에서 이어진다. 이 문서에서 가져갈 것은 <strong>verify는 준비의 되읽기가 아니라 실행이 밖으로 남긴 흔적의 판정</strong>이라는 위치다.
+</p>
+<p>
+이로써 준비 → 배선 → 실행 → 검증이 닫혔다. 남는 것은 이 절차 주변에서 반복되는 오해들이다.
+</p>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "<code>when-thenReturn</code>과 <code>doReturn-when</code>은 취향 차이 아닌가?"</strong> — 아니다. 앞 것은 괄호 안 메서드를 <em>실제로 한 번 호출</em>한 뒤 그 기록을 스텁으로 바꾸고, 뒤 것은 호출 없이 스텁을 등록한다. mock에서는 결과가 같아 차이가 안 보이지만, <code>spy</code>(실물 호출 발생)와 <code>void</code> 메서드(표현식 불가)에서 갈린다. 기본은 앞 것, 두 예외에서 뒤 것이다.</p>
+<p><strong>② "<code>@InjectMocks</code>가 주입에 실패하면 예외가 나겠지?"</strong> — 나지 않는다. 문서가 명시적으로 "실패를 보고하지 않는다"고 못 박는다. 못 채운 자리는 <code>null</code>이고, 발각은 실행 단계의 NPE이거나 영영 없다. 생성자 인자 수와 <code>@Mock</code> 수를 맞추고, 같은 타입은 이름을 맞추는 것이 계약이다.</p>
+<p><strong>③ "스텁하지 않은 메서드를 부르면 mock이 예외를 던지겠지?"</strong> — 던지지 않는다. 기본값(<code>null</code>·0·<code>false</code>·빈 컬렉션·<code>Optional.empty()</code>)을 돌려준다. 그래서 "스텁을 빠뜨렸다"는 대상 코드 안에서 <code>null</code>이 흘러 다니는 형태로 나타나며, ②의 조용한 실패와 증상이 같아 원인을 헷갈리기 쉽다.</p>
+<p><strong>④ "스텁한 메서드도 verify해야 완전한 테스트 아닌가?"</strong> — 그 verify는 조건을 되읽는 동어반복이고, 테스트를 대상의 호출 방식에 결합시킨다. verify의 자리는 결과가 밖으로 나가 상태로 확인할 수 없는 호출(발송·기록)이다. 준비한 것은 조건, 검증할 것은 흔적 — 둘을 한 더블에 겹치지 않는다.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+준비-실행-검증의 구조는 언어 중립이지만, 각 언어의 대표 도구가 세 단계를 어떤 API로 드러내는지, 특히 <strong>"더블을 대상에 끼워 넣는 일"을 도구가 대신해 주는지</strong>와 <strong>"미사용 준비"를 잡아 주는지</strong>가 다르다. 이 문서는 도구 문서이므로 Java를 가장 깊게, 나머지 세 언어는 같은 3단계의 대응만 짧게 본다.
+</p>
+<table>
+  <tr><th>언어 / 도구</th><th>준비(stub)</th><th>배선(더블을 대상에)</th><th>검증(verify)</th><th>그 언어만의 함정</th></tr>
+  <tr>
+    <td>Java / JUnit 5 + Mockito</td>
+    <td><code>when().thenReturn()</code> · <code>doReturn().when()</code></td>
+    <td><code>@InjectMocks</code>(추측 주입) 또는 손 배선</td>
+    <td><code>verify(mock).m()</code></td>
+    <td>주입 실패가 <code>null</code>로 조용함, 엄격 스텁의 미사용 스텁 실패</td>
+  </tr>
+  <tr>
+    <td>JS·TS / Jest · Vitest</td>
+    <td><code>vi.fn().mockReturnValue()</code> · <code>mockResolvedValue()</code></td>
+    <td>도구 지원 없음 — 객체 리터럴을 직접 넘김(또는 모듈 대체)</td>
+    <td><code>expect(fn).toHaveBeenCalledWith()</code></td>
+    <td>미사용 준비를 잡는 장치 없음, 비동기 준비의 <code>await</code> 누락</td>
+  </tr>
+  <tr>
+    <td>Python / pytest + unittest.mock</td>
+    <td><code>mock.m.return_value</code> · <code>side_effect</code></td>
+    <td>도구 지원 없음 — 생성자에 직접 전달(또는 <code>patch</code>)</td>
+    <td><code>mock.m.assert_called_once_with()</code></td>
+    <td><code>spec</code> 없는 mock은 오타 메서드도 조용히 생성</td>
+  </tr>
+  <tr>
+    <td>C++ / GoogleTest + GoogleMock</td>
+    <td><code>ON_CALL().WillByDefault()</code></td>
+    <td>참조·포인터로 직접 전달</td>
+    <td><code>EXPECT_CALL()</code> — <strong>실행 전에</strong> 선언</td>
+    <td>준비와 검증이 실행 앞에 함께 놓이는 구조, 검증 시점 = 소멸 시점</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — JUnit 5 + Mockito 심화</h3>
+<p>
+본문 전체가 Mockito의 3단계였으므로, 여기서는 본문이 미뤄 둔 세 가지 — 확장의 동작 시점, 엄격 스텁의 정확한 규칙, 그리고 mock이 만들어지는 기제 — 를 다룬다.
+</p>
+<p>
+<strong>확장의 동작 시점.</strong> <code>MockitoExtension</code>은 JUnit 5의 확장 모델(테스트 생명주기의 정해진 지점에 끼어드는 콜백 인터페이스 묶음)을 구현한 클래스다. 각 테스트 메서드 <em>직전</em>에 테스트 인스턴스의 <code>@Mock</code>·<code>@Spy</code>·<code>@InjectMocks</code>를 처리하고, <em>직후</em>에 세션을 닫으면서 엄격 스텁 검사를 수행한다. JUnit 5는 기본적으로 테스트 메서드마다 테스트 클래스 인스턴스를 새로 만들므로, 필드에 선언한 mock은 매 테스트 새것이다 — 이 생명주기의 선택지(필드 vs <code>@BeforeEach</code> vs 지역 변수)와 그 트레이드오프는 J7에서 이어진다.
+</p>
+<p>
+<strong>엄격 스텁의 규칙.</strong> <code>MockitoExtension</code>의 기본 엄격도는 <code>STRICT_STUBS</code>이고, 두 가지를 잡는다.
+</p>
+<pre><code>@ExtendWith(MockitoExtension.class)
+class OrderServiceTest {
+    @Mock OrderRepository repository;
+    @Mock PaymentGateway gateway;
+    @Mock Notifier notifier;
+    @InjectMocks OrderService service;
+
+    @Test
+    void 결제가_거절되면_저장하지_않는다() {
+        when(gateway.charge(any())).thenReturn(PaymentResult.declined("한도 초과"));
+        when(repository.findById(1L)).thenReturn(Optional.empty());   // 이 경로에서 호출되지 않는다면
+                                                                     // → 테스트 종료 후 UnnecessaryStubbingException
+
+        service.place(new Order(1L, Money.of(50_000)));
+
+        verify(repository, never()).save(any());
+        verify(notifier, never()).send(anyLong(), anyString());
+    }
+
+    @Test
+    void 인자_불일치는_실행_중에_잡힌다() {
+        when(gateway.charge(Money.of(10_000))).thenReturn(PaymentResult.approved());
+
+        service.place(new Order(2L, Money.of(50_000)));   // 스텁과 다른 인자로 호출
+        // → 호출 시점에 PotentialStubbingProblem: "준비한 조건이 실행에 닿지 않았다"를 즉시 보고
+    }
+}</code></pre>
+<ul>
+  <li><strong>미사용 스텁</strong> — 테스트가 끝난 뒤 한 번도 실현되지 않은 스텁이 있으면 <code>UnnecessaryStubbingException</code>으로 실패한다. 2절의 "이 테스트의 질문과 무관한 조건"을 도구가 걸러 내는 장치이며, 5절의 ③(뒤바뀐 주입으로 스텁이 엉뚱한 더블에 걸린 경우)을 발각시키는 유일한 자동 신호이기도 하다.</li>
+  <li><strong>인자 불일치</strong> — 특정 인자로 스텁한 메서드가 다른 인자로 호출되면, 기본값을 조용히 돌려주는 대신 <code>PotentialStubbingProblem</code>을 즉시 던진다. "준비는 했는데 실행이 다른 길로 갔다"를 실행 시점에 알려 주므로, 7-③의 "기본값이 흘러 다니는" 증상을 상당 부분 차단한다.</li>
+</ul>
+<p>
+두 검사 모두 <em>이 스텁은 정말 필요한가</em>를 묻는다. 여러 테스트가 공유하는 <code>@BeforeEach</code>의 공통 스텁처럼 정당하게 일부 테스트에서만 쓰이는 경우가 있는데, 그때는 해당 스텁만 <code>lenient().when(...)</code>으로 풀거나 클래스에 <code>@MockitoSettings(strictness = Strictness.LENIENT)</code>를 건다. 엄격도를 전역으로 낮추는 것은 검사를 포기하는 것과 같으므로, 스텁 단위로 푸는 것이 원칙이다.
+</p>
+<p>
+<strong>mock이 만들어지는 기제.</strong> Mockito는 런타임에 대상 타입의 대역 클래스를 만들어 메서드 호출을 가로챈다. 오래된 방식은 하위 클래스를 생성하는 것이어서 <code>final</code> 클래스·메서드와 <code>static</code> 메서드는 가로챌 수 없었고, "<code>final</code>은 mock이 안 된다"는 조언이 여기서 나왔다. 동향으로, 2020년대 중반 기준 Mockito 5부터는 <strong>인라인 mock maker</strong>(클래스를 상속하는 대신 바이트코드 자체를 변형해 가로채는 방식)가 기본이 되어 <code>final</code> 클래스·메서드도 별도 설정 없이 대체되며, 별도 인라인 아티팩트를 추가하던 관행은 필요 없어졌다. 즉 옛 조언은 기본 상태에는 더 이상 해당하지 않는다. 다만 <strong>"mock이 된다"와 "mock해야 한다"는 다르다</strong> — J1의 경계 판단(순수 계산은 진짜로 둔다)은 도구가 무엇을 가로챌 수 있든 그대로다.
+</p>
+<p>
+마지막으로 이름 정리를 하나. Mockito에는 <code>given(...).willReturn(...)</code> / <code>then(mock).should()</code>라는 별칭 API(<code>BDDMockito</code>)가 있다. 동작은 <code>when</code>/<code>verify</code>와 같고, 다른 점은 <strong>3단계의 이름을 코드에 드러낸다</strong>는 것뿐이다 — 1절의 Given-When-Then을 어휘로 강제하고 싶을 때 쓴다.
+</p>
+
+<h3>8.2 JS·TS — Jest / Vitest</h3>
+<p>
+Jest와 Vitest는 API가 거의 같고(<code>jest.fn</code> ↔ <code>vi.fn</code>), 2020년대 중반 기준 Vitest는 ES 모듈 기반 실행과 속도가 주된 차이다. 3단계의 대응은 이렇다: 준비는 <code>vi.fn().mockReturnValue()</code>·<code>mockResolvedValue()</code>, 배선은 <strong>도구 지원 없이 객체 리터럴을 직접 넘기는 것</strong>, 검증은 <code>expect(fn).toHaveBeenCalledWith()</code>.
+</p>
+<pre><code>import { vi, it, expect } from 'vitest';      // Jest라면 vi → jest
+
+it('결제가 승인되면 알림을 보낸다', async () =&gt; {
+  // 준비: 더블은 객체 리터럴 — 구조적 타이핑 덕에 PaymentGateway 자리에 그대로 들어간다
+  const gateway  = { charge: vi.fn().mockResolvedValue({ approved: true }) };
+  const notifier = { send: vi.fn() };
+  const service  = new OrderService(new InMemoryOrderRepository(), gateway, notifier);  // 배선은 손으로
+
+  await service.place({ id: 1, amount: 50_000 });     // 실행 — await를 빠뜨리면 검증이 먼저 실행된다
+
+  expect(notifier.send).toHaveBeenCalledWith(1, 'PAID');   // 검증
+});</code></pre>
+<p>
+이 언어만의 특이점은 <code>@InjectMocks</code> 같은 <strong>추측 주입이 아예 없다</strong>는 것이다. 클래스 기반 의존성 주입 컨테이너가 표준이 아닌 생태계라 배선은 항상 손으로 하고, 그래서 5절의 조용한 실패는 성립하지 않는다 — 대신 배선 자체를 생략하고 <code>vi.mock('./paymentClient')</code>로 모듈을 통째로 바꿔치기하는 방식이 흔한데, 이는 J12의 이름 패치 계열이다. 두 번째 함정은 <strong>비동기 준비</strong>다: <code>mockResolvedValue</code>로 준비한 더블은 Promise를 돌려주므로 실행 단계의 <code>await</code>를 빠뜨리면 검증이 실행보다 먼저 평가되어, 1절의 "순서가 뒤집힌 3단계"가 눈에 안 보이게 재현된다. 세 번째로, 두 도구 모두 Mockito의 엄격 스텁에 해당하는 <strong>미사용 준비 검사가 없다</strong> — 무관한 <code>mockReturnValue</code>가 남아 있어도 아무도 알려 주지 않으므로, 준비의 최소화는 사람의 규율이다.
+</p>
+
+<h3>8.3 Python — pytest + unittest.mock</h3>
+<p>
+pytest는 러너이고 더블은 표준 라이브러리 <code>unittest.mock</code>이 담당한다. 3단계의 대응: 준비는 <code>mock.charge.return_value = ...</code>(예외나 순차 응답은 <code>side_effect</code>), 배선은 생성자에 직접 전달, 검증은 <code>mock.send.assert_called_once_with(...)</code>.
+</p>
+<pre><code>from unittest.mock import Mock, create_autospec
+
+def test_결제가_승인되면_알림을_보낸다():
+    gateway = create_autospec(PaymentGateway, instance=True)   # 준비: 시그니처까지 실물과 대조
+    gateway.charge.return_value = PaymentResult.approved()
+    notifier = Mock(spec=Notifier)
+    service = OrderService(InMemoryOrderRepository(), gateway, notifier)   # 배선은 손으로
+
+    service.place(Order(id=1, amount=50_000))                # 실행
+
+    notifier.send.assert_called_once_with(1, "PAID")         # 검증</code></pre>
+<p>
+이 언어에서 3단계가 다른 점은 준비의 문법이 <strong>대입</strong>이라는 것이다. <code>return_value</code>는 메서드 호출이 아니라 속성 대입이므로 Java의 "괄호 안이 먼저 실행된다"는 문제(7-①)는 성립하지 않는다. 대신 반대편 함정이 있다: <code>Mock()</code>은 존재하지 않는 속성에 접근해도 새 <code>Mock</code>을 만들어 돌려주므로, 준비 단계에서 <code>gateway.chrage.return_value = ...</code>처럼 <strong>오타 난 메서드를 준비해도 조용히 지나간다</strong>. 실행은 진짜 <code>charge</code>를 부르니 준비는 닿지 않고, 기본 <code>Mock</code> 객체가 결과로 흘러 다닌다 — 5절의 조용한 실패가 배선이 아니라 준비 단계에서 재현되는 셈이다. <code>spec=</code>은 속성 존재를, <code>create_autospec</code>은 호출 시그니처까지 실물과 대조하므로 이 오타를 준비 시점에 예외로 바꿔 준다.
+</p>
+<p>
+<code>Python 관점의 통찰: 덕 타이핑(객체의 타입이 아니라 "필요한 메서드를 갖고 있는가"만 보는 모델) 아래에서 Mock은 "무엇을 물어도 답이 있는 객체"로 구현되어 있고, 그 구현이 곧 준비 단계의 자유와 위험을 동시에 만든다. Java에서 @InjectMocks의 조용한 실패가 "타입은 맞는데 자리가 비었다"라면, Python의 조용한 실패는 "자리는 채웠는데 이름이 다르다"다 — 정적 언어에서 컴파일러가 지키는 이름·시그니처 계약을 이 언어에서는 spec 인자가 실행 시점에 대신 지킨다. 배선 쪽에는 추측 주입이 없으니 문제가 성립하지 않지만, 생성자를 거치지 않는 patch("모듈.이름")는 모듈이 딕셔너리라는 객체 모델을 이용한 이름 바꿔치기여서 "어느 모듈이 그 이름을 조회하는가"라는 실행 시점의 질문을 늘 동반한다(J12의 주제).</code>
+</p>
+
+<h3>8.4 C++ — GoogleTest + GoogleMock</h3>
+<p>
+gMock은 준비와 검증을 서로 다른 매크로로 분리해 놓았다: <code>ON_CALL(...).WillByDefault(...)</code>가 준비(기본 응답), <code>EXPECT_CALL(...)</code>이 검증(기대). 그런데 <strong>둘 다 실행 <em>앞에</em> 놓인다</strong> — 이 점이 앞의 세 언어와 구조적으로 다르다.
+</p>
+<pre><code>class MockPaymentGateway : public PaymentGateway {
+public:
+    MOCK_METHOD(PaymentResult, Charge, (const Money&amp; amount), (override));
+};
+class MockNotifier : public Notifier {
+public:
+    MOCK_METHOD(void, Send, (long orderId, const std::string&amp; status), (override));
+};
+
+TEST(OrderServiceTest, ApprovedPaymentSendsNotification) {
+    ::testing::NiceMock&lt;MockPaymentGateway&gt; gateway;
+    MockNotifier notifier;
+    ON_CALL(gateway, Charge).WillByDefault(::testing::Return(PaymentResult::Approved()));  // 준비
+    EXPECT_CALL(notifier, Send(1L, "PAID")).Times(1);   // "검증"이지만 실행 앞에 선언한다
+
+    InMemoryOrderRepository repo;
+    OrderService service(repo, gateway, notifier);      // 배선: 참조로 직접 전달
+    service.Place(Order{1L, Money{50000}});             // 실행
+}                                                       // 검증은 notifier가 소멸되는 이 지점에서 수행</code></pre>
+<p>
+그래서 C++에서는 AAA의 <em>순서</em>가 코드 배치와 일치하지 않는다: 기대는 실행 전에 선언되고, 대조는 mock 객체가 소멸되는 시점에 일어난다. 준비-검증의 <em>구분</em>은 오히려 더 선명한데(매크로 이름이 다르므로 "이 줄은 조건인가 판정인가"가 항상 드러난다), 이는 Mockito가 <code>when</code>과 <code>verify</code>를 같은 객체에 겹칠 수 있는 것과 대조된다. 함정은 <code>EXPECT_CALL</code>에 <code>WillOnce(Return(...))</code>를 붙여 <strong>검증 매크로에 준비 역할까지 얹는</strong> 관행이다 — 동작하지만, 1절이 경고한 "조건과 판정이 한 자리에" 있는 상태를 문법이 허용해 버린다. 배선은 참조·포인터로 직접 하므로 추측 주입의 조용한 실패는 성립하지 않고, 대신 mock의 대상이 가상 함수여야 한다는 전제(vtable, 즉 객체마다 "어떤 구현을 부를지"를 담은 함수 포인터 표를 통해 런타임에 구현이 선택되어야 파생 클래스인 mock이 끼어들 수 있다)가 붙는다.
+</p>
+<p>
+<code>C++ 관점의 통찰: 다른 세 언어에서 3단계의 경계는 코드의 줄 순서이지만, C++에서는 객체 수명이 경계다. EXPECT_CALL의 대조가 mock 소멸자에서 실행되므로 "검증 시점 = 스코프 종료"이고, 테스트 대상이 더블을 참조로 들고 있다면 더블은 대상보다 오래 살아야 한다(반대면 댕글링 참조). 또 mock 클래스는 실물의 파생 타입이므로 실물 인터페이스가 바뀌면 mock이 컴파일 단계에서 즉시 깨진다 — Java의 @InjectMocks가 null로 넘기고, Python의 Mock이 오타를 삼키는 자리에서, 이 언어는 컴파일러가 배선과 시그니처를 모두 검사한다. 조용한 실패의 여지가 가장 적은 대신, 더블 하나를 세우는 비용(가상 인터페이스 설계)이 가장 크다.</code>
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<p>본문의 3단계를 확장하는 인접 도구·개념들이다 — 첫째는 6절의 검증을, 둘째는 2절의 두 문법을, 셋째는 8.1의 엄격 스텁을, 넷째는 3·5절의 배선을, 다섯째는 1절의 AAA를 잇는다.</p>
+<ul>
+  <li><strong>인자 Matcher와 ArgumentCaptor(J4의 주제)</strong> — 검증 단계의 심화. <code>any()</code>와 실제 값을 한 호출 안에서 섞을 때의 규칙, 넘겨진 객체를 붙잡아 내용을 단언하는 방법, 제네릭 인자에서 타입 안전을 지키는 요령. 6절의 verify가 "무엇을 보는가"를 정밀하게 만드는 층위.</li>
+  <li><strong>@Spy와 부분 mock</strong> — 실물을 감싸 일부만 스텁하는 더블. 2절의 <code>doReturn-when</code>이 필수가 되는 자리이며, J1이 말한 "격리가 반쯤 열린" 상태이므로 실물의 부작용이 준비 단계에서 새어 나올 수 있다.</li>
+  <li><strong>Strictness 세 단계(LENIENT / WARN / STRICT_STUBS)</strong> — 엄격 스텁은 셋 중 가장 엄격한 설정이다. <code>@MockitoSettings</code>로 클래스 단위, <code>lenient()</code>로 스텁 단위 조정이 가능하며, 원칙은 "낮추더라도 스텁 단위로".</li>
+  <li><strong>Mock 생명주기(J7의 주제)</strong> — 더블을 필드에 둘지 <code>@BeforeEach</code>에서 만들지 지역 변수로 둘지. <code>@InjectMocks</code>의 추측 주입과 손 배선 중 어느 쪽을 택할지의 판단(5절)이 생명주기 선택과 맞물린다.</li>
+  <li><strong>BDDMockito(<code>given / then</code>)</strong> — 동작은 같고 어휘만 Given-When-Then인 별칭 API. 팀이 1절의 3단계를 코드에 강제하고 싶을 때 쓰는 문체 도구이며, 새 기능이 아니라는 점을 알고 쓰면 된다.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>mock 테스트는 <strong>준비 → 실행 → 검증</strong>이며, 분리의 목적은 테스트가 <em>대상의 행동</em>이라는 하나의 질문만 검증하게 하는 것이다. 섞이면 자기 설정을 되읽거나(동어반복), 조건이 실행에 닿지 않거나(순서 역전), 실패가 진단이 되지 못한다.</li>
+  <li>준비의 두 문법: <code>when-thenReturn</code>은 괄호 안을 실제로 호출한 뒤 스텁으로 바꾸고, <code>doReturn-when</code>은 호출 없이 등록한다. 기본은 앞 것, <code>spy</code>·<code>void</code>에서는 뒤 것. 스텁하지 않은 호출은 예외 대신 <strong>기본값</strong>을 돌려준다.</li>
+  <li>배선의 세 부품: <code>@Mock</code>(더블 생성) · <code>@InjectMocks</code>(대상 생성 + 주입) · <code>MockitoExtension</code>(테스트마다 실행 + 사후 검사). 확장 없이는 어노테이션은 주석이다.</li>
+  <li><code>@InjectMocks</code>는 <strong>생성자(가장 큰 것) → <code>setter</code> → 필드</strong> 순, 타입 → 이름 순으로 해석한다. 생성자 인자를 못 찾으면 <code>null</code>을 넘기고, 어느 전략이 실패해도 <strong>예외를 내지 않는다</strong> — 증상은 대상 코드 안의 NPE이거나, 검증 없는 초록불이다.</li>
+  <li>검증은 <strong>실행이 밖으로 남긴 흔적</strong>(발송·기록)을 본다. 스텁한 호출을 verify하지 않고, 상태로 판정할 수 있으면 상태로 하며, 한 더블에 조건과 판정을 겹치지 않는다.</li>
+  <li>엄격 스텁은 미사용 스텁과 인자 불일치를 실패로 보고해 "이 준비는 정말 필요한가"를 도구가 묻게 한다. 다른 생태계(Jest·Vitest·unittest.mock)에는 이 검사가 없어 준비의 최소화가 사람의 규율로 남고, gMock은 준비·검증을 매크로로 분리하되 둘 다 실행 앞에 놓는다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="J1 테스트 더블과 단위 테스트 격리.html">J1 테스트 더블과 단위 테스트 격리.html</a> — 이 문서가 전제로 둔 더블의 종류와 단위 경계. 2절의 "스텁은 조건"과 6절의 "verify는 호출 기록"이 각각 J1의 응답 제공·호출 기록 계열에 대응한다</li>
+  <li><a href="J4 Mockito 인자 검증 — Matcher와 Captor.html">J4 Mockito 인자 검증 — Matcher와 Captor.html</a> — 6절 검증 단계의 심화. verify가 "어떤 인자로 호출되었는가"를 얼마나 정밀하게 대조할지, 넘겨진 객체를 붙잡아 검사하는 방법</li>
+  <li><a href="J7 Mock 생명주기 관리.html">J7 Mock 생명주기 관리.html</a> — 3절의 배선을 언제·어디서 할지의 문제. 필드 어노테이션과 <code>@BeforeEach</code>·지역 변수 중 어느 쪽이 3단계를 읽기 쉽게 하는지, 그리고 최소 모킹 원칙</li>
+</ul>
+
+</body>
+</html>
