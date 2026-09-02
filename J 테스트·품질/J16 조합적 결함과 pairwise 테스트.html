@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J16 조합적 결함과 pairwise 테스트</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>J16 조합적 결함과 pairwise 테스트</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>옵션 하나하나는 전부 정상인데 <strong>특정 조합에서만</strong> 깨지는 결함이 있다 — <strong>조합적 결함(combinatorial fault, 상호작용 결함)</strong>. 각 옵션이 "다른 옵션은 기본값"이라는 전제 위에서 따로 작성되기 때문에 생기며, 그 전제가 어긋나는 조합은 <em>아무도 작성한 적 없는 경로</em>다.</li>
+  <li>축을 하나씩 세워 검증하는 방식(J14의 관점들)은 기준 구성에서 옵션을 <strong>한 번에 하나만</strong> 바꾸므로, 두 옵션이 <em>동시에</em> 비기본값인 조합을 구조적으로 밟지 않는다. 라인·분기 커버리지가 100%여도 이 사각지대는 그대로다.</li>
+  <li>모든 조합을 다 시험하면 옵션 n개 × 값 k개에 <strong>k<sup>n</sup></strong>개 — 조합 폭발. 답은 전수도, 하나씩도 아닌 <strong>조합 커버리지</strong>: 어떤 옵션 쌍을 골라도 그 쌍의 모든 값 조합이 적어도 한 번 등장하도록 <em>최소한의 케이스 집합</em>을 만든다(pairwise, 2-way).</li>
+  <li>pairwise가 "충분히 좋은" 근거는 경험적이다 — 소프트웨어 결함 연구에 따르면 결함의 다수가 1~2개 요인의 상호작용에서 나오고, 요인 수를 늘릴수록 급격히 줄어 대략 6개 요인 이내에서 사실상 전부가 발견된다. 옵션이 늘어도 pairwise 케이스 수는 곱이 아니라 <strong>로그 규모</strong>로만 는다.</li>
+  <li>한계도 분명하다: 3개 이상 요인이 얽힌 결함은 <strong>보장되지 않고</strong>(t-way 확장 필요), pairwise는 "어떤 값 조합"만 정할 뿐 "어떤 값"은 J14의 동등 분할·경계값이 정해야 하며, 조합마다 기대값을 손으로 적을 수 없으므로 단언은 불변식 형태가 된다.</li>
+  <li>도구 층위에서는 도구 대부분이 <strong>전수 곱</strong>(중첩 매개변수화, <code>Combine()</code>, 카테시안 확장)을 주고, pairwise 표는 <strong>생성기로 만들어 매개변수화에 주입</strong>하는 구조가 4언어에 공통이다.</li>
+</ul>
+
+<h2>1. 전제 — 축을 각각 세운 뒤에 남는 질문</h2>
+<p>
+J14는 한 함수에 "어떤 축으로 실패할 수 있나"를 물어 여덟 관점의 케이스를 세우고, 마지막에 하나를 남겼다 — 관점끼리 <em>교차</em>시키면 케이스 수가 합이 아니라 곱이 되어 폭발한다는 것. 이 문서는 그 남은 질문을 받는다.
+다만 질문을 조금 더 정확히 다시 쓰자. 문제는 단순히 "케이스가 많다"가 아니다. <strong>축을 각각 세워 전부 통과시켰는데도 특정 조합에서만 깨지는 결함이 남는다</strong>는 것, 그리고 그 결함을 잡으려면 조합을 봐야 하는데 조합은 셀 수 없이 많다는 것 — 이 둘의 긴장이 이 문서의 관통 질문이다.
+</p>
+<p>
+이 문서에서 "옵션"은 동작에 영향을 주는 독립적으로 보이는 선택지 전부를 가리킨다: 테마(라이트/다크), 화면 폭(넓음/좁음), 컴포넌트 상태(활성/비활성), 기능 플래그(feature flag — 코드를 배포한 채 기능을 켜고 끄는 스위치)의 on/off, 옵션 객체의 각 필드, 설정 파일의 각 항목. 서로 직교(orthogonal)해 보인다는 것은 "하나를 바꿔도 다른 것에 영향이 없어 보인다"는 뜻이고, 이 문서의 첫 절은 그 "보인다"가 어디서 어긋나는지에서 시작한다.
+</p>
+
+<h2>2. 조합적 결함의 기제 — 개별 정상 × 개별 정상 = 결함</h2>
+<p>
+왜 각각 정상인 두 옵션이 합쳐지면 결함이 되는가. 원인은 언제나 같다 — <strong>각 옵션은 "나머지 옵션은 기본값"이라는 암묵적 전제 위에서 따로 작성된다</strong>. 그 전제가 어긋나는 조합에서 실행되는 경로는 아무도 설계하지 않은, 두 코드 조각이 우연히 만나 만들어 낸 경로다. 세 가지 전형을 보자.
+</p>
+<p><strong>① 조건부 스타일링.</strong> 규칙 하나하나는 정상이다. 다크 모드 규칙은 글자를 흰색으로, 좁은 폭에서의 비활성 버튼 규칙은 배경을 옅은 회색으로 만든다. 둘이 만나면 옅은 회색 위의 흰 글자가 된다.</p>
+<pre><code>/* 각 규칙은 홀로 보면 정상이다 */
+.btn                    { color: #24292f; background: #fff; }
+.dark .btn              { color: #fff;    background: #24292f; }   /* 테마: 다크 */
+.compact .btn:disabled  { background: #e6e6e6; }                   /* 좁은 폭 × 비활성 */
+
+/* 라이트 × 좁음 × 비활성 : 짙은 글자 / 옅은 배경 → 정상
+   다크   × 넓음 × 비활성 : 흰 글자 / 짙은 배경   → 정상
+   다크   × 좁음 × 활성   : 흰 글자 / 짙은 배경   → 정상
+   다크   × 좁음 × 비활성 : 흰 글자 / 옅은 배경   → 대비 붕괴 (세 옵션이 모두 비기본값일 때만) */</code></pre>
+<p>
+세 번째 규칙을 쓴 사람은 배경만 바꿨을 뿐 글자색은 "기본값(짙은 색)이겠지"라고 전제했다. 다크 모드가 그 전제를 깨뜨린다. 이 예에서 결함이 드러나는 데는 <strong>세 옵션</strong>이 동시에 비기본값이어야 한다 — 이 "몇 개가 얽혔는가"라는 수가 뒤에서 중요해지므로 기억해 두자.
+</p>
+<p><strong>② 기능 플래그 상호작용.</strong> 플래그 A(새 결제 흐름)는 플래그 B(주소 검증 단계)가 켜진 환경에서 개발되었다. 새 결제 흐름은 검증 단계가 만들어 주는 필드를 전제한다.</p>
+<pre><code>function checkout(order, flags) {
+  let address = order.address;
+  if (flags.addressCheck) address = verify(address);        // B: 검증된 주소 객체로 교체(normalized 필드 추가)
+  if (flags.newPayment)   return payV2(address.normalized); // A: 검증 결과의 필드를 전제
+  return payV1(address);
+}
+// A off × B off : payV1        → 정상      A off × B on : verify 후 payV1 → 정상
+// A on  × B on  : payV2        → 정상      A on  × B off: address.normalized 가 없다 → 결함</code></pre>
+<p>
+두 플래그를 각각 켜고 끄며 시험하면 네 조합 중 세 개만 밟는다. 남은 하나, "A는 켜졌는데 B는 꺼진" 조합은 개발 중 한 번도 존재한 적 없는 환경이며, 그 경로는 <strong>미정의(undefined)</strong> — 명세도 구현도 없다. 플래그가 열 개면 이런 "존재한 적 없는 환경"이 수백 개다.
+</p>
+<p><strong>③ 옵션 객체의 기본값 상호작용.</strong> <code>{ retries: 3, timeout: 1000 }</code> 같은 옵션 객체에서 각 필드의 기본값은 따로 정해진다. 그런데 <code>timeout</code>이 전체 예산이고 <code>retries</code>가 그 안에서 재시도한다면, 사용자가 <code>retries</code>를 크게 주고 <code>timeout</code>은 기본값으로 두는 조합에서 첫 시도 후 곧바로 예산이 바닥난다 — 각 기본값은 홀로 합리적이지만, 둘의 <em>비율</em>은 아무도 정하지 않았다.</p>
+<blockquote class="info">
+<p><strong>공통 구조:</strong> 세 예 모두 "옵션 X를 작성할 때 옵션 Y의 값을 <em>기본값으로 가정</em>했고, 그 가정이 코드 어디에도 적혀 있지 않다"는 구조다. 조합적 결함은 로직 오류라기보다 <strong>적히지 않은 전제의 충돌</strong>이다. 그래서 각 옵션의 코드를 아무리 들여다봐도 보이지 않고, 조합을 <em>실행</em>해야만 드러난다.</p>
+</blockquote>
+<p>
+그렇다면 J14의 방식대로 축을 세워 각 옵션을 검증한 테스트는 왜 이 조합을 밟지 못했을까. 우연이 아니라 구조라는 것이 다음 절이다.
+</p>
+
+<h2>3. 개별 검증의 사각지대 — 한 번에 하나씩은 쌍을 밟지 않는다</h2>
+<p>
+2절의 결함이 개별 검증을 통과하는 이유는, 개별 검증이 <strong>한 번에 한 요인만 바꾸는(one-factor-at-a-time)</strong> 구조이기 때문이다. 기준 구성(전부 기본값)을 하나 두고, 거기서 테마만 바꾼 케이스, 폭만 바꾼 케이스, 상태만 바꾼 케이스, 플래그만 바꾼 케이스를 더한다. 옵션 4개면 케이스 5개다.
+</p>
+<div class="flow">옵션 4개(테마·폭·상태·플래그), 각 2값. 기본값 = 라이트·넓음·활성·off
+
+ 케이스        테마    폭      상태    플래그
+ 기준          라이트  넓음    활성    off
+ 테마만 변경   다크    넓음    활성    off
+ 폭만 변경     라이트  좁음    활성    off
+ 상태만 변경   라이트  넓음    비활성  off
+ 플래그만 변경 라이트  넓음    활성    on
+
+ 옵션 쌍 6개 × 값 조합 4개 = 쌍 조합 24개 중
+   (기본, 기본)  6개 → 기준 케이스가 커버
+   (변경, 기본) 12개 → 변경 케이스들이 커버
+   (변경, 변경)  6개 → 어느 케이스도 밟지 않는다 ← 사각지대 (다크×좁음, 다크×비활성, …)</div>
+<p>
+사각지대의 모양이 정확히 2절의 결함이다: "두 옵션이 <em>동시에</em> 비기본값"인 조합은 이 방식으로는 <strong>절대</strong> 등장하지 않는다. 옵션이 늘수록 사각지대의 비율은 커진다 — 옵션 10개면 쌍 조합 180개 중 45개(전체의 4분의 1)가 비기본값끼리의 쌍인데 케이스는 11개뿐이다.
+</p>
+<p>
+더 불편한 사실은 커버리지가 이 구멍을 <strong>전혀 비추지 못한다</strong>는 것이다. 각 <code>if</code>는 참·거짓 양쪽으로 한 번씩 밟혔으므로 분기 커버리지는 100%다. 2절 ②의 <code>address.normalized</code>가 없는 경로는 새로운 줄이 아니라 <em>이미 밟은 줄들의 새로운 순서</em>이므로, 줄 단위·분기 단위 측정에는 아무것도 나타나지 않는다(J9가 말한 "커버리지는 입력 공간 축만 비춘다"의 조합판이다). 결함이 조합에 있으면 검증도 조합에 있어야 한다 — 그런데 조합을 전부 밟는 것은 가능한가.
+</p>
+
+<h2>4. 조합 폭발 — k<sup>n</sup> 앞에서의 세 가지 선택</h2>
+<p>
+3절의 사각지대를 없애는 가장 단순한 방법은 모든 조합을 밟는 것이다. 옵션 n개가 각각 k개 값을 가지면 조합은 <strong>k<sup>n</sup></strong>개 — 옵션 4개 × 2값이면 16개로 감당되지만, 옵션 6개 × 3값이면 729개, 옵션 10개 × 4값이면 백만 개를 넘는다. 값이 이산적이지 않은 옵션(폭, 수량)은 J14의 동등 분할로 몇 개의 대표값으로 줄인 뒤의 숫자가 이것이므로, 분할을 잘해도 곱은 남는다.
+</p>
+<table>
+  <tr><th>전략</th><th>케이스 수 (옵션 n, 값 k)</th><th>보장하는 것</th><th>대가</th></tr>
+  <tr><td>한 번에 하나씩 (3절)</td><td>n(k−1)+1 — 선형</td><td>각 값이 적어도 한 번 등장 (1-way)</td><td>비기본값끼리의 조합은 전혀 안 봄</td></tr>
+  <tr><td>전수 조합</td><td>k<sup>n</sup> — 지수</td><td>모든 조합 (n-way)</td><td>옵션 몇 개만 넘어도 실행·유지 불가</td></tr>
+  <tr><td>조합 커버리지 (5절)</td><td>대략 k<sup>t</sup> × log n — t 고정 시 로그</td><td>임의의 옵션 t개 묶음의 모든 값 조합 (t-way)</td><td>t+1개 이상이 얽힌 결함은 보장 없음</td></tr>
+</table>
+<p>
+표의 두 끝은 각각 "구멍이 크다"와 "셀 수 없다"이고, 가운데가 이 문서의 답이다. 핵심 발상은 <strong>"모든 조합"이 아니라 "모든 <em>쌍</em>의 조합"으로 목표를 낮추는 것</strong>이다 — 3절의 사각지대가 정확히 "쌍"의 모양이었으므로, 쌍만 전부 덮어도 그 사각지대는 사라진다. 그것을 얼마나 적은 케이스로 할 수 있는가가 다음 절이다.
+</p>
+
+<h2>5. pairwise — 모든 쌍을 최소 케이스 집합으로 덮는다</h2>
+<p>
+<strong>pairwise 테스트(2-way 조합 테스트, all-pairs)</strong>의 정의는 이렇다: 어떤 두 옵션을 골라도, 그 두 옵션의 <em>모든</em> 값 조합이 케이스 집합 안에 적어도 한 번씩 등장한다. 3절의 예에 이를 적용하면 전수 16개 대신 <strong>5개</strong>로 충분하다.
+</p>
+<div class="flow">pairwise 표 (옵션 4개 × 2값: 전수 16 → 5)
+
+ #   테마    폭      상태    플래그
+ 1   라이트  넓음    활성    off
+ 2   라이트  좁음    비활성  on
+ 3   다크    넓음    비활성  on
+ 4   다크    좁음    활성    on
+ 5   다크    좁음    비활성  off
+
+ 검산 — 예: (테마, 폭) 쌍
+   라이트·넓음 #1   라이트·좁음 #2   다크·넓음 #3   다크·좁음 #4,#5  → 4조합 모두 등장
+ 나머지 5쌍도 같은 방식으로 4조합이 전부 등장한다 (24개 쌍 조합 전부 커버)
+
+ 2절 ②의 결함 "플래그 A on × B off" 같은 2-way 결함은 어느 쌍이든 반드시 잡힌다</div>
+<p>
+케이스 하나가 여러 쌍을 동시에 덮기 때문에 이런 압축이 가능하다 — #2 한 줄이 (라이트·좁음), (라이트·비활성), (라이트·on), (좁음·비활성), (좁음·on), (비활성·on) 여섯 쌍 조합을 한꺼번에 소화한다. 케이스 하나가 덮는 쌍의 수는 옵션 수에 따라 제곱으로 늘고 덮어야 할 쌍의 수도 제곱으로 늘므로, <strong>필요한 케이스 수는 옵션 수에 대해 로그 규모</strong>로만 는다. 2값 옵션 10개도 여전히 한 자릿수 케이스로 모든 쌍을 덮을 수 있다 — 4절 표의 "로그"가 이것이다.
+</p>
+<blockquote class="ok">
+<p><strong>덮개 배열(covering array):</strong> 이런 표를 수학에서는 CA(N; t, k, v)라 부른다 — 열(옵션) k개, 각 열의 값 v개, 행 N개이며 <strong>어떤 t개 열을 골라도 그 열들의 모든 값 조합이 적어도 한 행에 나타나는</strong> 배열. pairwise는 t=2이고, 위 표는 CA(5; 2, 4, 2)다. "최소 케이스 집합"이란 곧 N을 가장 작게 만드는 문제이며, 옵션·값이 많아지면 손으로는 못 만들고 생성기에 맡긴다.</p>
+</blockquote>
+<p>
+그런데 여기서 정당한 의심이 생긴다. 쌍만 덮는다는 것은 세 개 이상이 얽힌 조합은 <em>보장하지 않는다</em>는 뜻인데, 2절 ①의 대비 붕괴는 세 옵션이 얽힌 결함이었다. 쌍만 덮고 멈추는 것이 왜 "충분히 좋은" 선택인가.
+</p>
+
+<h2>6. 왜 충분한가 — 경험적 근거, t-way 확장, 제약과 도구</h2>
+<p>
+pairwise의 정당성은 수학이 아니라 <strong>결함의 통계</strong>에서 온다. 여러 분야의 실제 소프트웨어(의료 기기, 브라우저, 서버, 분산 데이터베이스 등)의 결함 이력을 "결함을 드러내는 데 몇 개 요인이 얽혀야 했는가"로 분류한 연구(NIST의 일련의 조사가 대표적)에 따르면, 결함의 다수는 <strong>요인 하나 또는 둘</strong>의 상호작용에서 발생하고, 요인 수가 셋·넷으로 늘수록 비율이 급격히 줄어 <strong>대략 6개 요인 이내에서 사실상 전부</strong>가 발견되었다. pairwise만으로 잡히는 비율은 시스템에 따라 편차가 있어 대략 절반에서 90%대 사이로 보고되며, 3-way까지 덮으면 대부분의 시스템에서 90%를 넘겼다.
+</p>
+<p>
+이 수치가 뜻하는 바는 두 가지다. 첫째, 결함은 요인 수에 대해 <em>지수적으로 희귀해지는데</em> 케이스 수는 요인 수에 대해 <em>지수적으로 늘어나므로</em>, 어딘가에서 멈추는 것이 합리적이고 그 첫 후보가 2다. 둘째, 2는 시작점이지 종점이 아니다 — 같은 원리로 t를 올리는 것이 <strong>t-way 조합 테스트</strong>다.
+</p>
+<div class="flow">t     보장하는 것                        케이스 수(옵션 10개 × 2값 기준, 대략)
+ 1    각 값이 한 번씩(3절의 방식)         ~10
+ 2    모든 쌍의 값 조합(pairwise)         한 자릿수 후반 (log n)
+ 3    모든 세 쌍의 값 조합                수십
+ 4~6  안전 필수 영역에서 쓰는 강도        수백 ~ 수천
+ n    전수 조합                            1,024
+
+ → 결함 통계는 "t를 하나 올릴 때 잡히는 결함의 증분"이 급격히 줄어든다고 말한다.
+   위험도가 높은 옵션 묶음만 t=3으로 올리고 나머지는 2로 두는 혼합도 흔하다.</div>
+<p>
+실제 옵션 공간에는 <strong>제약 조건(constraint)</strong>이 있다 — "좁은 폭에서는 사이드바 옵션이 존재하지 않는다", "플래그 B는 A가 켜져야 의미가 있다"처럼 <em>성립할 수 없는 조합</em>이다. 제약을 무시하고 표를 만들면 실행 불가능한 케이스가 섞이고, 그 케이스가 덮기로 했던 쌍은 실제로는 덮이지 않는다. 그래서 생성기는 제약을 입력받아 불가능 조합을 제외한 채로 나머지 쌍을 전부 덮는 표를 만든다 — 제약이 많을수록 손 계산은 불가능하고 생성기가 필수가 된다.
+</p>
+<p>
+도구는 두 계보다. <strong>직교 배열(orthogonal array)</strong>은 실험계획법에서 온 것으로, 모든 쌍이 <em>같은 횟수</em>로 등장한다는 균형 조건까지 요구한다 — 통계 분석에는 좋지만 테스트에는 필요 이상으로 크다. 테스트에서 쓰는 것은 덮개 배열 생성기로, 각 쌍이 <em>한 번 이상</em>이면 되므로 더 작은 표를 만들며, 보통 아직 안 덮인 쌍을 가장 많이 덮는 행을 탐욕적으로 추가하는 방식이다(PICT, ACTS 같은 생성기와 각 언어의 라이브러리가 대표 예시 — ★절에서 본다). 다만 도구가 표를 만들어 준다고 해서 문제가 끝나지는 않는다. 표의 <em>행</em>은 도구가 정하지만, 표의 <em>값</em>과 각 행의 <em>기대 결과</em>는 여전히 사람의 몫이다 — pairwise의 한계는 정확히 거기에 있다.
+</p>
+
+<h2>7. 한계 — pairwise가 정하지 않는 것들</h2>
+<p>
+6절이 남긴 대로, pairwise는 "어떤 값들의 조합을 실행할지"만 정한다. 정하지 않는 것이 셋 있다.
+</p>
+<p><strong>① 3개 이상 요인의 결함.</strong> 2절 ①의 대비 붕괴(다크 × 좁음 × 비활성)는 3-way 결함이다. 5절의 표에서는 #5가 우연히 이 세 값을 함께 가져 잡히지만, 이는 <em>보장이 아니라 우연</em>이다 — 다른 생성기가 만든 다른 CA(5; 2, 4, 2)에는 이 행이 없을 수 있다. 3-way 결함이 의심되는 옵션 묶음(서로 같은 시각 요소를 건드리는 스타일 규칙들, 같은 데이터를 변형하는 플래그들)은 그 묶음만 t=3으로 올리는 것이 정직한 대응이다.</p>
+<p><strong>② 값의 선택.</strong> pairwise는 각 옵션이 어떤 값들을 가지는지 <em>전제</em>한다. 폭을 {넓음, 좁음}으로 둘지 {320, 480, 481, 1024}로 둘지는 J14의 동등 분할·경계값이 정할 일이며, 경계값을 빠뜨린 채 pairwise 표를 아무리 잘 만들어도 경계 결함은 잡히지 않는다. 조합 테스트는 J14의 <em>뒤에</em> 오는 기법이지 대체가 아니다 — 축을 세운 뒤 축들의 교차를 줄이는 것이 순서다.</p>
+<p><strong>③ 기대값(오라클).</strong> 케이스 다섯 개면 기대값 다섯 개를 손으로 적을 수 있지만, 옵션 10개 × 3값의 pairwise 표 스무 줄이 넘어가면 "이 조합에서 정확히 무엇이 나와야 하는가"를 행마다 적는 일이 곧 조합 폭발의 재림이다. 그래서 조합 테스트의 단언은 대개 <strong>모든 조합에 공통으로 성립해야 할 성질</strong>의 형태를 띤다 — "글자와 배경의 대비는 항상 기준 이상", "어떤 플래그 조합에서도 예외 없이 완료되고 총액 = 항목 합 − 할인", "옵션 객체의 어떤 조합에서도 첫 시도가 예산 안에 있다". 조합 표는 <em>입력</em>을 생성하고, 불변식이 <em>판정</em>을 맡는 분업이다.</p>
+<blockquote class="info">
+<p><strong>판정의 형태가 바뀐다는 것의 의미:</strong> 개별 케이스가 "입력 X → 출력 Y"였다면 조합 케이스는 "어떤 조합에서도 성질 P"다. P를 세우지 못하면 조합 표는 <em>실행만 되고 검증은 안 되는</em> 테스트가 된다 — 예외가 안 나면 통과하는 테스트는 2절 ②(미정의 필드 접근으로 예외가 나는 결함)는 잡지만 2절 ①(예외 없이 조용히 대비만 무너지는 결함)은 못 잡는다. 성질을 세우는 일이 표를 만드는 일보다 어렵고 중요하다.</p>
+</blockquote>
+<p>
+세 한계를 알고 나면 pairwise의 자리가 정해진다: J14가 세운 축들의 교차를, 결함 통계가 정당화하는 강도(t)로, 불변식 판정과 함께 줄이는 기법. 이 자리를 둘러싸고 자주 뒤섞이는 개념 넷을 짚는다.
+</p>
+
+<h2>8. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "pairwise = 케이스를 절반쯤 줄이는 샘플링"이 아니다.</strong> 무작위로 조합 몇 개를 뽑는 것과 pairwise는 다르다. 무작위 표본은 어떤 쌍은 여러 번, 어떤 쌍은 한 번도 안 밟을 수 있지만, pairwise는 <em>모든 쌍이 적어도 한 번</em>이라는 보장을 준다. 줄이는 정도보다 <strong>무엇을 보장하는가</strong>가 정의다 — 케이스 수가 같아도 보장이 없으면 pairwise가 아니다.</p>
+<p><strong>② 전수 곱을 만들어 주는 도구는 pairwise 도구가 아니다.</strong> 중첩 매개변수화, <code>Combine()</code>, 카테시안 곱 확장은 이름 그대로 k<sup>n</sup>을 <em>전부</em> 만든다. 옵션이 적을 때는 그것이 가장 정직한 답이지만, 옵션이 늘어난 뒤에도 같은 도구를 쓰면 4절의 폭발이 테스트 실행 시간으로 청구된다. pairwise 표는 별도의 생성기가 만들고, 매개변수화 도구는 그 표를 <em>주입받는</em> 통로일 뿐이다(★절).</p>
+<p><strong>③ 속성 기반 테스트와는 다른 축의 기법이다.</strong> 속성 기반 테스트는 "모든 입력에 성립할 성질"을 적고 도구가 입력을 <em>무작위로</em> 많이 생성한다 — 7절 ③의 판정 형태는 공유하지만, 입력 생성 방식이 다르다: 쌍 커버리지를 <em>보장하지 않고</em> 실행 횟수로 확률을 높인다. 둘은 결합 가능하다 — 조합 표가 이산 옵션의 쌍을 보장하고, 속성 기반 생성이 연속 값을 채우는 식으로.</p>
+<p><strong>④ 옵션이 정말 독립인지는 pairwise가 판단해 주지 않는다.</strong> 조합 테스트의 입력은 "옵션 목록과 값 목록"이고, 무엇을 옵션으로 볼지는 사람이 정한다. 상호작용이 강하게 의심되는 두 설정을 하나의 옵션으로 묶거나(값 = 두 설정의 유효 조합), 제약으로 불가능 조합을 걸러 주는 모델링이 표 생성보다 앞선다. 모델이 틀리면 — 예컨대 실제로 동작에 영향을 주는 환경 변수를 옵션에서 빼먹으면 — 표가 아무리 완전해도 그 축의 조합은 0-way다.</p>
+</blockquote>
+
+<h2>★ 9. 언어별 대조</h2>
+<p>
+원리는 언어 중립이지만, 도구가 주는 것은 4언어 모두 거의 같은 구조다 — <strong>매개변수화 테스트에 표를 주입하는 통로</strong>는 있고, 그 통로에 넣을 pairwise 표는 <strong>생성기가 따로 만든다</strong>. 차이는 "전수 곱을 얼마나 쉽게(따라서 얼마나 무심코) 만들게 되는가"와 "조합의 일부가 컴파일 타임·빌드 구성으로 밀려나는가"에 있다.
+</p>
+<table>
+  <tr><th>언어 / 도구</th><th>표를 주입하는 통로</th><th>전수 곱을 만드는 기능(주의)</th><th>pairwise 표의 출처</th><th>그 도구만의 함정</th></tr>
+  <tr><td>Java / JUnit 5 + Mockito</td><td><code>@ParameterizedTest</code> + <code>@MethodSource</code>·<code>@CsvSource</code></td><td>확장 라이브러리의 <code>@CartesianTest</code>류(전수 곱)</td><td>생성기 출력을 <code>Stream&lt;Arguments&gt;</code>로 변환</td><td>플래그 대역의 엄격 스텁이 "그 행에서 안 읽은 플래그"를 실패로 판정</td></tr>
+  <tr><td>JS·TS / Jest·Vitest</td><td><code>test.each</code>(표 문법), Vitest <code>test.for</code></td><td>배열 <code>flatMap</code>으로 손쉽게 전수 곱</td><td>생성기 라이브러리 또는 미리 만든 표 파일</td><td>조합마다 스냅샷을 찍으면 "구현의 복사" × 조합 수</td></tr>
+  <tr><td>Python / pytest + unittest.mock</td><td><code>@pytest.mark.parametrize</code></td><td><strong>데코레이터 중첩 = 전수 곱</strong></td><td><code>allpairspy</code>류 생성기 → 표를 parametrize에 주입</td><td>Hypothesis(속성 기반)를 pairwise로 오해</td></tr>
+  <tr><td>C++ / GoogleTest + gMock</td><td><code>TEST_P</code> + <code>INSTANTIATE_TEST_SUITE_P</code></td><td><code>Combine()</code> = 전수 곱</td><td>외부 생성 표를 <code>ValuesIn()</code>으로</td><td>컴파일 타임 옵션은 바이너리 하나에 조합 하나 — 표가 빌드 매트릭스로 밀려남</td></tr>
+</table>
+
+<h3>9.1 Java — JUnit 5 + Mockito: 표를 주입하는 통로와 전수 곱 확장, 그리고 엄격 스텁</h3>
+<p>
+JUnit 5의 <code>@ParameterizedTest</code>는 J14에서 등가 클래스 표를 받던 바로 그 통로이고, 조합 표도 같은 통로로 들어간다. 작은 표는 <code>@CsvSource</code>에 직접 적고, 생성기가 만든 표는 <code>@MethodSource</code>가 <code>Stream&lt;Arguments&gt;</code>로 돌려준다. 옵션의 값이 열거형이면 <code>@EnumSource</code>가 한 축을 대신하지만, 그것은 축 하나의 값 목록이지 조합이 아니다.
+</p>
+<pre><code>@ExtendWith(MockitoExtension.class)
+class CheckoutFlagsTest {
+    @Mock FeatureFlags flags;          // 플래그 조합은 대역이 행마다 다르게 답한다
+
+    // 2절 ② 구조: 2-way 조합을 전부 덮는 표 (플래그 2개면 전수 4행이 곧 pairwise)
+    @ParameterizedTest(name = "newPayment={0}, addressCheck={1}")
+    @CsvSource({ "false,false", "false,true", "true,true", "true,false" })
+    void 어떤_플래그_조합에서도_결제가_완료된다(boolean newPayment, boolean addressCheck) {
+        when(flags.isEnabled("newPayment")).thenReturn(newPayment);
+        when(flags.isEnabled("addressCheck")).thenReturn(addressCheck);
+        Receipt r = new CheckoutService(flags).checkout(sampleOrder());   // 예외 없이 완료
+        assertEquals(sampleOrder().total(), r.total());                   // 조합 불변식(7절 ③)
+    }
+
+    // 옵션이 많아지면: 생성기가 만든 pairwise 표를 MethodSource로 주입
+    @ParameterizedTest
+    @MethodSource("pairwiseRows")
+    void 렌더링_옵션_pairwise(Theme theme, Width width, State state, boolean flag) {
+        Style s = StyleResolver.resolve(theme, width, state, flag);
+        assertTrue(s.contrastRatio() &gt;= 4.5, "대비 불변식: " + theme + "×" + width + "×" + state);
+    }
+    static Stream&lt;Arguments&gt; pairwiseRows() {       // 표는 생성기 출력(파일·리소스)에서 읽는다
+        return PairwiseTable.load("style-options.csv").stream()
+                .map(r -&gt; Arguments.of(r.theme(), r.width(), r.state(), r.flag()));
+    }
+}</code></pre>
+<p>
+전수 곱이 필요할 때는 확장 라이브러리의 카테시안 곱 확장(JUnit Pioneer의 <code>@CartesianTest</code>가 대표 예시 — 각 매개변수에 값 목록을 붙이면 모든 조합으로 실행)이 편하다. 편한 만큼 함정이다: 옵션을 하나 추가하면 실행 횟수가 곱으로 늘어나는데 어노테이션 한 줄만 바뀌므로 폭발이 <em>눈에 안 보인다</em>. 이 확장은 이름 그대로 전수 곱이며 pairwise 옵션이 아니다 — 8-②다.
+</p>
+<p>
+Mockito 쪽 함정은 J14에서 본 엄격 스텁의 조합판이다. 위 첫 테스트에서 <code>newPayment=false</code>인 행은 구현이 <code>addressCheck</code> 플래그를 읽고, 어떤 구현은 <code>newPayment=true</code>일 때 <code>addressCheck</code>를 읽지 않을 수 있다 — 그러면 그 행에서 두 번째 스텁이 미사용으로 남아 엄격 모드가 <code>UnnecessaryStubbingException</code>을 던진다. 조합 표에서는 <strong>"이 행이 어떤 플래그를 읽는가"가 행마다 다른 것이 정상</strong>이므로, 플래그 대역만큼은 <code>lenient()</code>로 완화하거나, 플래그를 대역이 아니라 <em>값 객체</em>(불변 맵)로 넘겨 스텁 자체를 없애는 편이 낫다. 후자가 조합 테스트에는 더 맞는다 — 조합의 입력은 "행동"이 아니라 "값"이기 때문이다.
+</p>
+
+<h3>9.2 JS·TS — Jest / Vitest: 표 문법, 클래스 조합, 시각 회귀 도구의 자리</h3>
+<p>
+Jest와 Vitest의 <code>test.each</code>는 배열 표와 템플릿 리터럴 표 두 문법을 받고, 객체 행을 넘기면 열 이름이 보존되어 조합 표에 특히 잘 맞는다(Vitest는 인자를 펼치지 않는 <code>test.for</code>를 새 코드에 권한다 — 2020년대 중반 기준). 프론트에서 조합적 결함의 본진은 2절 ①의 <strong>조건부 클래스</strong>다: 테마·폭·상태에서 클래스 문자열을 만드는 함수는 순수 함수이므로 조합 표를 그대로 먹일 수 있다.
+</p>
+<pre><code>import { describe, it, expect } from 'vitest';   // Jest: 전역 API, 표 문법은 동일
+import { buttonClasses } from './button';         // (theme, width, state) → 클래스 배열
+
+// pairwise 표: 생성기 출력을 그대로 둔다(5절의 CA(5;2,4,2)와 같은 표)
+const rows = [
+  { theme: 'light', width: 'wide',   state: 'enabled',  flag: false },
+  { theme: 'light', width: 'narrow', state: 'disabled', flag: true  },
+  { theme: 'dark',  width: 'wide',   state: 'disabled', flag: true  },
+  { theme: 'dark',  width: 'narrow', state: 'enabled',  flag: true  },
+  { theme: 'dark',  width: 'narrow', state: 'disabled', flag: false },
+];
+
+describe('buttonClasses — 조합 불변식', () =&gt; {
+  it.each(rows)('$theme × $width × $state', ({ theme, width, state }) =&gt; {
+    const cls = buttonClasses({ theme, width, state });
+    // 판정은 행별 기대값이 아니라 모든 행에 성립할 성질(7절 ③)
+    expect(cls).not.toEqual(expect.arrayContaining(['text-light', 'bg-light']));  // 흰 글자 × 옅은 배경 금지
+    expect(cls.filter(c =&gt; c.startsWith('bg-'))).toHaveLength(1);                // 배경 클래스는 정확히 하나
+  });
+});
+
+// 함정: 전수 곱은 flatMap 세 줄로 만들어진다 — 옵션이 늘면 실행 수가 곱으로 는다
+// const all = themes.flatMap(t =&gt; widths.flatMap(w =&gt; states.map(s =&gt; ({ theme: t, width: w, state: s }))));</code></pre>
+<p>
+이 생태계의 함정은 판정 쪽에 있다. 조합마다 렌더 결과를 <strong>스냅샷</strong>으로 저장하면 "구현의 복사"(J10)가 조합 수만큼 복제된다 — 다섯 행이면 스냅샷 다섯 개, 옵션 하나 추가로 표가 바뀌면 전부 갱신이고, 대비 붕괴가 있어도 스냅샷은 <em>그 붕괴를 정답으로</em> 기록한다. 조합 테스트의 판정은 스냅샷이 아니라 불변식이어야 한다는 7절 ③의 원칙이 여기서 가장 자주 어겨진다.
+</p>
+<p>
+시각적 결함(실제 대비, 겹침, 잘림)은 클래스 문자열만으로는 못 본다. 컴포넌트를 상태별로 격리해 렌더하는 도구(Storybook류)에서 상태 하나가 곧 조합 한 행이고, 렌더 결과를 이미지로 비교하는 시각 회귀 도구를 붙이면 조합 표가 "어떤 스토리를 찍을지"의 목록이 된다 — 대표 예시로만 들며, 여기서도 스냅샷과 같은 함정(붕괴된 화면을 기준으로 승인)이 있으므로 첫 승인이 곧 판정이라는 점을 잊지 말 것. TS는 이 문제에서 도움이 제한적이다: 옵션 타입을 유니언으로 적어도 타입 검사는 <em>각 옵션이 허용 값인가</em>만 보고, 조합의 의미는 보지 못한다 — 2절 ②의 <code>address.normalized</code>는 <code>verify</code>의 반환 타입과 원래 주소 타입을 정확히 구분해 적었을 때만 컴파일 오류가 되며, 대개는 <code>Partial&lt;Options&gt;</code>와 기본값 병합이 그 구분을 지운다.
+</p>
+
+<h3>9.3 Python — pytest + unittest.mock: 중첩 parametrize는 전수 곱, pairwise는 생성기가 만든다</h3>
+<p>
+pytest에서 조합을 만드는 가장 흔한 방법은 <code>@pytest.mark.parametrize</code>를 <strong>겹쳐 쓰는</strong> 것이고, 이것은 정확히 <strong>전수 곱</strong>이다 — 데코레이터 세 개에 값 세 개씩이면 27개 케이스가 만들어지며, 케이스 id도 <code>[light-wide-enabled]</code>처럼 곱으로 붙는다. 옵션 3~4개까지는 이 정직함이 장점이지만, 그 위로는 pairwise 표를 <em>한</em> parametrize에 주입해야 한다. 표는 <code>allpairspy</code>류 생성기가 만든다 — 값 목록의 리스트를 넣으면 쌍을 전부 덮는 행을 차례로 내놓고, 필터 함수로 제약(불가능 조합)을 걸 수 있다.
+</p>
+<pre><code>import pytest
+from allpairspy import AllPairs          # pairwise 생성기 (대표 예시)
+from unittest.mock import patch
+
+# ① 중첩 parametrize = 전수 곱 (2 × 2 × 2 = 8 케이스). 옵션이 적을 땐 이것이 정직하다
+@pytest.mark.parametrize("theme", ["light", "dark"])
+@pytest.mark.parametrize("width", ["wide", "narrow"])
+@pytest.mark.parametrize("state", ["enabled", "disabled"])
+def test_contrast_all_combinations(theme, width, state):
+    assert contrast_ratio(resolve_style(theme, width, state)) &gt;= 4.5
+
+# ② 옵션이 늘면: 생성기가 만든 pairwise 표를 parametrize 하나에 주입
+OPTIONS = [
+    ["light", "dark"],                  # theme
+    ["wide", "narrow"],                 # width
+    ["enabled", "disabled", "loading"], # state
+    [True, False],                      # flag
+    ["ko", "en", "ja"],                 # locale
+]
+def is_valid(row):                      # 제약: loading 상태는 flag가 켜졌을 때만 존재
+    n = len(row)
+    if n &gt; 3 and row[2] == "loading" and row[3] is False:
+        return False
+    return True
+
+ROWS = [tuple(r) for r in AllPairs(OPTIONS, filter_func=is_valid)]   # 전수 72 → 십수 행
+
+@pytest.mark.parametrize("theme,width,state,flag,locale", ROWS,
+                         ids=["-".join(map(str, r)) for r in ROWS])
+def test_contrast_pairwise(theme, width, state, flag, locale):
+    with patch("app.flags.is_enabled", return_value=flag):        # 플래그는 이름 패치로 주입
+        style = resolve_style(theme, width, state, locale=locale)
+    assert contrast_ratio(style) &gt;= 4.5                            # 조합 불변식</code></pre>
+<p>
+생성기가 만든 표는 <strong>모듈 임포트 시점</strong>에 계산되어 수집 단계에서 케이스가 된다(수집 규칙은 J13의 주제). 그래서 표가 결정적이어야 한다 — 생성기가 실행마다 다른 표를 주면 어제 실패한 케이스가 오늘 존재하지 않을 수 있다. 위 예의 <code>ids</code>처럼 행의 값으로 id를 만들어 두면 실패 보고가 곧 "어떤 조합인가"의 답이 된다.
+</p>
+<p>
+이 생태계의 대표적 혼동은 <strong>Hypothesis</strong>다. Hypothesis는 속성 기반 테스트 도구로, "모든 입력에 성립할 성질"을 적으면 입력을 <em>무작위로</em> 생성해 반례를 찾는다 — 7절 ③의 판정 형태는 같지만 8-③에서 본 대로 쌍 커버리지를 <em>보장하지 않는다</em>. 이산 옵션의 조합에는 pairwise 표가, 옵션 안의 연속 값(수량·길이)에는 Hypothesis의 전략이 맞고, 둘을 합쳐 "표의 각 행에서 연속 값을 무작위로"로 쓸 수도 있다.
+</p>
+<p>
+<code>Python 관점의 통찰: 2절 ③의 "옵션 객체 기본값 상호작용"은 이 언어에서 문법 수준의 관용구다 — 키워드 인자의 기본값과 **kwargs·dict.get(key, default)가 옵션 객체 그 자체이고, 각 기본값은 함수 시그니처에 따로 적히므로 "둘의 비율"을 적을 자리가 언어에 없다. 또한 속성 접근이 런타임에 해석되는 객체 모델에서 2절 ②의 address.normalized는 그 조합이 실행되기 전까지 어떤 도구도 검사하지 않으며(정적 검사기는 verify의 반환 타입이 정확히 적혔을 때만 잡는다), 실행되면 AttributeError가 아니라 — Mock이나 dict 기반 객체라면 — None이나 새 Mock이 조용히 돌아올 수도 있다. 그래서 이 언어에서 조합 테스트의 판정은 "예외가 안 났다"로 끝내면 안 되고, 결과 값의 불변식까지 단언해야 J14의 오류 축이 조합에서도 유지된다.</code>
+</p>
+
+<h3>9.4 C++ — GoogleTest + GoogleMock: Combine()은 전수 곱, 표는 외부에서, 조합의 일부는 빌드 시점으로</h3>
+<p>
+GoogleTest의 값 매개변수화는 <code>TEST_P</code>와 <code>INSTANTIATE_TEST_SUITE_P</code>로 표와 본문을 분리하고, 조합을 위해 <code>Combine()</code>을 제공한다 — 이름이 말하듯 <strong>전수 곱</strong>이며, 매개변수는 <code>std::tuple</code>로 도착한다. pairwise 표는 외부 생성기의 출력을 배열로 두고 <code>ValuesIn()</code>으로 주입한다. 이 언어에서 유일하게 다른 점은, 옵션의 일부가 <em>런타임 값이 아니라</em> 컴파일 타임 상수·전처리기 매크로·템플릿 인자라는 것이다.
+</p>
+<pre><code>#include &lt;gtest/gtest.h&gt;
+#include &lt;tuple&gt;
+using ::testing::Combine; using ::testing::Values; using ::testing::ValuesIn;
+
+using Row = std::tuple&lt;Theme, Width, State, bool&gt;;
+class StyleCombo : public ::testing::TestWithParam&lt;Row&gt; {};
+
+TEST_P(StyleCombo, ContrastInvariantHolds) {                 // 판정은 조합 불변식
+    auto [theme, width, state, flag] = GetParam();
+    EXPECT_GE(contrast_ratio(resolve_style(theme, width, state, flag)), 4.5);
+}
+
+// ① Combine() = 전수 곱: 2×2×2×2 = 16 인스턴스. 옵션이 적을 때만
+INSTANTIATE_TEST_SUITE_P(AllCombinations, StyleCombo,
+    Combine(Values(Theme::Light, Theme::Dark), Values(Width::Wide, Width::Narrow),
+            Values(State::Enabled, State::Disabled), Values(false, true)));
+
+// ② pairwise 표는 외부 생성기 출력(코드 생성 또는 리소스 파일)을 배열로 둔다
+static const Row kPairwise[] = {
+    {Theme::Light, Width::Wide,   State::Enabled,  false},
+    {Theme::Light, Width::Narrow, State::Disabled, true },
+    {Theme::Dark,  Width::Wide,   State::Disabled, true },
+    {Theme::Dark,  Width::Narrow, State::Enabled,  true },
+    {Theme::Dark,  Width::Narrow, State::Disabled, false},
+};
+INSTANTIATE_TEST_SUITE_P(Pairwise, StyleCombo, ValuesIn(kPairwise));
+
+// ③ 컴파일 타임 옵션은 이 바이너리에 조합 하나만 존재한다
+#if defined(NEW_PAYMENT) &amp;&amp; !defined(ADDRESS_CHECK)
+  // 2절 ②의 "A on × B off"는 이 매크로 조합으로 빌드했을 때만 컴파일·실행된다
+#endif</code></pre>
+<p>
+③이 이 언어의 고유한 지점이다. 기능 플래그가 전처리기 매크로나 템플릿 인자로 결정되는 코드에서는 <strong>테스트 바이너리 하나가 조합 하나만 담는다</strong> — 런타임 표로는 그 축을 돌릴 수 없고, 조합 표는 <em>빌드 매트릭스</em>(어떤 매크로 조합으로 몇 번 빌드할지)로 밀려난다. 그러면 pairwise는 CI의 빌드 구성 목록에 적용되는 기법이 되고, 빌드 하나가 표의 한 행이다. 빌드 시간이 케이스당 비용이므로 조합 폭발의 청구서가 실행 시간이 아니라 빌드 시간으로 온다는 점만 다르고 구조는 같다.
+</p>
+<p>
+<code>C++ 관점의 통찰: 템플릿 매개변수 조합은 4절의 k^n을 컴파일러가 직접 겪는 형태다 — template&lt;Theme, Width, State&gt; 로 옵션을 타입 수준에 올리면 실제로 쓰인 조합마다 인스턴스가 생성되고, TYPED_TEST의 타입 목록(::testing::Types&lt;...&gt;)에 조합을 나열하는 것은 곧 인스턴스화 목록을 손으로 적는 일이다. 전수 나열은 컴파일 시간과 바이너리 크기로 폭발하므로, 타입 목록 자체를 pairwise 표로 줄이는 것이 자연스럽다. 반대편 이점도 있다 — 조합이 컴파일 타임에 고정되면 "존재한 적 없는 조합"이 실행 파일에 아예 없으므로 2절 ②류의 미정의 경로가 런타임에 우연히 밟힐 일은 없고, 대신 그 조합을 처음 빌드하는 순간 컴파일 오류(예: 검증 단계가 제공하는 타입이 없음)로 발각될 가능성이 크다. 즉 이 언어에서는 조합적 결함의 일부가 실행 전에 걸러지지만, 그 대가로 "어떤 조합을 빌드해 봤는가"의 목록 관리가 테스트 표 관리와 같은 무게를 갖는다.</code>
+</p>
+
+<h2>10. 함께 알면 좋은 것</h2>
+<p>본문의 원리를 인접 기법과 도구로 확장한 것들이다 — 첫째는 5절의 덮개 배열을, 둘째는 7절 ③의 판정 형태를, 셋째는 6절의 제약을, 넷째는 3절의 커버리지 논의를, 다섯째는 2절 ②의 플래그 문제를 잇는다.</p>
+<ul>
+  <li><strong>덮개 배열 생성 알고리즘</strong> — 아직 안 덮인 t-묶음을 가장 많이 덮는 행을 탐욕적으로 추가하는 방식(IPOG류가 대표적)과 대수적 구성. 최소 크기의 배열을 찾는 것은 일반적으로 어려운 문제라 실용 도구는 "충분히 작은" 표를 빠르게 만드는 쪽을 택한다 — 같은 입력에 도구마다 다른 표가 나오는 이유.</li>
+  <li><strong>속성 기반 테스트(property-based testing)</strong> — 7절 ③의 "모든 조합에 성립할 성질"을 판정으로 쓰는 또 다른 기법. 입력 생성이 무작위라 쌍 보장은 없지만(8-③), 반례를 최소 형태로 줄여 주는 축소(shrinking) 기능은 조합 표에 없는 장점이다.</li>
+  <li><strong>결정 테이블과 제약 모델링</strong> — J14가 소개한 결정 테이블은 조건의 조합을 <em>전부</em> 행으로 적는 기법이고, 그 안의 "불가능한 행"이 6절의 제약이다. 조합 테스트의 모델(옵션·값·제약)을 세우는 과정이 곧 결정 테이블의 빈 칸을 채우는 과정과 겹친다.</li>
+  <li><strong>조합 커버리지 측정</strong> — 기존 테스트 집합이 t-묶음을 얼마나 덮는지 재는 것. 3절에서 라인·분기 커버리지가 조합 사각지대를 못 비춘다고 했는데, 이 측정은 정확히 그 사각지대를 수치로 보여 준다("2-way 커버리지 75%" = 3절의 18/24).</li>
+  <li><strong>기능 플래그의 수명 관리</strong> — 2절 ②의 조합 공간은 살아 있는 플래그 수에 지수적으로 커지므로, 완전히 켜진 플래그를 제거하는 일(플래그 정리)이 곧 조합 공간을 줄이는 테스트 활동이다. 살아 있는 플래그 목록이 조합 테스트의 옵션 목록이 되어야 한다는 점에서, 죽은 코드 식별(K4의 주제)과 맞닿는다.</li>
+</ul>
+
+<h2>11. 한 장 요약</h2>
+<ul>
+  <li>관통 질문 — <strong>개별로 전부 통과했는데 왜 조합에서만 깨지는가, 그리고 조합을 전부 시험하지 않고도 그 결함을 잡을 수 있는가.</strong></li>
+  <li>기제: 각 옵션은 "나머지는 기본값"이라는 <strong>적히지 않은 전제</strong> 위에서 작성되고, 전제가 어긋나는 조합은 아무도 설계하지 않은 경로다(조건부 스타일링·플래그 상호작용·기본값의 비율).</li>
+  <li>사각지대: 한 번에 하나씩 바꾸는 검증은 "둘 다 비기본값"인 쌍을 <strong>구조적으로</strong> 밟지 않으며, 라인·분기 커버리지는 이 구멍을 비추지 못한다.</li>
+  <li>pairwise: 모든 옵션 쌍의 값 조합을 적어도 한 번 덮는 최소 집합(덮개 배열 CA(N; 2, k, v)). 케이스 수는 옵션 수에 <strong>로그 규모</strong>. 근거는 결함 통계 — 결함 대부분이 1~2개 요인, 사실상 전부가 6개 이내의 상호작용.</li>
+  <li>한계 셋: 3-way 이상은 보장 없음(필요한 묶음만 t 상향) / 값은 J14의 동등 분할·경계값이 정함 / 기대값은 행별이 아니라 <strong>조합 불변식</strong>으로.</li>
+  <li>도구: 4언어 모두 매개변수화가 표를 주입하는 통로이고 전수 곱 기능(중첩 parametrize·<code>Combine()</code>·카테시안 확장)은 pairwise가 아니다. pairwise 표는 생성기가 만들고, C++의 컴파일 타임 옵션은 표를 빌드 매트릭스로 밀어낸다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="J14 테스트 케이스 설계 관점.html">J14 테스트 케이스 설계 관점.html</a> — 이 문서의 출발점: J14가 세운 축들(동등 분할·경계값 등)이 각 옵션의 <em>값</em>을 정하고, 그 축들이 교차할 때 생기는 조합 폭발을 이 문서가 받는다. 7절 ②에서 본 대로 조합 테스트는 J14의 뒤에 오는 기법이지 대체가 아니다</li>
+</ul>
+
+</body>
+</html>
