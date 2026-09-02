@@ -1,0 +1,541 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>J7 Mock 생명주기 관리</title>
+<style>
+  body {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: 32px 24px;
+    font-family: -apple-system, "Segoe UI", "맑은 고딕", "Malgun Gothic", sans-serif;
+    background: #fff;
+    color: #24292f;
+    line-height: 1.7;
+  }
+  h1 { border-bottom: 1px solid #d0d7de; padding-bottom: 8px; }
+  h2 { border-bottom: 1px solid #d0d7de; padding-bottom: 6px; margin-top: 40px; }
+  h3 { margin-top: 28px; }
+  a { color: #0969da; text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code {
+    font-family: Consolas, "D2Coding", monospace;
+    background: #f6f8fa;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    overflow-x: auto;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+  }
+  th, td {
+    border: 1px solid #d0d7de;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f6f8fa; }
+  tr:nth-child(even) td { background: #fafbfc; }
+  blockquote {
+    margin: 16px 0;
+    padding: 12px 16px;
+    border-radius: 6px;
+    border-left: 4px solid;
+  }
+  blockquote.warn { background: #fff8c5; border-left-color: #d4a72c; }
+  blockquote.info { background: #ddf4ff; border-left-color: #0969da; }
+  blockquote.ok   { background: #e6ffec; border-left-color: #1a7f37; }
+  blockquote p { margin: 4px 0; }
+  .flow {
+    background: #f6f8fa;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    padding: 14px;
+    text-align: left;
+    font-family: Consolas, "D2Coding", monospace;
+    margin: 16px 0;
+    white-space: pre;
+    overflow-x: auto;
+  }
+</style>
+</head>
+<body>
+
+<h1>J7 Mock 생명주기 관리</h1>
+
+<h2>0. 한눈에 보는 결론</h2>
+<ul>
+  <li>mock은 "가짜"이기 전에 <strong>상태를 가진 객체</strong>다 — 어떤 입력에 무엇을 돌려줄지의 <strong>스텁 테이블</strong>과, 지금까지 무엇이 불렸는지의 <strong>호출 기록</strong>. 이 두 상태가 테스트 하나의 수명을 넘어 살아남는 것이 <strong>mock 상태 누수</strong>다.</li>
+  <li>누수는 곧바로 실패하지 않는다. 앞 테스트가 남긴 스텁·기록 위에서 뒤 테스트가 "우연히" 통과하는 <strong>순서 의존</strong>을 먼저 만들고, 그 순서가 바뀌는 날(테스트 추가·선택 실행·셔플·병렬) 비로소 <strong>flaky</strong>로 표면화된다.</li>
+  <li>배치의 선택지는 셋이다: <strong>필드 공유</strong>(수명 = 테스트 인스턴스·클래스), <strong>매 테스트 전 초기화</strong>(수명 = 테스트 1개, 도구가 보증), <strong>테스트 지역변수</strong>(수명 = 테스트 1개, 언어가 보증). 아래로 갈수록 격리가 강하고 위로 갈수록 셋업이 짧다 — 기본값은 아래쪽이다.</li>
+  <li><strong>정적·전역 mock</strong>(정적 메서드·모듈·전역 함수의 대체)은 인스턴스 밖에 사는 상태라 인스턴스 생명주기가 지켜 주지 않는다. 그래서 <strong>스코프 블록으로 열고 닫아야</strong> 하며, 실패 경로에서도 복원이 보장되는 구조(try-with-resources·컨텍스트 매니저·자동 복원 픽스처)가 정답이다.</li>
+  <li>"되돌리기"는 한 동작이 아니라 세 수준이다: <strong>기록 지우기(clear) → 스텁까지 지우기(reset) → 원본 복원(restore)</strong>. 어느 수준까지 되돌리는지가 도구·API마다 달라 여기서 오해가 가장 많이 생긴다.</li>
+  <li>생명주기 관리의 근본 처방은 관리 대상을 줄이는 것 — <strong>모킹 수가 곧 구현 결합도</strong>다. mock이 많을수록 테스트는 구현 세부에 묶이고(J5의 결), 누수 표면도 그만큼 넓어진다. 최소 모킹은 설계 원칙이자 생명주기 원칙이다.</li>
+</ul>
+
+<h2>1. 전제 — mock은 상태를 가진 객체다</h2>
+<p>
+J1에서 mock은 "호출을 기록하는 대역", 스텁은 "정해진 값을 돌려주는 대역"으로 구분했고, J3에서는 그 둘을 한 객체에 담아 <code>when(...).thenReturn(...)</code>으로 가르치고 <code>verify(...)</code>로 묻는 3단계를 봤다.
+이 문서는 그 다음 질문에서 출발한다 — <strong>가르친 것과 기록된 것은 어디에, 얼마나 오래 남는가?</strong>
+</p>
+<p>
+답은 "mock 객체 안에, 그 객체가 살아 있는 동안"이다. 즉 mock 하나는 두 종류의 가변 상태를 품고 있다:
+</p>
+<table>
+  <tr><th>상태</th><th>무엇이 쌓이나</th><th>누가 쌓나</th><th>누수되면 생기는 일</th></tr>
+  <tr>
+    <td><strong>스텁 테이블</strong></td>
+    <td>"이 인자에는 이 값/이 예외" 규칙 목록</td>
+    <td>테스트가 <code>when</code>·<code>mockReturnValue</code>·<code>return_value</code>·<code>ON_CALL</code>로</td>
+    <td>뒤 테스트가 스텁을 안 했는데도 값이 나온다 — <em>가르친 적 없는 답</em></td>
+  </tr>
+  <tr>
+    <td><strong>호출 기록</strong></td>
+    <td>불린 메서드·인자·횟수의 누적 목록</td>
+    <td>대상 코드가 실행되며 자동으로</td>
+    <td>"한 번 호출됐는가"가 앞 테스트의 호출까지 세어 두 번이 된다 — <em>내가 만들지 않은 흔적</em></td>
+  </tr>
+</table>
+<p>
+둘 다 mock 객체 자체가 보유하는 <strong>객체 상태</strong>이므로, 이 상태의 수명은 정확히 <strong>mock 객체의 수명</strong>과 같다. 여기서 문제의 형태가 정해진다: mock 객체가 테스트 하나보다 오래 살면, 그 상태도 테스트 하나보다 오래 산다.
+그러면 실제로 무슨 일이 생기는가 — 왜 "즉시 실패"가 아니라 "가끔 실패"인가.
+</p>
+
+<h2>2. 누수의 기제 — 순서 의존이 먼저 생기고, flaky는 나중에 온다</h2>
+<p>
+1절의 결론을 가장 단순한 형태로 재현해 보자. mock을 테스트 클래스의 필드에 한 번만 만들어 두고 두 테스트가 공유하는 경우다.
+</p>
+<pre><code>// 공유 mock: 클래스 로딩 시 한 번만 생성 — 모든 테스트가 같은 객체를 본다
+class OrderServiceTest {
+    static DiscountPolicy policy = mock(DiscountPolicy.class);
+    OrderService service = new OrderService(policy);
+
+    @Test
+    void 골드_회원은_10퍼센트_할인() {
+        when(policy.rateFor(Grade.GOLD)).thenReturn(0.10);   // 스텁이 policy에 남는다
+        assertEquals(9_000, service.finalPrice(10_000, Grade.GOLD));
+    }
+
+    @Test
+    void 할인율을_정책에_한_번만_묻는다() {
+        service.finalPrice(10_000, Grade.GOLD);              // 스텁 안 함 — 위 테스트의 0.10이 나온다
+        verify(policy, times(1)).rateFor(Grade.GOLD);        // 위 테스트 호출까지 세면 2회 → 실패
+    }
+}</code></pre>
+<p>
+두 번째 테스트는 <strong>혼자 실행하면 통과하고 첫 번째 뒤에 실행하면 실패</strong>한다(기록 누적). 반대로 스텁만 빌려 쓰는 경우라면 <strong>첫 번째 뒤에서만 통과</strong>한다(스텁 잔존).
+어느 쪽이든 결과가 테스트 자신이 아니라 <em>실행 순서</em>에 달려 있다 — 이것이 <strong>순서 의존(order dependence)</strong>이다.
+</p>
+<div class="flow">   mock 상태가 테스트 하나보다 오래 산다
+        │
+        ▼
+   순서 의존: 뒤 테스트의 결과 = f(앞 테스트가 남긴 스텁·기록)
+        │   ── 이 단계에서는 "항상 같은 순서"라 매번 같은 결과 → 아직 조용하다
+        ▼
+   순서가 바뀌는 사건
+     · 테스트 추가·삭제·이름 변경     · 일부만 선택 실행(단일 메서드·필터)
+     · 러너의 셔플·병렬 실행           · 도구 버전에 따른 기본 순서 변경
+        │
+        ▼
+   flaky: 어떤 실행에서는 통과, 어떤 실행에서는 실패 — 원인은 실패한 테스트 밖에 있다</div>
+<p>
+핵심은 순서 의존이 <strong>잠복 상태의 flaky</strong>라는 점이다. 러너가 매번 같은 순서로 돌리는 동안 결과는 매번 같으므로 아무도 눈치채지 못하고, 그 사이 누수 위에 얹힌 테스트가 계속 늘어난다.
+그러다 순서를 바꾸는 사건이 오면 한꺼번에 무너지는데, 실패한 테스트를 아무리 들여다봐도 원인이 없다 — 원인은 <em>앞에서 돌았던 다른 테스트</em>에 있기 때문이다. 이것이 mock 누수가 특히 진단하기 어려운 이유고, J11이 다루는 결정성 문제 가운데 "환경"이 아니라 "이웃 테스트"가 원인인 부류다.
+</p>
+<blockquote class="info">
+<p><strong>누수의 네 가지 얼굴:</strong> ① <strong>공유 인스턴스</strong>(위 예제 — 필드·정적 필드·상위 스코프 변수의 mock), ② <strong>정적·전역 mock</strong>(정적 메서드·모듈·전역 함수를 통째로 바꿔치기한 뒤 되돌리지 않음), ③ <strong>스텁 잔존</strong>(앞 테스트의 <code>when</code>이 다음 테스트의 답이 됨), ④ <strong>호출 기록 누적</strong>(<code>times(1)</code>이 앞 테스트 호출까지 셈). ③·④는 상태의 종류이고 ①·②는 그 상태가 살아남는 통로다.</p>
+</blockquote>
+<p>
+통로가 문제라면 해법은 통로를 좁히는 것 — 즉 mock 객체의 수명을 테스트 하나에 맞추는 것이다. 그런데 "테스트 하나"의 경계를 누가 그어 주는가에 따라 선택지가 갈린다.
+</p>
+
+<h2>3. 세 가지 배치 — 필드 공유 vs 매 테스트 전 초기화 vs 지역변수</h2>
+<p>
+mock을 어디에 두느냐는 곧 <strong>수명을 누구에게 맡기느냐</strong>의 문제다. 세 선택지는 격리의 강도와 셋업의 길이를 맞바꾼다.
+</p>
+<table>
+  <tr><th>배치</th><th>수명의 보증자</th><th>격리</th><th>셋업 반복</th><th>적합한 경우</th></tr>
+  <tr>
+    <td><strong>필드 공유</strong>(한 번 생성, 전 테스트 공유)</td>
+    <td>없음 — 개발자가 매번 되돌려야</td>
+    <td>가장 약함(2절의 누수 경로)</td>
+    <td>없음</td>
+    <td>생성 비용이 극단적으로 큰 <em>상태 없는</em> 협력자. mock에는 거의 해당 없음</td>
+  </tr>
+  <tr>
+    <td><strong>매 테스트 전 초기화</strong>(<code>@BeforeEach</code>·<code>beforeEach</code>·픽스처·<code>SetUp</code>)</td>
+    <td>테스트 프레임워크 — 훅이 테스트마다 새로 만든다</td>
+    <td>강함(훅이 빠짐없이 돌면)</td>
+    <td>공통 부분 1회 작성</td>
+    <td>여러 테스트가 <em>같은 구성</em>의 협력자를 쓸 때의 기본값</td>
+  </tr>
+  <tr>
+    <td><strong>테스트 지역변수</strong></td>
+    <td>언어 — 블록을 벗어나면 참조가 사라진다</td>
+    <td>가장 강함</td>
+    <td>테스트마다 반복</td>
+    <td>테스트마다 구성이 다를 때. 읽는 사람이 한 화면에서 전부를 보게 하고 싶을 때</td>
+  </tr>
+</table>
+<p>
+표를 읽는 방법이 중요하다. "매 테스트 전 초기화"가 격리를 보증하는 이유는 훅의 마법이 아니라, 훅이 <strong>대입을 다시 실행해 새 객체를 만들기</strong> 때문이다. 즉 훅 안에서 <code>policy = mock(...)</code>을 하면 격리되지만, 훅 안에서 <em>기존 객체에</em> <code>when</code>만 추가하면 격리되지 않는다 — 객체가 같으니 상태도 같다.
+</p>
+<p>
+여기에 프레임워크 차원의 변수가 하나 더 있다: <strong>테스트 인스턴스 생명주기</strong>다. 테스트 클래스가 테스트 메서드마다 새 인스턴스로 만들어지는지, 한 인스턴스가 전 메서드에 걸쳐 재사용되는지에 따라 "인스턴스 필드"의 의미가 완전히 달라진다.
+</p>
+<div class="flow">   [메서드마다 새 인스턴스]                 [클래스당 한 인스턴스]
+   test A: new TestClass() → 필드 초기화    new TestClass() → 필드 초기화
+   test B: new TestClass() → 필드 초기화    test A ─┐
+   test C: new TestClass() → 필드 초기화    test B ─┼─ 같은 필드를 공유 → 누수 통로
+                                            test C ─┘
+   인스턴스 필드 = 사실상 테스트 지역변수   인스턴스 필드 = 2절의 공유 mock
+   (단, static 필드는 어느 쪽에서도 공유)</div>
+<p>
+JUnit 5의 기본은 왼쪽(메서드마다 새 인스턴스)이므로, 인스턴스 필드 선언부에서 mock을 만드는 것만으로 이미 테스트당 새 객체가 된다. 오른쪽(클래스당 한 인스턴스)은 명시적 옵션이고, 이 옵션을 켜는 순간 필드는 공유 상태가 되어 훅에서의 재생성이 필수가 된다.
+어느 쪽이든 <strong>정적 필드는 항상 공유</strong>다 — 인스턴스 생명주기와 무관하게 클래스 로딩 시 한 번 만들어져 프로세스 끝까지 산다. 2절 예제가 <code>static</code>이었던 이유다.
+</p>
+<blockquote class="ok">
+<p><strong>기본 원칙:</strong> mock의 수명은 <strong>테스트 하나</strong>로 맞추고, 그 보증을 <strong>사람이 아니라 언어나 프레임워크</strong>에 맡긴다. 지역변수는 언어가, 훅에서의 재생성은 프레임워크가 보증한다. 필드 공유는 보증자가 없으므로 "되돌리는 코드를 잊지 않는 것"에 격리가 걸린다 — 이것이 가장 먼저 무너지는 부분이다.</p>
+</blockquote>
+<p>
+그런데 이 원칙에는 사각지대가 있다. 지금까지의 mock은 모두 <em>객체</em>였고, 객체는 참조가 사라지면 상태도 함께 사라진다. 참조로 소유할 수 없는 것을 mock하면 어떻게 되는가.
+</p>
+
+<h2>4. 정적·전역 mock — 인스턴스 밖의 상태는 스코프로 닫는다</h2>
+<p>
+정적 메서드(현재 시각·난수·유틸리티), 모듈 단위로 불러오는 함수, 전역 객체를 mock한다는 것은 "새 객체를 만들어 주입"하는 것이 아니라 <strong>이미 존재하는 전역 이름의 실체를 바꿔치기</strong>하는 것이다.
+바꿔치기된 실체는 특정 테스트 인스턴스의 소유가 아니므로 3절의 어떤 배치도 수명을 지켜 주지 않는다 — 테스트가 끝나도, 인스턴스가 버려져도, 전역 이름은 여전히 가짜를 가리킨다.
+</p>
+<div class="flow">   [인스턴스 mock]                          [정적·전역 mock]
+   test ─소유→ mock 객체                    test ─설치→ 전역 이름 ─→ 가짜
+   test 끝 → 참조 소멸 → 상태 소멸           test 끝 → 전역 이름은 그대로 → 가짜가 남는다
+                                             │
+                                             └─ 다음 테스트·다른 파일·다른 클래스까지 오염
+                                                (누수 반경이 프로세스 전체)</div>
+<p>
+따라서 정적·전역 mock의 생명주기는 <strong>명시적 설치와 명시적 복원</strong>으로만 관리할 수 있고, 두 시점 사이가 곧 mock의 스코프다. 여기서 "복원 코드를 테스트 끝에 한 줄 쓰면 되지 않나"라는 생각이 들지만, 그 한 줄은 <strong>테스트가 정상 종료할 때만</strong> 실행된다.
+단언이 실패하거나 예외가 나면 복원은 건너뛰어지고, 실패한 테스트 하나가 이후의 모든 테스트를 오염시킨다 — 실패가 실패를 낳는 연쇄다.
+</p>
+<pre><code>// 나쁜 형태: 복원이 정상 경로에만 있다
+Clock.setFixed(FIXED);            // 전역 설치
+assertEquals(..., service.dueDate());   // 여기서 실패하면 ↓ 는 실행되지 않는다
+Clock.reset();                    // 복원 — 실패 시 건너뜀
+
+// 좋은 형태: 블록을 벗어나는 모든 경로(정상·예외)에서 복원이 보장된다
+try (MockedStatic&lt;Clock&gt; clock = mockStatic(Clock.class)) {
+    clock.when(Clock::now).thenReturn(FIXED);
+    assertEquals(..., service.dueDate());
+}                                 // 성공이든 실패든 여기서 원래 Clock으로 복귀</code></pre>
+<p>
+언어마다 이름은 다르지만 구조는 같다 — Java의 try-with-resources, Python의 <code>with</code> 블록과 데코레이터, JS·TS의 <code>afterEach</code> 복원 또는 설정 파일의 자동 복원 옵션, C++의 소멸자. 공통 원리는 <strong>복원을 제어 흐름이 아니라 스코프의 종료에 묶는 것</strong>이다.
+정적·전역 mock은 스코프가 닫히는 곳이 곧 mock이 죽는 곳이고, 그 경계가 코드에 보이지 않으면 누수가 보장된다.
+</p>
+<p>
+그런데 "복원한다"는 말이 정확히 무엇을 되돌리는가? 호출 기록만? 스텁까지? 원래 구현까지? 도구가 제공하는 되돌리기 API가 여러 개인 이유가 여기에 있다.
+</p>
+
+<h2>5. 되돌리기의 세 수준 — clear·reset·restore, 그리고 reset 안티패턴</h2>
+<p>
+4절이 "언제 되돌리나"였다면 이 절은 "무엇을 되돌리나"다. 1절의 두 상태(스텁 테이블·호출 기록)에 "원래 구현"을 더하면, 되돌리기는 세 수준의 포함 관계가 된다.
+</p>
+<table>
+  <tr><th>수준</th><th>되돌리는 것</th><th>남는 것</th><th>대표 이름</th></tr>
+  <tr>
+    <td><strong>clear</strong></td>
+    <td>호출 기록만</td>
+    <td>스텁·가짜 구현은 그대로</td>
+    <td><code>mockClear</code>·<code>clearAllMocks</code>·<code>reset_mock()</code>(기본)</td>
+  </tr>
+  <tr>
+    <td><strong>reset</strong></td>
+    <td>호출 기록 + 스텁 테이블</td>
+    <td>"mock이라는 사실"은 그대로(빈 mock)</td>
+    <td>Mockito <code>reset()</code>·<code>mockReset</code>·<code>resetAllMocks</code></td>
+  </tr>
+  <tr>
+    <td><strong>restore</strong></td>
+    <td>위 전부 + 가짜를 걷어내고 <em>원래 구현</em>으로</td>
+    <td>없음 — mock 이전 상태</td>
+    <td><code>mockRestore</code>·<code>restoreAllMocks</code>·<code>patch</code> 종료·<code>MockedStatic.close()</code></td>
+  </tr>
+</table>
+<p>
+표에서 두 가지 함정이 바로 보인다. 첫째, <strong>같은 이름이 도구마다 다른 수준을 뜻한다</strong> — Python의 <code>reset_mock()</code>은 기본적으로 clear 수준(반환값·부작용 설정을 남긴다)이고, Mockito의 <code>reset()</code>은 reset 수준이며, "reset"이 스텁을 어떤 상태로 돌리는지(빈 함수인지, 처음 준 구현인지)는 JS 도구끼리도 다르다.
+둘째, <strong>restore는 대상이 원래 구현을 가졌던 경우에만 의미가 있다</strong> — 순수하게 새로 만든 mock 함수에는 돌아갈 원본이 없으므로, restore 계열 호출이 "아무것도 하지 않는" 조용한 실패가 된다.
+</p>
+<p>
+그리고 이 되돌리기 API가 <strong>테스트 중간에</strong> 등장하는 순간이 안티패턴의 신호다.
+</p>
+<pre><code>@Test
+void 주문_확정과_취소() {
+    when(repo.findById(1L)).thenReturn(order);
+    service.confirm(1L);
+    verify(notifier).send(1L, "주문 확정");
+
+    reset(repo, notifier);                     // ← 여기서 "두 번째 테스트"가 시작된다
+    when(repo.findById(1L)).thenReturn(confirmedOrder);
+    service.cancel(1L);
+    verify(notifier).send(1L, "주문 취소");
+}</code></pre>
+<p>
+테스트 한가운데서 <code>reset</code>이 필요하다는 것은 <strong>한 메서드 안에 독립된 테스트가 둘 있다</strong>는 뜻이다. 둘로 쪼개면 각각 3절의 배치가 새 mock을 만들어 주므로 <code>reset</code>은 필요 없어진다.
+Mockito 문서 자체가 <code>reset()</code>을 "좋지 않은 테스트의 신호일 수 있다"고 적어 둔 이유다. 되돌리기 API의 정당한 자리는 테스트 <em>사이</em>(훅·설정 파일의 자동 옵션)이지 테스트 <em>안</em>이 아니다.
+</p>
+<p>
+여기까지가 "이미 있는 mock의 상태를 어떻게 관리하나"였다. 그런데 관리해야 할 mock이 애초에 적다면 이 모든 문제의 표면적이 줄어든다. 얼마나 적어야 하고, 그 수는 무엇을 말해 주는가.
+</p>
+
+<h2>6. 최소 모킹 — 모킹 수가 곧 구현 결합도</h2>
+<p>
+테스트 하나가 만드는 mock의 수를 세어 보자. 그 수는 <strong>대상 코드가 그 테스트에서 상호작용하는 협력자의 수</strong>이고, 동시에 <strong>테스트가 알아야 하는 구현 세부의 수</strong>다.
+J5가 "행위 검증이 과하면 구현에 결합된다"고 했다면, 이 절은 그 앞 단계를 짚는다 — <strong>검증하기도 전에, mock을 만드는 행위 자체가 이미 결합</strong>이다. mock을 만들려면 대상이 어떤 협력자를 어떤 인터페이스로 쓰는지 알아야 하고, 스텁하려면 어떤 메서드를 어떤 인자로 부르는지까지 알아야 하기 때문이다.
+</p>
+<pre><code>// mock 5개: 테스트가 OrderService의 협력자 구성 전체를 알고 있다
+@Mock OrderRepository repo;   @Mock DiscountPolicy policy;   @Mock Notifier notifier;
+@Mock Clock clock;            @Mock AuditLog audit;
+
+@BeforeEach
+void setUp() {
+    when(repo.findById(any())).thenReturn(order);
+    when(policy.rateFor(any())).thenReturn(0.10);
+    when(clock.now()).thenReturn(FIXED);
+    // ... 테스트마다 실제로 필요한 스텁은 이 중 한두 개
+}</code></pre>
+<p>
+이런 셋업은 생명주기 관점에서도 최악의 조합이다: 공통 훅에 모든 스텁을 몰아넣으면 <strong>어느 테스트가 어느 스텁에 의존하는지 보이지 않고</strong>, 안 쓰는 스텁이 "혹시 필요할까 봐" 남아 스텁 잔존(2절 ③)이 설계로 굳어진다.
+엄격 모드를 제공하는 도구(Mockito의 strict stubs 등)가 "사용되지 않은 스텁"을 실패로 보고하는 것은 정확히 이 지점을 겨냥한다 — 셋업의 스텁은 그 테스트가 실제로 쓰는 것만 있어야 한다는 규율이다.
+</p>
+<table>
+  <tr><th>모킹 수의 의미</th><th>테스트 관점</th><th>설계 관점</th></tr>
+  <tr>
+    <td>mock 0~1개</td>
+    <td>상태 검증 위주, 셋업이 짧고 누수 표면이 좁다</td>
+    <td>대상이 값 계산이거나 협력자가 적다 — 응집된 단위</td>
+  </tr>
+  <tr>
+    <td>mock 2~3개</td>
+    <td>부수효과 협력자(알림·외부 호출)에 행위 검증이 붙는 정상 범위</td>
+    <td>책임이 명확한 조정자(orchestrator)</td>
+  </tr>
+  <tr>
+    <td>mock 4개 이상</td>
+    <td>셋업이 테스트보다 길고, 어느 스텁이 어느 테스트를 지탱하는지 불투명</td>
+    <td>대상이 너무 많은 협력자를 안다 — 분리 후보(I4의 주입 지점 재검토)</td>
+  </tr>
+</table>
+<p>
+그래서 <strong>최소 모킹 원칙</strong>은 두 방향으로 읽힌다. 테스트 쪽으로는 "관측 가능한 결과가 있으면 mock 대신 실제 값·페이크를 쓰고, 부수효과 협력자만 mock한다"(J5의 선택 기준). 설계 쪽으로는 "mock 수가 늘면 테스트를 고칠 게 아니라 대상의 의존성을 줄인다".
+두 방향 모두 결과는 같다 — 관리할 mock이 줄고, 남은 mock은 각 테스트가 지역적으로 소유하며, 생명주기 문제는 원천에서 작아진다.
+</p>
+<p>
+남은 것은 이 원칙들이 실제로 적용될 때 자주 어긋나는 지점들이다.
+</p>
+
+<h2>7. 흔히 헷갈리는 지점</h2>
+<blockquote class="warn">
+<p><strong>① "훅에서 초기화하니까 안전하다"</strong> — 훅이 격리를 주는 것은 <em>새 객체를 대입할 때</em>뿐이다. 훅 안에서 기존 mock에 <code>when</code>만 추가하거나, 훅이 재사용하는 정적 필드를 가리키고 있으면 격리는 없다. 질문은 "훅이 있는가"가 아니라 "훅이 끝난 뒤 이 참조가 <em>새 객체</em>를 가리키는가"다.</p>
+<p><strong>② "테스트가 독립적으로도 통과하니 순서 의존은 없다"</strong> — 순서 의존은 세 방향이다: 앞 테스트 덕에 통과(스텁 잔존), 앞 테스트 탓에 실패(기록 누적), 그리고 <em>내가 뒤 테스트를 오염시키는</em> 경우. 셋째는 내 테스트를 아무리 단독 실행해도 드러나지 않는다. 셔플·역순 실행이 표준 진단인 이유다.</p>
+<p><strong>③ "clear 했으니 스텁도 지워졌다"</strong> — clear는 호출 기록만 지운다. 앞 테스트의 <code>mockReturnValue</code>·<code>return_value</code>는 살아 있다. 반대로 restore 계열을 새로 만든 mock 함수에 부르면 돌아갈 원본이 없어 아무 일도 일어나지 않는다. 되돌리기 API를 쓸 때는 5절의 표에서 "어느 수준인가"를 먼저 확인한다.</p>
+<p><strong>④ "정적 mock을 닫는 것은 정리(cleanup)일 뿐이다"</strong> — 닫기는 정리가 아니라 <em>격리 그 자체</em>다. 정적·전역 대체는 인스턴스 생명주기 밖에 있으므로 닫지 않으면 프로세스 전체가 오염되고, 정상 경로에만 닫기를 두면 실패한 테스트가 뒤 테스트를 연쇄로 무너뜨린다. 닫기는 스코프 종료에 묶여야 한다.</p>
+</blockquote>
+
+<h2>★ 8. 언어별 대조</h2>
+<p>
+원리는 하나(mock의 수명 = 테스트 하나, 정적·전역은 스코프로)지만, 각 도구가 <strong>어디까지 자동으로 보증하고 어디부터 개발자에게 맡기는지</strong>가 다르다. 그 경계가 곧 각 언어의 함정이 생기는 자리다.
+</p>
+<table>
+  <tr><th>언어·도구</th><th>테스트당 새 mock의 보증</th><th>정적·전역 mock의 스코프</th><th>되돌리기 API의 수준</th><th>그 언어만의 함정</th></tr>
+  <tr>
+    <td>Java — JUnit 5 + Mockito</td>
+    <td>기본 생명주기가 메서드마다 새 인스턴스 + 확장이 매 테스트 전 <code>@Mock</code> 재생성</td>
+    <td><code>mockStatic</code>은 반드시 닫아야 하는 자원(try-with-resources)</td>
+    <td><code>reset()</code> = reset 수준, 문서가 사용 자제 권고</td>
+    <td>클래스당 인스턴스 옵션·<code>static</code> 필드에서 보증이 사라짐. 미닫힘 정적 mock은 같은 스레드의 다음 등록을 막는다</td>
+  </tr>
+  <tr>
+    <td>JS·TS — Jest / Vitest</td>
+    <td>없음 — 파일 최상위의 <code>vi.fn()</code>/<code>jest.fn()</code>은 파일 내 모든 테스트가 공유</td>
+    <td>모듈 mock은 파일 단위로 호이스팅, 파일 간은 격리</td>
+    <td>clear / reset / restore 3단계가 API·설정으로 분리. reset의 의미가 Jest와 Vitest에서 다름</td>
+    <td>세 수준의 혼동이 가장 잦은 생태계. 설정 파일의 자동 옵션으로 보증을 사야 한다</td>
+  </tr>
+  <tr>
+    <td>Python — pytest + unittest.mock</td>
+    <td>함수 스코프 픽스처는 테스트마다 새로. 모듈·세션 스코프로 올리면 공유</td>
+    <td><code>patch</code>는 데코레이터·<code>with</code> 스코프에서 자동 복원, <code>start()</code>는 수동</td>
+    <td><code>reset_mock()</code> = 기본 clear 수준(반환값·부작용 유지)</td>
+    <td>패치는 모듈 속성 교체 = 인터프리터 전역 상태. 픽스처 스코프 승격이 곧 공유 mock</td>
+  </tr>
+  <tr>
+    <td>C++ — GoogleTest + gMock</td>
+    <td><code>TEST_F</code>마다 픽스처 객체를 새로 생성·소멸 — mock 멤버도 함께</td>
+    <td>전역·정적 mock 객체는 소멸 시점이 프로그램 종료 → 테스트별 검증 불가</td>
+    <td><code>VerifyAndClearExpectations</code> / <code>VerifyAndClear</code></td>
+    <td>기대치 검증이 <em>소멸자</em>에서 일어난다 — 수명이 곧 검증 시점. 누수된 mock은 검증되지 않은 채 오류 보고</td>
+  </tr>
+</table>
+
+<h3>8.1 Java — JUnit 5 + Mockito: 보증이 가장 두텁고, 그래서 보증이 꺼지는 조건을 알아야 한다</h3>
+<p>
+JUnit 5는 기본적으로 테스트 메서드마다 테스트 클래스의 새 인스턴스를 만들고, <code>MockitoExtension</code>은 매 테스트 전에 <code>@Mock</code> 필드를 새 mock으로 채운다. 즉 아무것도 하지 않아도 인스턴스 필드의 mock은 테스트당 하나다.
+이 두터운 보증이 꺼지는 조건은 셋이다: <code>static</code> 필드(클래스 수명), <code>@TestInstance(PER_CLASS)</code>(인스턴스 재사용 — 확장이 <code>@Mock</code>은 다시 채우더라도 직접 만든 필드 mock은 그대로다), 그리고 정적 mock.
+</p>
+<pre><code>@ExtendWith(MockitoExtension.class)          // 기본 strict stubs: 안 쓰는 스텁은 실패로 보고
+class DueDateServiceTest {
+    @Mock Calendar calendar;                   // 매 테스트 전 새 mock — 확장이 보증
+    @InjectMocks DueDateService service;
+
+    @Test
+    void 정적_시각은_스코프_안에서만_고정된다() {
+        try (MockedStatic&lt;Clock&gt; clock = mockStatic(Clock.class)) {   // 닫히지 않으면 같은 스레드의 다음 mockStatic이 예외
+            clock.when(Clock::now).thenReturn(Instant.parse("2026-01-01T00:00:00Z"));
+            when(calendar.isHoliday(any())).thenReturn(false);        // 이 테스트가 실제로 쓰는 스텁만
+
+            assertEquals(LocalDate.of(2026, 1, 8), service.dueDate(7));
+        }                                                             // 여기서 Clock 복원 — 실패해도
+    }
+}</code></pre>
+<p>
+정적 mock은 <code>MockedStatic</code>이라는 <em>닫아야 하는 자원</em>으로 표현되는데, 이는 4절의 원리를 타입으로 강제한 것이다. 닫지 않으면 같은 스레드에서 같은 클래스를 다시 <code>mockStatic</code>할 때 "이미 등록됨" 예외가 나므로, 누수가 다음 테스트의 <em>실패</em>로 곧장 드러난다는 점이 오히려 장점이다.
+또 하나의 특이점은 <strong>strict stubs</strong>가 기본이라는 것(2020년대 중반 기준 <code>MockitoExtension</code>의 기본 엄격도)이다. 공통 <code>@BeforeEach</code>에 몰아넣은 스텁을 어떤 테스트가 쓰지 않으면 그 테스트가 실패하므로, 6절의 "셋업 비대화"가 도구 수준에서 거부된다 — <code>lenient()</code>로 침묵시키고 싶어지는 순간이 바로 셋업을 지역으로 내려야 하는 순간이다.
+정적 mock이 내부적으로 클래스의 바이트코드를 실행 중에 고쳐 쓰는 방식이라는 점(2020년대 중반 기준 Mockito 5의 기본 mock 생성기)도 기억할 만하다: 그래서 스코프가 <em>스레드</em>에 묶이고, 병렬 실행 시 다른 스레드에서는 가짜가 보이지 않는다.
+</p>
+
+<h3>8.2 JS·TS — Jest / Vitest: 보증이 없으니 설정으로 산다</h3>
+<p>
+JS 테스트 파일은 하나의 모듈이고, <code>describe</code>·<code>it</code>은 그 모듈 안의 클로저다. 파일 최상위에 만든 <code>vi.fn()</code>이나 <code>vi.mock</code> 팩토리 안의 객체는 <strong>파일 내 모든 테스트가 공유하는 모듈 수준 상태</strong>다 — 3절의 "필드 공유"가 기본 형태인 셈이다.
+Jest든 Vitest든 테스트 사이에 mock을 자동으로 되돌리지 않으므로, 보증은 <code>beforeEach</code>에서 직접 부르거나 설정 파일의 옵션(<code>clearMocks</code>·<code>mockReset</code>/<code>resetMocks</code>·<code>restoreMocks</code>)으로 사야 한다.
+</p>
+<pre><code>import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { sendConfirmation } from './notifier';
+import { confirmOrder } from './orderService';
+
+vi.mock('./notifier', () =&gt; ({ sendConfirmation: vi.fn() }));  // 파일 최상단으로 호이스팅
+// 팩토리 안에서 바깥 변수를 쓰려면 vi.hoisted (Jest는 mock 접두어 규칙)
+
+describe('confirmOrder', () =&gt; {
+  beforeEach(() =&gt; { vi.clearAllMocks(); });   // 호출 기록만 — 스텁·구현은 남는다
+
+  it('확정 시 알림을 한 번 보낸다', () =&gt; {
+    confirmOrder({ id: 1 });
+    expect(sendConfirmation).toHaveBeenCalledTimes(1);   // clear가 없으면 앞 테스트 호출까지 센다
+  });
+
+  it('알림 실패는 예외로 전파한다', () =&gt; {
+    vi.mocked(sendConfirmation).mockRejectedValueOnce(new Error('down'));  // Once: 스텁 잔존을 구조로 막는다
+    return expect(confirmOrder({ id: 2 })).rejects.toThrow('down');
+  });
+});</code></pre>
+<p>
+이 생태계의 고유 함정은 5절의 세 수준이 <strong>API 이름으로 분리돼 있으면서 의미가 도구마다 다르다</strong>는 점이다. <code>mockClear</code>는 기록만, <code>mockReset</code>은 기록+구현, <code>mockRestore</code>는 <code>spyOn</code>으로 만든 스파이에만 원본을 돌려준다.
+그리고 "reset이 구현을 무엇으로 돌리는가"가 갈린다 — Jest는 <code>undefined</code>를 돌려주는 빈 함수로, Vitest는 <code>vi.fn(impl)</code>에 처음 넘긴 <code>impl</code>로(2020년대 중반 기준 Vitest 3의 동작). 같은 <code>resetAllMocks</code>를 두 도구 사이에서 옮겨 쓰면 "빈 mock"과 "원래 구현"이라는 다른 출발점이 된다.
+Vitest 3에서는 <code>restoreAllMocks</code>가 <code>vi.spyOn</code>으로 만든 스파이만 원상 복구하고 기록·상태는 건드리지 않는 쪽으로 정리됐으므로, "restore 하나로 전부 되돌린다"는 기대는 두 도구 모두에서 성립하지 않는다.
+</p>
+<p>
+모듈 mock(<code>vi.mock</code>/<code>jest.mock</code>)은 <code>import</code>보다 먼저 실행되도록 파일 최상단으로 <strong>호이스팅</strong>된다 — 대상 모듈이 로드되기 전에 가짜를 등록해야 하기 때문이다. 스코프는 파일 하나이고 파일 사이는 모듈 레지스트리가 격리되므로, 누수 반경은 Python·Java보다 좁다(파일 안).
+대신 팩토리가 만든 객체가 파일 전체에 걸쳐 하나이므로, 그 객체의 스텁을 테스트 안에서 바꾸면 이후 테스트에 남는다 — 위 예제의 <code>Once</code> 계열이 이를 구조적으로 막는 관용구다.
+</p>
+
+<h3>8.3 Python — pytest + unittest.mock: 패치는 이름 교체이고, 이름은 프로세스 전역이다</h3>
+<p>
+<code>unittest.mock.patch</code>는 객체를 주입하는 것이 아니라 <strong>모듈 속성(이름)이 가리키는 대상을 교체</strong>한다. 모듈은 인터프리터당 한 번 로드되는 싱글턴이므로, 교체된 이름은 프로세스 안의 모든 코드에 보인다 — 4절의 "전역 mock"이 Python에서는 가장 흔한 형태다.
+그래서 <code>patch</code>의 스코프 표현이 곧 생명주기다: 데코레이터는 함수 본문, <code>with</code>는 블록, <code>start()</code>는 <code>stop()</code>을 부를 때까지(잊으면 세션 끝까지 누수).
+</p>
+<pre><code>from unittest.mock import patch, Mock
+import pytest
+
+@pytest.fixture                       # 기본 scope="function": 테스트마다 새 Mock
+def notifier():
+    return Mock()
+
+def test_confirm_sends_once(notifier):
+    confirm_order(order_id=1, notifier=notifier)
+    notifier.send.assert_called_once()          # 픽스처가 새것이므로 앞 테스트 기록은 없다
+
+@patch("orders.service.now")          # 데코레이터 스코프: 함수가 끝나면(예외여도) 자동 복원
+def test_due_date_is_fixed(mock_now):
+    mock_now.return_value = FIXED
+    assert due_date(days=7) == FIXED_PLUS_7
+
+def test_env_with_monkeypatch(monkeypatch):    # 테스트 종료 시 자동 복원 — 실패 경로 포함
+    monkeypatch.setattr("orders.service.now", lambda: FIXED)
+    assert due_date(days=7) == FIXED_PLUS_7</code></pre>
+<p>
+Python만의 함정 둘. 첫째, <strong>픽스처 스코프 승격이 곧 mock 공유</strong>다 — 생성 비용을 아끼려 <code>scope="module"</code>로 올린 픽스처가 <code>Mock</code>을 돌려주면, 그 모듈의 모든 테스트가 같은 객체를 쓰고 스텁·기록이 그대로 누수된다. 픽스처 스코프는 "비싼 실제 자원"을 위한 것이지 mock을 위한 것이 아니다.
+둘째, <code>reset_mock()</code>은 <strong>기본적으로 호출 기록만 지운다</strong>(5절의 clear 수준). <code>return_value</code>·<code>side_effect</code>까지 지우려면 인자로 명시해야 하고, 이를 모르면 "reset 했는데 앞 테스트의 반환값이 나온다"는 ③번 함정을 정확히 밟는다.
+</p>
+<p>
+<code>Python 관점의 통찰: 패치가 전역 상태인 이유는 Python의 이름 해석이 실행 시점의 딕셔너리 조회이기 때문이다 — 모듈은 속성 딕셔너리를 가진 객체이고, patch는 그 딕셔너리의 한 항목을 바꾼다. 그래서 "정의된 곳이 아니라 조회되는 곳을 패치하라"는 규칙이 생기고(이미 from-import로 복사된 이름은 원래 모듈을 패치해도 바뀌지 않는다), 같은 이유로 복원을 잊은 패치는 프로세스가 끝날 때까지 모든 모듈에 보인다. monkeypatch 픽스처와 patch 컨텍스트는 이 딕셔너리 변경을 테스트 종료에 묶어 되돌리는 장치이며, 자동 복원이 없는 start()는 단독으로 쓰지 않는 것이 규율이다. 한 가지 더: pytest는 기본적으로 세션 전체를 한 프로세스에서 돌리므로, 누수 반경은 "파일 하나"(JS)가 아니라 "전체 세션"이다.</code>
+</p>
+
+<h3>8.4 C++ — GoogleTest + gMock: 수명이 곧 검증 시점이다</h3>
+<p>
+gMock의 <code>EXPECT_CALL</code>은 설정 즉시 검증되지 않는다. <strong>mock 객체가 소멸될 때</strong> "기대한 호출이 모두 일어났는가"를 검사한다. 즉 C++에서는 mock의 수명이 생명주기 문제일 뿐 아니라 <em>검증이 실행되는 시점</em>이기도 하다.
+<code>TEST_F</code>는 테스트마다 픽스처 객체를 새로 만들고 테스트가 끝나면 소멸시키므로, 픽스처 멤버로 둔 mock은 테스트당 하나이고 테스트 끝에 자동 검증된다 — 3절의 "매 테스트 전 초기화"를 언어의 객체 수명이 그대로 구현한 형태다.
+</p>
+<pre><code>class OrderServiceTest : public ::testing::Test {
+protected:
+    MockNotifier notifier;                     // TEST_F마다 새 픽스처 → 새 mock, 테스트 끝에 소멸·검증
+    OrderService service{&amp;notifier};
+};
+
+TEST_F(OrderServiceTest, ConfirmSendsOnce) {
+    EXPECT_CALL(notifier, Send(1, "confirmed")).Times(1);
+    service.Confirm(1);
+}                                              // notifier 소멸 → Times(1) 검증
+
+// 전역·정적 mock: 소멸이 프로그램 종료라 테스트별 검증이 없다 → 명시적으로 끊어야 한다
+static MockClock&amp; SharedClock() { static MockClock c; return c; }
+
+TEST(DueDate, UsesFixedNow) {
+    EXPECT_CALL(SharedClock(), Now()).WillOnce(::testing::Return(kFixed));
+    EXPECT_EQ(DueDate(7), kFixedPlus7);
+    ::testing::Mock::VerifyAndClearExpectations(&amp;SharedClock());   // 여기서 검증 + 기대치 제거
+}                                              // 없으면 다음 테스트가 이 기대치·ON_CALL 위에서 돈다</code></pre>
+<p>
+C++ 고유의 함정은 소멸자 검증의 뒷면이다. 힙에 만든 mock을 삭제하지 않으면 검증이 영영 실행되지 않으므로, gMock은 프로그램 종료 시 "누수된 mock"을 오류로 보고한다(의도적 누수는 <code>Mock::AllowLeak</code>으로 선언). 전역·정적 mock은 소멸이 프로그램 끝이라 기대치가 테스트 사이에 그대로 누적되고, <code>Mock::VerifyAndClearExpectations</code>(기대치만) 또는 <code>Mock::VerifyAndClear</code>(<code>ON_CALL</code> 기본 동작까지)로 테스트 끝마다 끊어 줘야 한다.
+순서 의존의 진단은 러너의 <code>--gtest_shuffle</code>(무작위 순서)과 <code>--gtest_repeat</code>(반복 실행)이 표준이다 — 2절의 "순서가 바뀌는 사건"을 의도적으로 일으키는 도구다.
+</p>
+<p>
+<code>C++ 관점의 통찰: 이 언어에서 mock 생명주기는 RAII(자원을 객체 수명에 묶어 생성자에서 얻고 소멸자에서 놓는 관용구)의 한 사례다 — 스코프의 끝이 곧 mock의 소멸이자 검증이므로, 4절의 "복원을 스코프 종료에 묶는다"가 별도 구문 없이 언어의 기본 동작으로 주어진다. 반대로 정적 저장 기간(static storage duration) 객체는 이 규칙 밖에 있어 소멸이 main 종료 후로 밀리고, 그 순간에는 테스트 러너도 이미 끝나 있다. 또 하나: 소멸자에서의 검증은 픽스처 멤버의 소멸 순서(선언의 역순)를 따르므로, mock을 쓰는 대상 객체가 mock보다 먼저 소멸되도록 선언 순서를 두는 것(위 예제처럼 mock을 먼저, 그것을 쓰는 서비스를 나중에)이 매달린 참조를 막는다.</code>
+</p>
+
+<h2>9. 함께 알면 좋은 것</h2>
+<p>본문의 축들을 확장한 것들이다 — 첫째·둘째는 2절의 진단을, 셋째는 3절의 배치를, 넷째는 6절의 최소 모킹을, 다섯째는 4절의 정적 mock 회피를 잇는다.</p>
+<ul>
+  <li><strong>테스트 순서 무작위화</strong> — JUnit 5의 <code>MethodOrderer.Random</code>, pytest의 순서 무작위화 플러그인, gtest의 <code>--gtest_shuffle</code>, Jest·Vitest의 순서 무작위화 옵션처럼 순서를 매 실행마다 바꿔 2절의 잠복 순서 의존을 조기에 터뜨리는 기법. "flaky가 되기 전에 flaky로 만든다"는 역발상이다.</li>
+  <li><strong>테스트 병렬 실행과 공유 상태</strong> — 순서 의존을 넘어 <em>동시</em> 실행에서 정적·전역 mock이 스레드·워커 사이에 새는 문제. 스레드에 묶이는 정적 mock(Java)과 워커 프로세스로 격리되는 파일(JS)의 차이가 병렬화 가능 범위를 정한다.</li>
+  <li><strong>테스트 픽스처 패턴(fresh fixture vs shared fixture)</strong> — 테스트마다 새로 만드는 픽스처와 여러 테스트가 공유하는 픽스처의 고전적 구분. 3절의 세 배치는 이 구분을 mock에 적용한 것이며, 공유 픽스처는 "변경 불가능한 자원"에만 허용된다는 규율이 mock 공유 금지의 근거다.</li>
+  <li><strong>페이크(fake)로의 대체</strong> — mock 수가 늘 때 협력자 하나하나를 mock하는 대신 단순화된 실제 구현(인메모리 저장소 등)을 쓰면 스텁 테이블 자체가 사라져 생명주기 관리 대상이 준다. J1의 fake가 6절의 최소 모킹을 실현하는 도구.</li>
+  <li><strong>시간·난수의 주입</strong> — 정적 mock의 대표 대상인 현재 시각·난수를 정적 호출 대신 협력자(<code>Clock</code> 등)로 주입하면 정적 mock이 애초에 필요 없어진다. 4절의 스코프 문제를 설계로 제거하는 방식이며, J11의 결정성 확보 기법과 같은 뿌리다.</li>
+</ul>
+
+<h2>10. 한 장 요약</h2>
+<ul>
+  <li>mock은 <strong>스텁 테이블 + 호출 기록</strong>을 가진 상태 객체이고, 그 상태의 수명은 mock 객체의 수명과 같다.</li>
+  <li>수명이 테스트 하나를 넘으면 <strong>순서 의존</strong>이 생기고, 순서가 바뀌는 사건(추가·선택 실행·셔플·병렬)에서 <strong>flaky</strong>로 표면화된다 — 원인은 실패한 테스트 밖에 있다.</li>
+  <li>배치의 기본값은 <strong>훅에서의 재생성 또는 지역변수</strong>: 수명 보증을 사람이 아니라 프레임워크·언어에 맡긴다. 필드 공유·정적 필드·클래스당 인스턴스 옵션은 보증이 꺼지는 조건이다.</li>
+  <li><strong>정적·전역 mock</strong>은 인스턴스 밖의 상태이므로 스코프로 열고 닫되, 복원을 <strong>스코프 종료에 묶어</strong> 실패 경로에서도 되돌아오게 한다.</li>
+  <li>되돌리기는 <strong>clear(기록) → reset(스텁) → restore(원본)</strong> 세 수준이며 도구마다 이름과 의미가 어긋난다. 테스트 <em>안</em>의 <code>reset</code>은 테스트가 둘이라는 신호다.</li>
+  <li><strong>모킹 수가 곧 구현 결합도</strong> — mock을 줄이는 것이 생명주기 문제의 근본 처방이며, 줄지 않는 mock 수는 테스트가 아니라 설계가 보내는 신호다.</li>
+</ul>
+
+<h2>관련 문서</h2>
+<ul>
+  <li><a href="J3 Mockito 기본 3단계.html">J3 Mockito 기본 3단계.html</a> — <code>@Mock</code>·<code>when-then</code>·<code>verify</code>로 만든 스텁과 기록이 바로 이 문서가 "누수되는 상태"라 부르는 것: 3단계의 각 산출물이 테스트 하나를 넘어 살아남을 때 무슨 일이 생기는지의 후속편</li>
+  <li><a href="J11 테스트 결정성과 환경 의존 함정.html">J11 테스트 결정성과 환경 의존 함정.html</a> — flaky의 원인 가운데 "환경(시각·타임존·로케일)"이 J11의 몫이라면 "이웃 테스트(누수된 mock)"가 이 문서의 몫: 두 문서가 결정적 테스트의 두 조건을 나눠 맡는다</li>
+</ul>
+
+</body>
+</html>
