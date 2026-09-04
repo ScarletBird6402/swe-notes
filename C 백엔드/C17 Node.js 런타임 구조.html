@@ -230,39 +230,148 @@ Node의 모든 강점은 "메인 스레드가 항상 빨리 루프로 복귀한�
 <h2>★ 8. 언어별 대조</h2>
 <p>
 "동시 접속을 무엇으로 감당하는가"라는 질문에 각 언어 생태계가 내놓은 답을 나란히 놓으면, Node의 선택이 여러 답 중 하나임이 보인다.
-축은 두 개다 — <strong>대기를 스레드로 감당하는가, 이벤트로 감당하는가</strong>.
+축은 두 개다 — <strong>대기를 스레드로 감당하는가, 이벤트로 감당하는가</strong>. 그리고 그 답이 "왜 그 언어에서는 그렇게 나왔는가"는 언어의 내부 기제(스레드 모델·인터프리터 락·메모리 관리)로 설명된다.
 </p>
 <table>
-  <tr><th>언어</th><th>전통적 모델</th><th>이벤트/비동기 모델</th><th>비고</th></tr>
+  <tr><th>언어</th><th>전통적 모델</th><th>이벤트/비동기 모델</th><th>그 답이 나온 내부 이유</th></tr>
   <tr>
     <td>Java</td>
     <td>요청당 스레드(서블릿) — 블로킹 I/O를 스레드 수로 감당</td>
-    <td>Netty·리액티브 스택(이벤트 루프), 최근에는 가상 스레드(경량 스레드를 대량 생성)</td>
-    <td>표 + 8.3 요약</td>
+    <td>Netty·리액티브 스택(이벤트 루프), 가상 스레드(스레드 자체를 싸게)</td>
+    <td>OS 스레드가 진짜 병렬이라 "스레드를 더 싸게"가 가능한 선택지였다</td>
   </tr>
   <tr>
     <td>JS·TS</td>
     <td>— (처음부터 단일 스레드)</td>
     <td>이벤트 루프가 유일한 모델. 브라우저와 Node가 구현만 다름</td>
-    <td>표 + 8.3 요약</td>
+    <td>언어에 스레드·락이 없다. 런타임이 루프를 돌리고 코드는 콜백·await로 양보</td>
   </tr>
   <tr>
     <td>Python</td>
-    <td>스레드는 있으나 GIL(전역 인터프리터 락)로 CPU 병렬 불가 — 사실상 I/O용</td>
+    <td>스레드는 있으나 GIL로 CPU 병렬 불가 — 사실상 I/O용</td>
     <td><code>asyncio</code> — 이벤트 루프 + async/await, Node와 가장 유사</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>어차피 계산 병렬이 안 되니 I/O 동시성만 루프로 얻는 것이 합리적</td>
   </tr>
   <tr>
     <td>C++</td>
     <td>스레드·프로세스 직접 관리</td>
-    <td><code>epoll</code>/<code>io_uring</code> 직접 사용, Boost.Asio — libuv가 감춘 층을 맨손으로</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td><code>epoll</code>/<code>io_uring</code> 직접 사용, Boost.Asio, C++20 코루틴</td>
+    <td>런타임이 없다 — libuv가 감춘 층(OS 통지·객체 수명)을 직접 다룬다</td>
   </tr>
 </table>
 
-<h3>8.1 C++ — libuv가 감춘 층을 맨손으로 보기</h3>
+<h3>8.1 Java — "스레드를 안 쓴다"의 반대편, "스레드를 싸게 만든다"</h3>
+<p>
+2절의 정보 상자에서 본 대응 관계를 구조로 펼쳐 보자. 전통적 Java 서버는 요청마다 스레드 풀에서 스레드 하나를 꺼내 주고, 그 스레드가 데이터베이스 응답을 <em>블로킹 대기</em>한다.
+대기 중인 스레드는 CPU를 쓰지 않지만 <strong>스택 메모리(스레드당 보통 수백 KB~1MB)와 OS 스케줄러의 자리</strong>를 점유하므로, 동시 처리량은 "스레드 풀 크기"라는 숫자로 못 박힌다.
+</p>
+<div class="flow">  요청당 스레드(Java 전통)              이벤트 루프(Node)
+  ──────────────────────              ──────────────────────
+  스레드1 ──[DB 대기…]── 응답         JS 스레드 1개 ──┐
+  스레드2 ──[DB 대기…]── 응답                        ├─ 소켓 1만 개를 epoll에 등록
+  스레드3 ──[DB 대기…]── 응답                        │  준비된 것만 콜백으로
+    …(풀 크기만큼)                                    ┘
+  대기 = 스레드가 잠듦(자리 점유)     대기 = 이벤트 목록의 항목 하나(자리 없음)</div>
+<p>
+Java 생태계는 이 한계에 두 번 답했다. 첫 번째 답은 Node와 같은 방향이다 — NIO(<code>java.nio</code>의 셀렉터, Linux에서는 결국 <code>epoll</code>)를 바탕으로 한 Netty나 리액티브 스택이 이벤트 루프 스레드 몇 개로 소켓 수만 개를 다룬다.
+대가도 Node와 같다: 루프 스레드에서 블로킹하면 안 되므로 코드 전체가 콜백·리액티브 연산자 체인으로 바뀌어야 하고, 블로킹 라이브러리(전통적인 데이터베이스 드라이버 등) 하나가 섞이면 루프가 막힌다.
+</p>
+<p>
+두 번째 답은 반대 방향이다. <strong>가상 스레드</strong>(virtual thread — JVM이 스택을 힙에 두고 직접 스케줄링하는 경량 스레드. 블로킹 호출을 만나면 그 스택을 떼어 보관하고, 실제로 실행을 담당하던 OS 스레드(캐리어)를 다른 가상 스레드에게 넘긴다)는 "스레드는 비싸다"는 전제 자체를 무너뜨린다.
+코드는 요청당 스레드 모양 그대로 블로킹 호출을 쓰는데, JVM이 뒤에서 "대기 중인 것을 스레드에서 떼어 내고 준비되면 다시 붙이는" 일 — 즉 libuv가 하는 일 — 을 대신한다.
+</p>
+<pre><code>// 전통: 고정 스레드 풀 — 동시 처리량 ≒ 200. 대기 중에도 스레드가 자리를 점유
+ExecutorService pool = Executors.newFixedThreadPool(200);
+pool.submit(() -&gt; {
+    String body = db.query(sql);     // 블로킹: 이 OS 스레드는 응답이 올 때까지 잠든다
+    respond(body);
+});
+
+// 가상 스레드(Java 21 이후): 코드는 블로킹 그대로, 스레드만 싸졌다
+ExecutorService vt = Executors.newVirtualThreadPerTaskExecutor();
+vt.submit(() -&gt; {
+    String body = db.query(sql);     // 블로킹처럼 보이지만 캐리어 스레드를 반납하고 대기
+    respond(body);                   // 준비되면 아무 캐리어에서나 이어서 실행
+});</code></pre>
+<p>
+Node와 견주면 위치가 선명하다. Node의 <code>await</code>는 "여기서 루프에 양보한다"를 <strong>개발자가 코드에 표시</strong>하는 방식이고, 가상 스레드는 그 양보 지점을 <strong>JVM이 블로킹 호출 안에서 알아서 처리</strong>하는 방식이다.
+결과적으로 얻는 것은 같다 — 대기 하나가 스레드 하나를 소비하지 않는다. 다만 6절의 약점은 Java에 없다: 캐리어가 코어 수만큼 있어 <strong>CPU 계산 하나가 서버 전체를 세우지 않는다</strong>. 대신 2절에서 Node가 공짜로 얻은 "락 불필요"는 사라져, 공유 상태에는 여전히 동기화가 필요하다.
+</p>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰(JVM 기제와 시점):</strong> 가상 스레드는 2020년대 중반 기준으로 Java 21(2023)에서 정식 기능이 되었고, 초기에는 <code>synchronized</code> 블록 안에서 블로킹하면 캐리어를 반납하지 못하는 고정(pinning) 문제가 있었으나 Java 24(2025)에서 JVM의 모니터 구현이 바뀌어 해소되었다. 요점은 "스레드가 싸졌다"가 스레드 풀 크기 튜닝을 없앨 뿐, 루프 자체가 있는 Node와 달리 <strong>구조가 바뀌지는 않는다</strong>는 것 — 블로킹 코드를 그대로 두고 처리량만 얻는 선택이다.</p>
+</blockquote>
+
+<h3>8.2 JS·TS — 단계 순서를 코드로 확인하기, 그리고 TS가 관여하지 않는 이유</h3>
+<p>
+JS에는 스레드도 락도 언어 차원에 없으므로 이벤트 루프가 유일한 모델이고, 이 문서 전체가 그 설명이었다. 여기서는 4절의 단계 그림이 정말 그 순서로 도는지를 <strong>코드로 확인</strong>한다.
+핵심은 "지금 내가 어느 단계의 콜백 안에 있는가"가 다음에 무엇이 실행될지를 결정한다는 점이다.
+</p>
+<pre><code>const fs = require('fs');
+
+fs.readFile(__filename, () =&gt; {                    // ③ poll 단계에서 실행되는 I/O 콜백
+  setTimeout(() =&gt; console.log('timeout'), 0);     // → 다음 바퀴 ① timers 에 예약
+  setImmediate(() =&gt; console.log('immediate'));    // → 이번 바퀴 ④ check 에 예약
+  process.nextTick(() =&gt; console.log('nextTick')); // → 이 콜백이 끝나는 즉시 (1순위)
+  Promise.resolve().then(() =&gt; console.log('promise')); // → 그 다음 (마이크로태스크)
+  console.log('sync');
+});
+// 출력: sync → nextTick → promise → immediate → timeout
+// poll(③) 안에서 예약했으므로 check(④)가 timers(①)보다 먼저 온다 — 항상 결정적</code></pre>
+<p>
+같은 두 줄(<code>setTimeout(…, 0)</code>과 <code>setImmediate</code>)을 I/O 콜백 밖, 즉 스크립트 최상위에 쓰면 순서가 <strong>실행마다 달라진다</strong>.
+최상위 코드가 끝나고 루프가 ①로 들어갈 때 1ms 타이머가 이미 만기됐는지가 그 순간의 시스템 시각에 달려 있기 때문이다. "I/O 콜백 안에서는 <code>setImmediate</code>가 항상 먼저"라는 규칙이 지연 실행을 예약할 때 <code>setImmediate</code>를 고르는 이유다.
+마이크로태스크 두 줄의 순서(<code>nextTick</code> → Promise)는 Node가 <strong>두 개의 큐를 별도로 두고 nextTick 큐를 먼저 완전히 비운 뒤</strong> Promise 큐로 넘어가기 때문이며, 7절 ③의 굶김 문제도 여기서 나온다.
+2020년대 중반의 Node는 타이머·<code>setImmediate</code> 콜백 <em>하나하나 사이</em>마다 이 두 큐를 비운다(브라우저와 같은 규칙 — 초기 Node는 단계 전체가 끝난 뒤 비웠다).
+</p>
+<p>
+엔진 쪽 기제 하나만 더 보자. 콜백이 나중에 불릴 때 참조하는 변수(요청 객체, 응답 객체)는 <strong>클로저</strong>가 붙잡고 있고, V8의 가비지 컬렉터가 그 참조를 보고 살려 둔다.
+그래서 "비동기 작업의 완료 시점까지 객체를 살려 두기"라는 문제가 JS에서는 아예 등장하지 않는다 — 8.4의 C++이 이 문제를 어떻게 손으로 푸는지와 대조된다.
+</p>
+<p>
+<strong>TS는 이 절의 어느 것도 바꾸지 않는다.</strong> TS의 타입은 컴파일 시 지워지며(타입 소거 — 출력된 JS에는 타입 정보가 한 글자도 남지 않는다), 이벤트 루프·마이크로태스크 큐·스레드 풀은 전부 <em>런타임</em>(Node)의 것이다.
+<code>async function f(): Promise&lt;Data&gt;</code>라는 서명은 "f는 호출 즉시 Promise를 돌려주고 본문의 <code>await</code> 지점에서 루프에 양보한다"는 <em>사실</em>을 타입으로 적어 둔 것일 뿐, 양보의 시점과 순서는 JS와 완전히 같다.
+컴파일 대상(<code>target</code>)을 낮추면 <code>async/await</code>가 제너레이터 기반 코드로 변환되기도 하지만 실행 순서는 보존된다.
+</p>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> 타입이 잡아 주지 못하는 것이 정확히 이 문서의 주제다. 6절의 3초짜리 동기 계산도, 7절 ④의 "읽고-await-쓰기" 사이 끼어들기도 타입 검사는 통과한다. TS가 보장하는 것은 값의 모양이고, 루프를 막지 않는 것과 양보 지점의 안전은 여전히 개발자의 몫이다.</p>
+</blockquote>
+
+<h3>8.3 Python — asyncio는 Node의 평행 세계, 그리고 GIL이라는 이유</h3>
+<p>
+Python에도 진짜 OS 스레드가 있는데 왜 이벤트 루프를 따로 만들었을까? 답은 <strong>GIL</strong>(global interpreter lock, 전역 인터프리터 락 — 인터프리터가 한 번에 하나의 스레드만 바이트코드를 실행하도록 붙잡는 잠금 장치)이다.
+스레드를 여럿 띄워도 <strong>CPU 계산은 병렬이 되지 않으므로</strong>, "그럴 바에는 I/O 동시성만 깔끔하게 얻자"는 결론이 <code>asyncio</code>이고 이는 Node의 설계 논리와 정확히 같다.
+다만 도달 경로가 다르다 — Node는 "스레드가 하나라서", Python은 "스레드는 있지만 락이 병렬을 막아서"다.
+</p>
+<pre><code>import asyncio
+
+async def handler(n):
+    print(f"{n} 시작")
+    await asyncio.sleep(1)        # ← Node의 await와 동일: 여기서 루프에 양보
+    print(f"{n} 끝")
+
+async def main():
+    # 셋이 "동시에" 진행된다 — 스레드가 아니라 대기가 겹치는 것
+    await asyncio.gather(handler(1), handler(2), handler(3))
+
+    # Node의 libuv 스레드 풀에 해당: 블로킹 함수를 워커 스레드로 외주
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, blocking_read, "big.bin")
+
+asyncio.run(main())               # Node와 다른 점: 루프를 명시적으로 기동한다
+# 전체 소요 약 1초. 단, time.sleep(1)(동기 대기)로 바꾸면 3초 — 루프가 막힌다</code></pre>
+<p>
+구조 대응이 거의 1:1이다. <code>asyncio.run</code>이 루프를 만들고(Node는 프로세스가 곧 루프), <code>await</code>가 양보 지점이며, <code>run_in_executor</code>가 3절의 "블로킹의 외주화"에 해당한다.
+차이는 인터프리터가 <strong>코루틴을 제너레이터의 확장으로 구현</strong>한다는 점이다 — <code>async def</code> 함수는 호출해도 실행되지 않고 코루틴 객체를 돌려주며, 루프가 <code>send()</code>로 한 단계씩 진행시킨다.
+Node에서 "async 함수는 첫 <code>await</code>까지 동기로 실행된다"와 달리, Python의 코루틴은 <strong><code>await</code>나 <code>gather</code>로 루프에 넘기기 전에는 한 줄도 실행되지 않는다</strong> — 호출만 하고 <code>await</code>를 잊으면 아무 일도 없이 경고만 남는 이유다.
+</p>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> 코드의 마지막 주석이 6절(CPU 바운드가 루프를 막는다)의 재현 실험이다. <code>time.sleep</code>은 스레드를 통째로 재우므로 루프가 정지하고, <code>asyncio.sleep</code>은 루프에 제어를 돌려준다 — Node에서 <code>*Sync</code> API를 요청 경로에서 금지하는 이유와 같은 구조다.<br>탈출구도 평행하다: CPU 병렬이 필요하면 Python은 <code>multiprocessing</code>(GIL이 프로세스마다 따로 있으므로), Node는 <code>worker_threads</code>·프로세스 복제로 간다. 다만 이 전제는 움직이고 있다 — 2020년대 중반 기준으로 GIL을 제거한 자유 스레드 빌드(free-threaded build)가 Python 3.13(2024)에서 실험 도입, 3.14(2025)에서 정식 지원 단계에 들어섰으나 아직 기본 빌드는 아니다. GIL이 사라지면 "스레드가 있는데도 루프를 쓴 이유"의 절반이 약해지지만, I/O 동시성을 스레드보다 싸게 얻는다는 나머지 절반은 그대로 남는다.</p>
+</blockquote>
+
+<h3>8.4 C++ — libuv가 감춘 층을 맨손으로 보기</h3>
 <p>
 이벤트 루프의 poll 단계(4절)가 실제로 무엇을 하는지는, libuv가 내부에서 호출하는 OS 기능을 직접 써 보면 원형 그대로 드러난다.
+libuv 자체가 C로 짜인 라이브러리이므로 아래 코드는 비유가 아니라 <strong>Node가 실제로 하는 일의 축약본</strong>이다.
 Linux의 <code>epoll</code>은 "관심 있는 소켓들을 커널에 등록해 두고, 준비된 것들의 목록을 한 번에 받아 오는" 장치다.
 </p>
 <pre><code>int ep = epoll_create1(0);
@@ -279,38 +388,14 @@ while (true) {                                   // ← 이것이 "이벤트 루
         handle(events[i].data.fd);                   // 콜백에 해당하는 처리
     }
 }</code></pre>
-<blockquote class="info">
-<p><strong>C++ 관점의 통찰(메모리·수명):</strong> 위 코드에서 <code>ev.data</code>에는 보통 fd 대신 <strong>연결 상태 객체의 포인터</strong>를 실어 둔다. 그러면 곧바로 수명 문제가 생긴다 — 연결이 끊겨 객체를 해제했는데 이미 커널에 등록된 이벤트가 나중에 도착하면, 해제된 메모리를 가리키는 포인터로 콜백이 불린다. 그래서 C++ 비동기 서버는 <code>shared_ptr</code>로 콜백 실행 동안 객체를 살려 두는 식의 <strong>수명 연장 장치</strong>를 반드시 갖춘다.<br>Node에서 이 고민이 전혀 없는 이유가 여기서 선명해진다: 콜백이 참조하는 객체는 클로저가 붙잡고 있고 GC가 그 참조를 보고 살려 두므로, <strong>"콜백이 나중에 불린다"는 비동기의 본질적 위험을 런타임이 대신 감당</strong>해 주는 것이다. 편의의 정체가 곧 비용(GC)의 정체이기도 하다.</p>
-</blockquote>
-
-<h3>8.2 Python — asyncio는 Node의 평행 세계, 그리고 GIL이라는 이유</h3>
 <p>
-Python에도 스레드가 있는데 왜 이벤트 루프를 따로 만들었을까? 답은 <strong>GIL(global interpreter lock, 전역 인터프리터 락)</strong> —
-파이썬 인터프리터가 한 번에 하나의 스레드만 바이트코드를 실행하도록 붙잡는 잠금 장치다.
-스레드를 여럿 띄워도 <strong>CPU 계산은 병렬이 되지 않으므로</strong>, "그럴 바에는 I/O 동시성만 깔끔하게 얻자"는 결론이 asyncio이고 이는 Node의 설계 논리와 정확히 같다.
+4절 그림과 대응시키면 <code>epoll_wait</code>의 <code>timeout_ms</code>가 "다음 타이머 만기까지만 기다린다"이고, <code>for</code> 루프가 poll 단계의 콜백 실행이다.
+timers·check 같은 다른 단계는 이 <code>while</code> 앞뒤에 "만기된 타이머 목록 처리"·"immediate 목록 처리"를 끼워 넣은 것에 지나지 않는다.
+Node가 C++ 개발자에게 낯설지 않은 이유이자, 반대로 <strong>C++에는 이 루프를 대신 돌려 주는 런타임이 없다</strong>는 사실이 드러나는 지점이다 — Boost.Asio 같은 라이브러리를 쓰거나, C++20 코루틴(<code>co_await</code> — 컴파일러가 함수를 중단·재개 가능한 상태 기계로 변환해 주는 문법. 단, 그 재개를 언제 누가 할지는 여전히 라이브러리 몫)으로 <code>await</code>와 닮은 문법을 얻더라도, 스케줄러와 루프는 직접 고르고 조립해야 한다.
 </p>
-<pre><code>import asyncio
-
-async def handler(n):
-    print(f"{n} 시작")
-    await asyncio.sleep(1)        # ← Node의 await와 동일: 여기서 루프에 양보
-    print(f"{n} 끝")
-
-async def main():
-    # 셋이 "동시에" 진행된다 — 스레드가 아니라 대기가 겹치는 것
-    await asyncio.gather(handler(1), handler(2), handler(3))
-
-asyncio.run(main())               # Node와 다른 점: 루프를 명시적으로 기동한다
-# 전체 소요 약 1초. 단, time.sleep(1)(동기 대기)로 바꾸면 3초 — 루프가 막힌다</code></pre>
 <blockquote class="info">
-<p><strong>Python 관점의 통찰:</strong> 마지막 주석이 6절(CPU 바운드가 루프를 막는다)의 재현 실험이다. <code>time.sleep</code>은 스레드를 통째로 재우므로 루프가 정지하고, <code>asyncio.sleep</code>은 루프에 제어를 돌려준다 — Node에서 <code>*Sync</code> API를 요청 경로에서 금지하는 이유와 완전히 같은 구조다.<br>탈출구까지 평행하다: CPU 병렬이 필요하면 Python은 <code>multiprocessing</code>(GIL이 프로세스마다 따로 있으므로), Node는 <code>worker_threads</code>·프로세스 복제로 간다. 다만 근거는 다르다 — Node는 "JS 실행 스레드가 하나라서", Python은 "스레드는 있지만 GIL이 병렬을 막아서"다. 참고로 최근 Python에서는 GIL을 끄는 실험적 빌드(free-threaded build)가 도입 단계에 있어 이 전제가 장기적으로는 완화될 수 있다.</p>
+<p><strong>C++ 관점의 통찰(메모리·수명):</strong> 위 코드에서 <code>ev.data</code>에는 보통 fd 대신 <strong>연결 상태 객체의 포인터</strong>를 실어 둔다. 그러면 곧바로 수명 문제가 생긴다 — 연결이 끊겨 객체를 해제했는데 이미 커널에 등록된 이벤트가 나중에 도착하면, 해제된 메모리를 가리키는 포인터로 콜백이 불린다. 그래서 C++ 비동기 서버는 <code>shared_ptr</code>로 콜백 실행 동안 객체를 살려 두는 식의 <strong>수명 연장 장치</strong>를 반드시 갖춘다.<br>8.2에서 본 대로 Node에서 이 고민이 전혀 없는 이유가 여기서 선명해진다: 콜백이 참조하는 객체는 클로저가 붙잡고 있고 GC가 그 참조를 보고 살려 두므로, <strong>"콜백이 나중에 불린다"는 비동기의 본질적 위험을 런타임이 대신 감당</strong>해 주는 것이다. 편의의 정체가 곧 비용(GC 일시 정지, 그리고 6절과 같은 층위에서 루프를 잠깐 세우는 원인)의 정체이기도 하다.</p>
 </blockquote>
-
-<h3>8.3 Java / JS·TS — 한 줄 요약</h3>
-<p>
-Java는 "요청당 스레드 하나"로 블로킹 대기를 스레드 수로 감당해 왔고(동시 처리량 ≒ 스레드 풀 크기), 최근에는 가상 스레드로 <strong>스레드를 싸게 만드는</strong> 방향의 답을 냈다 — Node가 <strong>스레드를 안 쓰기로 한</strong> 것과 같은 문제("스레드는 비싸다")에 대한 반대 방향의 해법이다.
-JS·TS에는 애초에 모델 선택지가 없어 이벤트 루프가 유일한 길이며, 브라우저와 Node의 차이는 "루프를 무엇을 위해 돌리는가"(렌더링 조율 vs I/O 단계 순환)로 요약된다.
-</p>
 
 <h2>9. 함께 알면 좋은 것</h2>
 <ul>
