@@ -62,12 +62,12 @@
   <li>문서 DB에는 이어붙일 문자열이 없다 — 쿼리가 애초에 객체다. 그래서 <strong>바인딩이라는 개념 자체가 성립하지 않는다</strong>. 사용자 JSON이 그대로 쿼리 자리에 들어가면 값이 아니라 <strong>연산자</strong>로 해석된다. 방어는 <strong>타입을 못 박는 것</strong>이다.</li>
   <li>셸은 <a href="S1 프론트엔드 보안 기초.html">S1</a>·<a href="S3 인젝션 방어.html">S3</a>가 이미 답을 줬다(명령/인자 배열 분리). 그런데 <strong>분리 이후에도 경계가 하나 더 남는다</strong> — 인자 벡터 안에서 프로그램이 다시 <em>옵션(코드)</em>과 <em>피연산자(데이터)</em>를 가른다. 이것이 옵션 주입(option injection)이다.</li>
   <li>LDAP·XPath의 교훈은 다르다: <strong>안전 API가 없는 게 아니라, 눈에 안 띌 뿐</strong>이다(예: 필터 자리표시자, XPath 변수 바인딩). 인젝션 방어 실무의 절반은 <strong>"이 해석기의 채널 분리 수단이 무엇인가"를 찾아내는 일</strong>이다.</li>
-  <li>S3의 한 문장("나눌 수 있으면 바인딩, 없으면 허용 목록")을 <strong>3단 사다리</strong>로 확장한다: ① 채널 분리 API → ② 맥락별 공식 이스케이프 API → ③ 허용 목록·타입 통제.</li>
+  <li>S3의 한 문장("나눌 수 있으면 바인딩, 없으면 허용 목록")을 <strong>3단 사다리</strong>로 확장한다: ① 채널 분리 API → ② 맥락별 공식 이스케이프 API → ③ 허용 목록(allowlist)·타입 통제.</li>
 </ul>
 
 <h2>1. S3가 멈춘 자리에서 시작한다</h2>
 <p>
-<a href="S3 인젝션 방어.html">S3</a>의 결론은 명료했다. 쿼리의 <em>골격(코드)</em>을 먼저 확정하고 <em>값(데이터)</em>을 별도 채널로 넘기면, 값이 아무리 SQL처럼 생겨도 문법으로 해석될 통로가 없다. 그리고 나눌 채널이 없는 자리(정렬 컬럼 이름, 리다이렉트 목적지)에서는 허용 목록(allowlist)으로 값을 좁혔다.
+<a href="S3 인젝션 방어.html">S3</a>의 결론은 명료했다. 쿼리의 <em>골격(코드)</em>을 먼저 확정하고 <em>값(데이터)</em>을 별도 채널로 넘기면, 값이 아무리 SQL처럼 생겨도 문법으로 해석될 통로가 없다. 그리고 나눌 채널이 없는 자리(정렬 컬럼 이름, 리다이렉트 목적지)에서는 허용 목록으로 값을 좁혔다.
 </p>
 <p>
 문제는 현장의 해석기가 SQL만이 아니라는 것이다. 그리고 다른 해석기로 넘어가면 <strong>S3의 전제 세 가지가 하나씩 무너진다</strong>.
@@ -112,11 +112,11 @@ DB가 본 것:   { username: "admin", password: { $gt: "" } }   ← 구조가 "�
 <p><strong>"ODM/타입스크립트를 쓰니 타입은 보장된다" — 런타임엔 보장이 없다.</strong> 타입 선언은 컴파일 시점의 약속이고, 요청 본문은 <em>런타임</em>에 들어온다 — <code>string</code>으로 선언한 변수에 객체가 들어앉는 일은 얼마든지 일어난다. ODM의 자동 캐스팅도 스키마가 걸린 경로에서만 작동하며, 조건 객체를 그대로 받는 API에는 적용되지 않을 수 있다. <strong>런타임 검증(스키마)만이 런타임 입력을 막는다.</strong></p>
 </blockquote>
 <blockquote class="info">
-<p><strong>왜 이 사고는 앱 계층에서 이미 끝나 있나.</strong> SQL에선 값이 드라이버까지 문자열로 갔고, 드라이버가 채널을 나눠 줄 기회가 있었다. 문서 DB에선 <strong>역직렬화(JSON→객체)가 앱 계층에서, 사용자 입력에 대해, 드라이버가 보기도 전에</strong> 일어난다 — 코드 채널과 데이터 채널이 드라이버에 닿기 전에 이미 합쳐진 것이다. 그래서 방어 지점도 드라이버가 아니라 <strong>역직렬화 직후의 경계</strong>여야 한다. 신뢰할 수 없는 바이트를 구조로 되살리는 일이 왜 그 자체로 보안 경계인지는 <a href="C10 직렬화와 역직렬화.html">C10</a>과 이어진다.</p>
+<p><strong>왜 이 사고는 앱 계층에서 이미 끝나 있나.</strong> SQL에선 값이 드라이버까지 문자열로 갔고, 드라이버가 채널을 나눠 줄 기회가 있었다. 문서 DB에선 <strong>역직렬화(JSON→객체)가 앱 계층에서, 사용자 입력에 대해, 드라이버가 보기도 전에</strong> 일어난다 — 코드 채널과 데이터 채널이 드라이버에 닿기 전에 이미 합쳐진 것이다. 그래서 방어 지점도 드라이버가 아니라 <strong>역직렬화 직후의 경계</strong>여야 한다. 신뢰할 수 없는 바이트를 구조로 되살리는 일이 왜 그 자체로 보안 경계인지는 <a href="../C 백엔드/C10 직렬화와 역직렬화.html">C10</a>과 이어진다.</p>
 </blockquote>
 <blockquote class="ok">
 <p><strong>최근 동향(2020년대 중반 기준).</strong> 위 세 겹은 안정 원리이고, 대표 문서 DB의 생태계도 같은 방향으로 움직여 왔다. 대표적으로 MongoDB는 8.0(2024)부터 서버 사이드 JavaScript 평가 계열 연산자(<code>$where</code>·<code>$function</code>·<code>$accumulator</code>)를 <strong>폐기 예정으로 표시</strong>하고 실행 시 경고를 남긴다 — 다만 서버 사이드 스크립팅은 <em>여전히 기본적으로 켜져 있어</em>, 쓰지 않는다면 <code>--noscripting</code>·설정으로 <strong>명시적으로 꺼 두는 것</strong>이 권고된다(셋째 겹의 "기능 자체를 쓰지 않는다"를 운영 설정으로 못 박는 셈).</p>
-<p>또 하나 — <code>$</code>로 시작하는 키를 <strong>일괄 제거</strong>해 주는 새니타이즈 도구(미들웨어·ODM 옵션 등)가 널리 쓰이지만, 이는 <strong>안전망이지 명시적 매핑의 대체가 아니다</strong>. 최상위 키만 걸러 중첩 연산자를 놓치거나, 요청 객체를 통째로 조회에 넘기는 경로를 못 막는 우회가 반복 보고돼 왔다(관련 취약점 예: CVE-2024-53900, CVE-2025-23061). 결국 <strong>첫 겹(타입 못 박기)·둘째 겹(스키마로 허용 키 고정)이 주 방어</strong>이고, 키 제거는 그 위에 얹는 층이라는 순서가 최신 권고에서도 그대로다.</p>
+<p>또 하나 — <code>$</code>로 시작하는 키를 <strong>일괄 제거</strong>해 주는 새니타이즈 도구(미들웨어·ODM 옵션 등)가 널리 쓰이지만, 이는 <strong>안전망이지 명시적 매핑의 대체가 아니다</strong>. 최상위 키만 걸러 중첩 연산자를 놓치거나, 요청 객체를 통째로 조회에 넘기는 경로를 못 막는 우회가 반복 보고돼 왔다(예: 2024~2025년에 걸쳐 대표 ODM에서 조회 조건 객체에 사용자 값이 흘러 서버 측 JS 평가 연산자가 실행된 취약점이 잇달아 수정됐다). 결국 <strong>첫 겹(타입 못 박기)·둘째 겹(스키마로 허용 키 고정)이 주 방어</strong>이고, 키 제거는 그 위에 얹는 층이라는 순서가 최신 권고에서도 그대로다.</p>
 </blockquote>
 
 <h2>3. 셸·프로세스 — 채널을 나눈 다음에도 남는 경계</h2>
@@ -130,7 +130,7 @@ DB가 본 것:   { username: "admin", password: { $gt: "" } }   ← 구조가 "�
 그러나:        ["fetch-tool", "-o", "/some/path"]        ← 값이 "-"로 시작하면?
 프로그램이 본 것: 옵션 하나 + 그 값                        ← 데이터가 "옵션"으로 승격</div>
 <p>
-사용자가 URL·파일명·검색어 자리에 <code>-</code>나 <code>--</code>로 시작하는 값을 넣으면, 대상 프로그램은 그것을 데이터가 아니라 <strong>자기 옵션</strong>으로 읽는다. 옵션 중에는 파일을 쓰는 것, 외부 명령을 실행하는 것, 설정을 갈아끼우는 것이 흔하다 — 셸을 거치지 않고도 임의 파일 쓰기나 명령 실행에 도달할 수 있다. 이것이 옵션 주입(option injection, 인자 주입)이다.
+사용자가 URL·파일명·검색어 자리에 <code>-</code>나 <code>--</code>로 시작하는 값을 넣으면, 대상 프로그램은 그것을 데이터가 아니라 <strong>자기 옵션</strong>으로 읽는다. 옵션 중에는 파일을 쓰는 것, 외부 명령을 실행하는 것, 설정을 갈아끼우는 것이 흔하다 — 셸을 거치지 않고도 임의 파일 쓰기나 명령 실행에 도달할 수 있다. 이것이 옵션 주입(인자 주입이라고도 부른다)이다.
 </p>
 <p>방어는 이 경계의 성격에 맞춘다 — 여기엔 나눌 채널이 없으므로(옵션과 피연산자는 같은 배열에 산다), <strong>값의 형태를 통제</strong>한다.</p>
 <ul>
@@ -157,7 +157,7 @@ LDAP이 본 것: (&(uid=*)(uid=*))(|(uid=*)(objectClass=person))  ← 필터 구
 </p>
 <ul>
   <li><strong>XPath에는 변수 바인딩이 있다.</strong> 식 안에 <code>$name</code> 같은 <strong>변수</strong>를 쓰고, 값은 변수 해석기(variable resolver)로 따로 공급한다. 값은 식 문법으로 파싱되지 않는다 — <a href="S3 인젝션 방어.html">S3</a>의 자리표시자와 정확히 같은 구조다.</li>
-  <li><strong>LDAP에는 필터 자리표시자를 제공하는 API가 있다.</strong> 필터 문자열에 <code>{0}</code> 같은 자리를 두고 값을 배열로 넘기면, 라이브러리가 값을 필터 문법에서 무해하게 만들어 끼워 넣는다(7.3에서 Java 사례로 확인).</li>
+  <li><strong>LDAP에는 필터 자리표시자를 제공하는 API가 있다.</strong> 필터 문자열에 <code>{0}</code> 같은 자리를 두고 값을 배열로 넘기면, 라이브러리가 값을 필터 문법에서 무해하게 만들어 끼워 넣는다(7.1에서 Java 사례로 확인).</li>
   <li><strong>그래도 조립해야 한다면, 이스케이프는 반드시 라이브러리 것으로.</strong> 그리고 여기서 <a href="S1 프론트엔드 보안 기초.html">S1</a>의 교훈이 되돌아온다 — <strong>맥락마다 규칙이 다르다</strong>. LDAP은 같은 값이라도 <em>검색 필터</em>에 넣을 때와 <em>식별명(DN)</em>에 넣을 때 이스케이프해야 할 문자 집합이 서로 다르다. 필터용 이스케이프를 DN에 쓰면 방어가 성립하지 않는다.</li>
 </ul>
 <blockquote class="info">
@@ -195,23 +195,109 @@ LDAP이 본 것: (&(uid=*)(uid=*))(|(uid=*)(objectClass=person))  ← 필터 구
 
 <h2>★ 7. 언어별 대조</h2>
 <p>
-이 문서의 해석기들은 언어마다 손에 잡히는 모습이 다르다 — Python·C++는 프로세스 실행 표면에 무게가 실리고(3절의 옵션 주입이 정확히 이 지점), JS·TS는 구조 주입이 일상 표면이며, Java는 안전 API가 있는데 안 보이는 전형이다. 원리(3단 사다리)는 그대로 반복된다.
+이 문서의 해석기들은 언어마다 손에 잡히는 모습이 다르다. 그런데 차이는 "어느 API를 쓰느냐"보다 깊은 곳에 있다 — <strong>그 언어의 런타임이 코드/데이터 경계를 어디까지 대신 지켜 주는가</strong>가 다르다. Java는 정적 타입이 값 자리를 컴파일 시점에 잠가 주지만 그 잠금이 <em>미치지 않는 경로</em>가 있고, JS·TS는 JSON과 객체의 경계가 없어 구조 주입이 일상이며 TS 타입은 런타임에 사라진다. Python은 문자열과 리스트라는 <em>인자 형태</em>가 곧 셸 경유 여부를 정하고, C++는 인자 벡터를 커널까지 그대로 밀어 넣어 중간에 걸러 줄 층이 아예 없다. 원리(3단 사다리)는 넷 모두에서 그대로 반복된다 — 달라지는 것은 <strong>1단(채널 분리)을 언어가 어디까지 제공하고, 어디서부터가 내 책임인가</strong>다.
 </p>
 <table>
-  <tr><th>언어/환경</th><th>대표 승격 표면</th><th>표준 방어</th></tr>
-  <tr><td>Python</td><td>문자열로 프로세스 실행 → argv 뒤의 옵션 주입</td><td>인자 리스트 실행·셸 미사용·형태 검증(아래 심화)</td></tr>
-  <tr><td>C++</td><td>인자 배열로 나눈 뒤 남는 옵션 주입</td><td><code>--</code> 종료자·값 형태 검증·절대 경로(아래 심화)</td></tr>
-  <tr><td>Java</td><td>LDAP 필터·XPath 식을 문자열로 조립</td><td>필터 자리표시자 오버로드·XPath 변수 해석기</td></tr>
-  <tr><td>JS·TS</td><td>요청 본문 객체가 그대로 쿼리 구조로 들어감</td><td>타입 못 박기·스키마 검증·연산자 키 차단</td></tr>
+  <tr><th>언어/환경</th><th>프로세스 실행 — 셸 경유 여부를 가르는 것</th><th>문서 DB — 구조 주입이 들어오는 경로</th><th>LDAP·XPath — 채널 분리 수단</th></tr>
+  <tr><td>Java</td><td><code>ProcessBuilder</code>·<code>exec(String[])</code>는 argv, 셸 없음. 단일 문자열 <code>exec(String)</code>은 공백 분할(셸 아님, 그러나 옵션 주입 통과)</td><td>필터 빌더 API는 값이 <code>String</code> 매개변수로 고정. 위험은 JSON 문자열을 <code>Map</code>·문서 객체로 되살려 그대로 조건에 넣는 경로</td><td>표준 디렉터리 API의 <code>{0}</code> 필터 인자 오버로드 / XPath 변수 리졸버. DN 맥락은 자리표시자 없음 → 이스케이프 함수</td></tr>
+  <tr><td>JS·TS</td><td><code>spawn</code>·<code>execFile</code>은 argv, <code>exec</code>는 셸 문자열. <code>shell: true</code>는 배열을 도로 문자열로 합친다</td><td>요청 본문 객체가 그대로 조건 객체 — 구조 주입의 본고장. TS 타입은 소거되어 런타임 방어력 0</td><td>런타임 스키마 검증·<code>typeof</code>·연산자 키 거부(문서 DB 쪽에 무게)</td></tr>
+  <tr><td>Python</td><td><code>subprocess</code>에 리스트면 argv, 문자열+<code>shell=True</code>면 셸. <code>shlex.quote</code>는 셸 문자열이 불가피할 때의 2단</td><td><code>dict</code>로 되살아난 요청 본문 — JS와 같은 구조 주입. <code>isinstance</code>로 타입 못 박기</td><td>라이브러리의 필터 이스케이프 함수·XPath 변수 인자</td></tr>
+  <tr><td>C++</td><td><code>system()</code>은 셸, <code>execve</code>·<code>posix_spawn</code>은 argv. 분리 뒤에도 대상 프로그램의 옵션 파서·<code>PATH</code>·환경 블록이 남는다</td><td>드라이버가 문자열을 받는 자리에 문자열만 들어감 — 구조 주입은 잘 성립하지 않음</td><td>라이브러리 의존 — 없으면 2·3단으로 내려감</td></tr>
 </table>
 
-<h3>7.1 Python — 문자열이냐 리스트냐가 곧 셸 경유 여부다</h3>
+<h3>7.1 Java — 타입이 값 자리를 잠가 주지만, 잠기지 않는 경로가 있다</h3>
 <p>
-Python에서 프로세스를 실행하는 표준 도구는 인자를 <strong>두 가지 형태</strong>로 받는다 — 하나의 문자열, 혹은 인자들의 리스트. 이 선택이 곧 <strong>셸을 경유하느냐 마느냐</strong>를 가른다. 문자열로 넘기면서 셸 옵션을 켜면, 그 문자열은 <a href="S3 인젝션 방어.html">S3</a>의 SQL과 똑같이 <em>셸 언어</em>로 해석된다.
+Java는 4절의 교훈("안전 API는 있는데 안 보인다")이 가장 선명한 언어다. 셸·문서 DB·LDAP·XPath 네 해석기 모두 표준 라이브러리나 드라이버에 <strong>1단(채널 분리) 수단이 이미 있다</strong>. 그런데 Java에는 다른 언어에 없는 함정이 하나 더 있다 — 정적 타입 시스템이 값 자리를 컴파일 시점에 잠가 주기 때문에 <em>"타입이 지켜 주겠지"</em>라고 믿기 쉬운데, 그 잠금은 값이 <strong><code>String</code>으로 선언된 매개변수를 거칠 때만</strong> 작동한다.
 </p>
-<pre><code>import subprocess
+<p>
+프로세스 실행부터 보자. <code>ProcessBuilder</code>는 명령과 인자를 <strong>리스트로 받아 그대로 argv로 넘긴다</strong> — 셸을 경유하지 않는다. 함정은 오래된 단일 문자열 오버로드 <code>Runtime.exec(String)</code>이다. 이 메서드는 셸을 띄우지 않지만, 문자열을 <strong>공백 기준으로 토큰 분리</strong>해 argv를 만든다. 즉 3절 경고 상자의 "순진한 토큰 분리"가 표준 라이브러리 안에 들어 있는 셈이다 — <code>;</code>는 그냥 글자가 되지만, 공백이 든 파일명은 두 인자로 쪼개지고 <code>-o</code>는 옵션 주입으로 그대로 통과한다. 이 오버로드는 Java 18부터 폐기 예정(deprecated)으로 표시됐다(2020년대 중반 기준).
+</p>
+<pre><code>// 함정: 단일 문자열 → 공백 분할. 셸은 아니지만 "순진한 토큰 분리"(3절)
+Runtime.getRuntime().exec("ping -c 1 " + host);      // Java 18+ deprecated
 
-host = user_input   # 예: "8.8.8.8; rm -rf ~"
+// 안전: 리스트가 곧 argv — 셸도, 공백 분할도 없음
+new ProcessBuilder("ping", "-c", "1", "--", host).start();
+
+// 되돌아가는 길: 셸을 명시적으로 부르면 문자열은 다시 셸 언어가 된다
+new ProcessBuilder("sh", "-c", "ping -c 1 " + host).start();  // 취약</code></pre>
+<p>
+문서 DB에서는 타입 시스템이 실제로 방패가 된다 — <strong>단, 필터 빌더 API를 쓸 때만</strong>. 드라이버의 필터 빌더(<code>eq("username", username)</code>처럼 조건을 <em>메서드 호출</em>로 조립하는 API)는 값을 <code>String</code>·<code>int</code> 같은 매개변수로 받으므로, 객체가 값 자리에 앉는 일이 컴파일 시점에 배제된다. 2절의 구조 주입은 이 경로에서 원리적으로 성립하지 않는다. 문제는 요청 본문 JSON을 <code>Map&lt;String,Object&gt;</code>나 문서 객체로 <strong>파싱해 그대로 조건 자리에 넣는 경로</strong>다 — 값의 정적 타입이 <code>Object</code>인 순간 컴파일러는 아무것도 보증하지 않고, 런타임에 그 자리에 앉은 것은 <code>{"$gt":""}</code>를 되살린 중첩 맵이다.
+</p>
+<pre><code>// 안전: 필터 빌더 — username은 String 매개변수. 객체가 들어올 자리가 없다
+String username = request.getUsername();     // DTO 필드가 String으로 선언됨
+collection.find(eq("username", username));
+
+// 취약: JSON 문자열을 구조로 되살려 그대로 조건에 — 타입은 Object, 잠금 해제
+Map&lt;String, Object&gt; raw = jsonParser.parse(body);   // password → {"$gt": ""} 맵
+collection.find(new Document(raw));</code></pre>
+<p>
+LDAP·XPath는 표준 API에 자리표시자가 있다. 표준 디렉터리 API의 검색 메서드에는 필터 문자열에 <code>{0}</code> 자리를 두고 값을 배열로 넘기는 오버로드가 있고, 넘긴 값은 <strong>필터 문법이 아니라 리터럴로 취급</strong>된다 — <a href="S3 인젝션 방어.html">S3</a>의 <code>?</code>와 같은 발상이다. XPath는 식 안의 <code>$uid</code> 변수를 <code>XPathVariableResolver</code>가 이름별로 값을 되돌려 주는 방식이다. 다만 4절이 짚었듯 <strong>DN 맥락에는 자리표시자가 없다</strong>. 식별명을 조립해야 한다면 필터용이 아닌 <em>DN용</em> 이스케이프 함수(2단)로 내려간다.
+</p>
+<pre><code>// LDAP: {0} 자리표시자 오버로드 — uid 값은 리터럴로 끼워진다
+ctx.search(base, "(&amp;(uid={0})(objectClass=person))",
+           new Object[]{ uid }, controls);
+
+// XPath: 식은 고정, 값은 변수 리졸버가 따로 공급
+XPath xp = XPathFactory.newInstance().newXPath();
+xp.setXPathVariableResolver(name -&gt;
+    "uid".equals(name.getLocalPart()) ? uid : null);
+xp.evaluate("//user[@id=$uid]/email", doc);</code></pre>
+<p>
+<code>Java 관점의 통찰: 정적 타입은 "값 자리에 객체가 앉을 수 없다"를 컴파일러가 보증하는 채널 분리다 — 단, 그 보증은 값이 String 매개변수라는 좁은 문을 통과할 때만 유효하다. JSON을 Map·Object로 되살리는 순간 그 문은 열리고, Java는 그때부터 JS와 같은 동적 세계가 된다. 그래서 Java의 판단 기준은 "드라이버가 안전한가"가 아니라 "사용자 값이 String 타입으로 선언된 자리를 거쳐 갔는가"다. 프로세스 쪽도 같다 — 리스트 오버로드를 썼는가가 아니라, 그 리스트 첫 원소가 sh가 아닌가까지 봐야 한다.</code>
+</p>
+
+<h3>7.2 JS·TS — 구조 주입의 본고장, 그리고 컴파일과 함께 사라지는 타입</h3>
+<p>
+JS에는 JSON과 객체의 경계가 없다. 요청 본문은 파서 미들웨어를 지나면 이미 <strong>살아 있는 객체</strong>이고, 문서 DB 쿼리도 객체이므로 둘 사이에 아무 변환이 없다 — 2절의 구조 주입이 <em>기본 동작</em>인 유일한 언어다. 게다가 일부 프레임워크의 확장 쿼리 문자열 파서는 <code>?password[$gt]=</code> 같은 대괄호 표기를 <strong>중첩 객체로 되살린다</strong>. 본문(JSON)만 막으면 된다고 생각하면 쿼리 문자열이 같은 구조를 실어 나른다.
+</p>
+<pre><code>// 취약: req.body.password 가 {"$gt": ""} 객체여도 그대로 조건 자리로 흐른다
+const user = await users.findOne({
+  username: req.body.username,
+  password: req.body.password,
+});
+
+// 첫 겹 — 타입 못 박기: 문자열이 아니면 거부 (String()으로 강제하면 "[object Object]"가 되어
+// 무해해지지만, 조용히 통과시키기보다 명시적으로 거부하는 편이 낫다)
+const { username, password } = req.body;
+if (typeof username !== "string" || typeof password !== "string") {
+  return res.status(400).end();
+}
+
+// 둘째 겹 — 경계에서 스키마 검증: 필드·타입·허용 키를 한곳에 선언
+// schema = 런타임 스키마 검증 라이브러리(대표 예: zod 계열)의 가상 이름 — 실제 API 이름은 라이브러리마다 다르다
+const LoginBody = schema.object({
+  username: schema.string().max(64),
+  password: schema.string().max(256),
+}).strict();                       // 선언되지 않은 키(예: "$where")는 거부
+const body = LoginBody.parse(req.body);   // 통과한 값만 문자열임이 런타임에 보증됨</code></pre>
+<p>
+TS는 여기서 아무 도움이 안 된다 — 그리고 <em>왜</em> 안 되는지가 이 언어의 핵심이다. TS의 타입은 <strong>타입 소거(type erasure — 컴파일 결과물인 JS에는 타입 정보가 한 글자도 남지 않는 것)</strong>를 거친다. <code>req.body as LoginBody</code>는 컴파일러에게 "그렇게 믿어라"라고 말하는 것뿐, 실행 시엔 검사 코드가 생성되지 않는다. 2절의 경고("타입 선언은 컴파일 시점의 약속")가 이 언어에서 가장 문자 그대로다. 그래서 TS 생태계의 관용구는 <strong>런타임 스키마에서 정적 타입을 추론해 내는 것</strong>이다 — 위 예제의 <code>LoginBody.parse()</code>가 통과시킨 값은 런타임에도 검증됐고, 그 반환 타입이 곧 정적 타입이 된다. 검증과 타입이 한 선언에서 나오므로 둘이 어긋날 수 없다.
+</p>
+<pre><code>// 타입 단언은 런타임에 사라진다 — 컴파일 후엔 그냥 const body = req.body;
+const body = req.body as LoginBody;          // 검증 0회
+
+// 스키마에서 타입을 추론: 런타임 검증과 정적 타입이 한 선언에서 나온다
+type LoginBody = schema.infer&lt;typeof LoginBody&gt;;
+const body: LoginBody = LoginBody.parse(req.body);   // 여기서만 타입이 "참"이 된다</code></pre>
+<p>
+프로세스 실행은 <code>child_process</code> 모듈의 <strong>함수 이름이 곧 셸 경유 여부</strong>다. <code>exec</code>는 문자열 하나를 받아 셸에 넘기고, <code>spawn</code>·<code>execFile</code>은 명령과 인자 배열을 받아 셸 없이 실행한다. 함정은 <code>shell: true</code> 옵션이다 — 배열 API를 쓰면서 이 옵션을 켜면 런타임이 <strong>배열을 도로 하나의 셸 문자열로 합쳐서</strong> 넘긴다. 배열의 겉모습은 그대로인데 3절 경고의 "간접 셸 호출"이 된 것이다. 또 하나, Windows에서는 배치 파일(<code>.bat</code>·<code>.cmd</code>)이 항상 명령 해석기를 거치므로, 2024년 이후의 Node는 <code>shell</code> 없이 이를 <code>spawn</code>하려 하면 아예 오류를 낸다(2020년대 중반 기준) — "배열이니 셸이 아니다"가 플랫폼에 따라 거짓이 될 수 있음을 런타임이 명시적으로 알리는 셈이다.
+</p>
+<pre><code>const { exec, spawn } = require("child_process");
+
+exec(`ping -c 1 ${host}`);                          // 취약: 셸 문자열
+spawn("ping", ["-c", "1", host], { shell: true });  // 취약: 배열을 셸 문자열로 재조립
+spawn("ping", ["-c", "1", "--", host]);             // 안전: argv 그대로, -- 로 옵션 종료</code></pre>
+<p>
+<code>JS·TS 관점의 통찰: 이 언어에서 데이터가 코드로 승격되는 통로는 문자열 조립이 아니라 "객체가 객체인 채로 흐르는 것"이다. 역직렬화가 프레임워크 안에서 자동으로 끝나 있으니 방어 지점은 드라이버가 아니라 역직렬화 직후, 즉 핸들러 첫 줄이다. TS의 타입은 그 첫 줄 이후를 위한 도구이지 첫 줄을 대신하지 못한다 — 타입이 소거된다는 사실을 받아들이면, 스키마에서 타입을 뽑아내는 관용구가 왜 표준이 됐는지 자연스럽게 이해된다.</code>
+</p>
+
+<h3>7.3 Python — 문자열이냐 리스트냐가 곧 셸 경유 여부다</h3>
+<p>
+Python에서 프로세스를 실행하는 표준 도구 <code>subprocess</code>는 인자를 <strong>두 가지 형태</strong>로 받는다 — 하나의 문자열, 혹은 인자들의 리스트. 이 선택이 곧 <strong>셸을 경유하느냐 마느냐</strong>를 가른다. 리스트는 POSIX에서 <code>execve</code>(또는 <code>posix_spawn</code>)의 argv로 그대로 넘어가고, 문자열에 <code>shell=True</code>를 붙이면 그 문자열은 <a href="S3 인젝션 방어.html">S3</a>의 SQL과 똑같이 <em>셸 언어</em>로 해석된다. 문자열을 <code>shell=False</code>로 넘기면 Python은 그 문자열 전체를 <em>프로그램 이름 하나</em>로 취급한다 — 공백 분할을 해 주지 않으므로 Java의 단일 문자열 오버로드 같은 함정은 없지만, 대신 개발자가 <code>shlex.split</code>으로 직접 쪼개 리스트를 만드는 순간 3절의 "순진한 토큰 분리"가 되돌아온다.
+</p>
+<pre><code>import subprocess, shlex
+
+host = user_input   # 예: "8.8.8.8; &lt;임의 명령&gt;"
 
 # 취약: shell=True → 문자열이 셸 언어로 해석됨 (;가 명령 구분자로 승격)
 subprocess.run(f"ping -c 1 {host}", shell=True)
@@ -222,16 +308,30 @@ subprocess.run(["ping", "-c", "1", host])   # shell=False가 기본값
 # 그러나 셸을 껐어도 남는 경계 — host가 "-oFILE" 이면?
 # ping이 그것을 자기 옵션으로 읽는다 (3절 옵션 주입)
 subprocess.run(["ping", "-c", "1", "--", host])   # -- 이후는 전부 피연산자
-</code></pre>
+
+# shlex.quote의 자리: 셸 문자열이 불가피할 때(원격 셸에 명령줄을 통째로 보내는 경우 등)의 2단.
+# POSIX sh 인용 규칙만 안다 — Windows 명령 해석기에는 무의미하다.
+remote_cmd = "ls -- " + shlex.quote(user_dir)
+subprocess.run(["ssh", "host", remote_cmd])</code></pre>
 <p>
-<code>Python 관점의 통찰: 리스트 형태는 각 인자를 운영체제에 그대로 전달하므로, 파이썬이 문자열을 합치거나 셸이 재해석할 틈이 없다 — S3의 파라미터 바인딩과 같은 "채널 분리"가 프로세스 실행 판에서 재현된 것이다. 흔한 오해는 "shell=True를 껐으니 안전"이라는 것이지만, 3절에서 봤듯 그것은 첫 겹일 뿐이다. 셸 경계를 넘은 인자는 대상 프로그램의 옵션 파서라는 두 번째 경계를 다시 만난다. 그래서 사용자 값 앞에 -- 를 세워 "여기부터는 데이터"라고 못 박는다. LDAP·XPath 쪽에서는 파이썬도 라이브러리가 변수 인자·필터 이스케이프 함수를 제공하니, 직접 만들지 말고 그것을 쓴다.</code>
+<code>shlex.quote</code>의 자리를 정확히 두자. 셸을 피할 수 있는 자리에서 이 함수를 쓰는 것은 1단이 있는데 2단으로 내려가는 일이다. 이 함수가 필요한 상황은 <strong>셸 문자열 자체가 전송 단위</strong>일 때뿐이다 — 원격 호스트의 셸에 명령줄을 통째로 보내야 할 때처럼. 그리고 이 함수는 POSIX <code>sh</code>의 인용 규칙만 알고 있어서, Windows 명령 해석기 앞에서는 방어가 성립하지 않는다(맥락별 이스케이프의 또 다른 예). 플랫폼 차이는 리스트 형태에도 숨어 있다 — Windows의 프로세스 생성 API는 argv가 아니라 <strong>명령줄 문자열 하나</strong>를 받으므로, Python은 리스트를 내부 규칙으로 도로 한 문자열로 합쳐 넘기고 자식 프로그램이 그것을 다시 쪼갠다. "리스트 = 채널 분리"는 POSIX에선 커널이 지켜 주는 사실이지만 Windows에선 양쪽이 같은 인용 규칙을 따를 때만 성립하는 <em>약속</em>이다.
+</p>
+<p>
+문서 DB에서는 Python도 JS와 같은 처지다 — 요청 본문은 <code>dict</code>로 되살아나고, 드라이버는 <code>dict</code>를 조건으로 받는다. 값이 <code>str</code>인지 <code>isinstance</code>로 못 박거나, 경계에서 데이터 모델 라이브러리로 스키마를 강제한다. 동적 타이핑이라 Java의 "String 매개변수라는 좁은 문"에 해당하는 것이 없으니, 그 문을 <strong>직접 세워야</strong> 한다.
+</p>
+<pre><code>password = body.get("password")
+if not isinstance(password, str):      # {"$gt": ""} 는 dict → 여기서 끝
+    abort(400)
+users.find_one({"username": username, "password": password})</code></pre>
+<p>
+<code>Python 관점의 통찰: 리스트 형태는 각 인자를 운영체제에 그대로 전달하므로, 파이썬이 문자열을 합치거나 셸이 재해석할 틈이 없다 — S3의 파라미터 바인딩과 같은 "채널 분리"가 프로세스 실행 판에서 재현된 것이다. 흔한 오해는 "shell=True를 껐으니 안전"이라는 것이지만, 3절에서 봤듯 그것은 첫 겹일 뿐이다. 셸 경계를 넘은 인자는 대상 프로그램의 옵션 파서라는 두 번째 경계를 다시 만난다. 그래서 사용자 값 앞에 -- 를 세워 "여기부터는 데이터"라고 못 박는다. shlex.quote는 이 사다리의 2단이지 1단의 대체가 아니며, 그마저 POSIX 셸 한 맥락에만 유효하다. LDAP·XPath 쪽에서는 파이썬도 라이브러리가 변수 인자·필터 이스케이프 함수를 제공하니, 직접 만들지 말고 그것을 쓴다.</code>
 </p>
 
-<h3>7.2 C++ — argv를 나눈 다음이 시작이다</h3>
+<h3>7.4 C++ — argv를 나눈 다음이 시작이다</h3>
 <p>
-C++(그리고 C)는 애초에 인자를 <strong>배열(argv)로 다루는</strong> 언어라, 셸 문자열 조립만 피하면 <a href="S1 프론트엔드 보안 기초.html">S1</a>·<a href="S3 인젝션 방어.html">S3</a>가 보여 준 셸 경계는 쉽게 넘는다. 문제는 그다음 — 배열로 나눠도 <strong>대상 프로그램이 그 배열을 다시 옵션과 피연산자로 가른다</strong>(3절). 이 두 번째 경계가 C 계열에서 특히 도드라지는 이유는, 인자가 커널까지 <em>있는 그대로</em> 전달되어 중간에 걸러 줄 셸조차 없기 때문이다.
+C++(그리고 C)는 애초에 인자를 <strong>배열(argv)로 다루는</strong> 언어라, <code>system()</code>만 피하면 <a href="S1 프론트엔드 보안 기초.html">S1</a>·<a href="S3 인젝션 방어.html">S3</a>가 보여 준 셸 경계는 쉽게 넘는다. <code>system()</code>은 표준이 <code>sh -c</code>로 문자열을 넘기도록 정의한 함수이고, <code>execve</code>·<code>posix_spawn</code>은 argv 배열을 커널에 그대로 전달한다. 문제는 그다음 — 배열로 나눠도 <strong>대상 프로그램이 그 배열을 다시 옵션과 피연산자로 가른다</strong>(3절). 이 두 번째 경계가 C 계열에서 특히 도드라지는 이유는, 인자가 커널까지 <em>있는 그대로</em> 전달되어 중간에 걸러 줄 셸조차 없기 때문이다. <a href="S3 인젝션 방어.html">S3</a> 6.4의 <code>execvp</code> 예제는 <code>PATH</code>에 의존했다 — 여기서는 한 걸음 더 가 절대 경로와 환경 블록까지 통제한다.
 </p>
-<pre><code>// 셸 경계는 이미 넘음: system()이 아니라 인자 배열로 실행 (S1·S3에서 다룸)
+<pre><code>// 셸 경계는 이미 넘음: system()이 아니라 인자 배열로 실행
 // 그러나 argv[]에서 user_url이 "-"로 시작하면 옵션으로 승격된다
 const char* argv[] = { "fetch-tool", user_url.c_str(), nullptr };
 // user_url = "-oSOMEFILE" 이면 fetch-tool이 그것을 출력 옵션으로 읽음
@@ -240,27 +340,27 @@ const char* argv[] = { "fetch-tool", user_url.c_str(), nullptr };
 const char* safe[] = { "fetch-tool", "--", user_url.c_str(), nullptr };
 
 // 방어 2 — 형태 검증: 값이 '-'로 시작하지 않는지, 기대 형식인지 확인
-if (!user_url.empty() && user_url[0] == '-') reject();
+if (!user_url.empty() &amp;&amp; user_url[0] == '-') reject();
 
-// 방어 3 — 명령은 절대 경로로: PATH가 무엇을 실행할지 정하게 두지 않음
-const char* prog = "/usr/bin/fetch-tool";
-</code></pre>
+// 방어 3 — 명령은 절대 경로로, 환경은 직접 구성: PATH·LD_PRELOAD를 물려주지 않음
+const char* envp[] = { "PATH=/usr/bin:/bin", "LANG=C", nullptr };
+execve("/usr/bin/fetch-tool", const_cast&lt;char* const*&gt;(safe),
+                              const_cast&lt;char* const*&gt;(envp));</code></pre>
 <p>
-<code>C++ 관점의 통찰: printf의 포맷/인자 분리, execvp의 명령/인자 배열, DB의 파라미터 바인딩 — 셋 다 "코드 채널과 데이터 채널의 분리"라는 한 해법의 변주다(S1의 결론). 그런데 옵션 주입은 그 분리가 끝나는 지점에서 시작한다: argv는 명령과 데이터를 나눴지만, 옵션과 피연산자는 같은 배열 안에 섞여 산다 — 여기엔 더 나눌 채널이 없다. 그래서 방어가 바인딩이 아니라 값 통제(-- 종료자, 형태 검증)로 내려간다. "나눌 수 있으면 바인딩, 없으면 값을 좁힌다"는 사다리의 3단이 프로세스 실행에서 구체화된 모습이다. PATH·환경변수까지 신경 쓰는 이유도 같다 — 무엇이 실행될지를 사용자 입력이 정하게 두면 그 자체가 또 하나의 승격 통로다.</code>
+C++만의 함정은 이 배열이 <strong>포인터의 배열</strong>이라는 데서 나온다. <code>c_str()</code>은 <code>std::string</code> 내부 버퍼를 가리키는 포인터를 돌려줄 뿐이므로, 임시 문자열의 <code>c_str()</code>을 argv에 넣고 그 임시가 소멸한 뒤 <code>execve</code>를 부르면 커널에 넘어가는 것은 <strong>이미 해제된 메모리</strong>다 — 인젝션과 무관해 보이지만, 그 자리에 무엇이 들어앉을지 모른다는 점에서 데이터 채널의 무결성이 깨진 것은 같다. 환경 블록 <code>envp</code>도 같은 경계다. <code>execvp</code>류는 부모의 환경을 통째로 물려주는데, 부모 환경에 사용자 유래 값이 있었다면(3절의 "자식 프로세스의 환경변수") 동적 로더 설정 같은 변수 하나가 코드 실행 통로가 된다. <code>execve</code>에 최소 환경을 <em>직접</em> 넘기는 것이 위 예제의 셋째 줄이다.
 </p>
-
-<h3>7.3 Java / JS·TS — 한 줄 요약</h3>
 <p>
-Java는 4절의 교훈이 가장 선명한 언어다 — LDAP·XPath 모두 표준 라이브러리에 <strong>채널 분리 수단이 이미 있다</strong>. LDAP은 필터 문자열에 <code>{0}</code> 자리를 두고 값을 배열로 넘기는 자리표시자 오버로드가, XPath는 식 안의 <code>$name</code> 변수에 값을 따로 공급하는 변수 해석기가 그것이다(둘 다 <a href="S3 인젝션 방어.html">S3</a>의 <code>?</code>와 같은 발상). 예제가 대개 문자열 조립본이라 안 보일 뿐이니, 새 해석기를 붙일 땐 자리표시자·변수부터 문서에서 찾는다.
-JS·TS는 구조 주입이 일상 표면이다 — JSON과 객체의 경계가 거의 없어 요청 본문이 그대로 쿼리 구조 자리까지 흐른다. <code>typeof</code>로 타입을 못 박거나 <strong>런타임 스키마 검증</strong>으로 경계에서 구조 전체를 거른다. TypeScript의 타입 선언은 컴파일 시점의 약속이라 런타임 입력을 막지 못한다는 점(2절)이 이 언어의 핵심 함정이다.
+그리고 이 모든 "argv 분리"가 <strong>플랫폼 ABI의 약속</strong>이라는 점을 C++는 가장 적나라하게 보여 준다. POSIX에선 커널이 argv 배열을 있는 그대로 자식에 전달하므로 분리는 사실이다. 반면 Windows의 프로세스 생성 API는 명령줄 <em>문자열 하나</em>를 받고, 자식 프로그램의 C 런타임이 그것을 자기 규칙으로 다시 쪼개 <code>main(argc, argv)</code>를 만든다 — 인용 규칙이 양쪽에서 어긋나면 배열 하나가 두 인자가 되거나 둘이 하나로 붙는다. Python 절에서 본 "리스트가 문자열로 합쳐진다"의 정체가 바로 이것이고, 그 아래에는 C 런타임의 명령줄 파싱이 있다.
 </p>
-
+<p>
+<code>C++ 관점의 통찰: S3 6.4가 execvp 인자 배열로 셸 경계를 넘긴 자리에서 이어받는다 — 그런데 옵션 주입은 그 분리가 끝나는 지점에서 시작한다: argv는 명령과 데이터를 나눴지만, 옵션과 피연산자는 같은 배열 안에 섞여 산다 — 여기엔 더 나눌 채널이 없다. 그래서 방어가 바인딩이 아니라 값 통제(-- 종료자, 형태 검증)로 내려간다. "나눌 수 있으면 바인딩, 없으면 값을 좁힌다"는 사다리의 3단이 프로세스 실행에서 구체화된 모습이다. PATH·환경 블록·argv 포인터의 수명까지 신경 쓰는 이유도 같다 — 무엇이 실행될지, 어떤 바이트가 데이터 자리에 앉을지를 사용자 입력이나 우연이 정하게 두면 그 자체가 또 하나의 승격 통로다. 그리고 그 분리가 커널의 사실인지(POSIX) 런타임 간의 약속인지(Windows)는 ABI가 정한다.</code>
+</p>
 <h2>8. 함께 알면 좋은 것</h2>
 <ul>
-  <li><strong>서버 사이드 템플릿 인젝션(SSTI)</strong> — 사용자 값이 템플릿 <em>본문</em>에 들어가면 템플릿 엔진이 해석기가 된다. "값을 템플릿에 넣기"와 "값으로 템플릿을 만들기"의 차이가 생사를 가른다.</li>
+  <li><strong><a href="S11 SSTI와 출력 맥락 인젝션.html">서버 사이드 템플릿 인젝션(SSTI)</a></strong> —사용자 값이 템플릿 <em>본문</em>에 들어가면 템플릿 엔진이 해석기가 된다. "값을 템플릿에 넣기"와 "값으로 템플릿을 만들기"의 차이가 생사를 가른다.</li>
   <li><strong>헤더·로그 인젝션</strong> — 개행 문자가 승격되는 세계. 응답 헤더 분리, 로그 위조가 여기서 나온다. 승격 문자가 <code>'</code>도 <code>&lt;</code>도 아닌 <code>\n</code>일 뿐, 구조는 같다.</li>
-  <li><strong>XXE(XML 외부 개체)</strong> — XPath와 이웃한 XML 표면. 파서 설정 하나로 파일 읽기·요청 위조가 열린다. 방어는 파서의 외부 개체 처리 비활성화.</li>
-  <li><strong>안전한 역직렬화</strong> — 2절의 뿌리. 신뢰할 수 없는 바이트를 구조·객체로 되살리는 지점이 왜 경계인지는 <a href="C10 직렬화와 역직렬화.html">C10</a>에서 다룬다.</li>
+  <li><strong><a href="S12 XXE와 파서 위험 기능.html">XXE(XML 외부 개체)</a></strong> —XPath와 이웃한 XML 표면. 파서 설정 하나로 파일 읽기·요청 위조가 열린다. 방어는 파서의 외부 개체 처리 비활성화.</li>
+  <li><strong>안전한 역직렬화</strong> — 2절의 뿌리. 신뢰할 수 없는 바이트를 구조·객체로 되살리는 지점이 왜 경계인지는 <a href="../C 백엔드/C10 직렬화와 역직렬화.html">C10</a>에서 다룬다.</li>
   <li><strong>최소 권한 원칙</strong> — DB 계정·프로세스 계정의 권한이 좁으면 1~3단이 모두 뚫려도 피해 반경이 줄어든다(심층 방어).</li>
 </ul>
 
