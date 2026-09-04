@@ -77,9 +77,13 @@
 <p>
 프론트엔드에서 이 해석기는 브라우저이고, 브라우저의 언어는 HTML·JS다.
 따라서 프론트엔드 보안 기초의 핵심 질문은 이것이다: <strong>사용자 유래 문자열이 브라우저에게 코드로 읽힐 수 있는 경로가 어디인가, 그 경로마다 승격을 어떻게 차단하는가.</strong>
+해석기가 DB·셸로 바뀌었을 때의 같은 병은 <a href="S3 인젝션 방어.html">S3</a>·<a href="S10 인젝션 확장 — 해석기별 안전 API.html">S10</a>이 이어받는다.
 </p>
 
 <h2>2. XSS의 세 형태 — 주입 경로로 구분한다</h2>
+<p>
+그 경로를 먼저 분류해야 방어 지점이 보인다 — 악성 스크립트가 어디서 와서 어디로 들어가는지에 따라 세 형태로 나눈다.
+</p>
 <table>
   <tr><th>형태</th><th>악성 스크립트가 오는 경로</th><th>특징</th></tr>
   <tr><td>반사형(reflected)</td><td>요청(URL 파라미터 등)에 실려 와서 응답에 즉시 되돌아 나옴</td><td>피해자가 조작된 링크를 클릭해야 성립</td></tr>
@@ -93,6 +97,7 @@
 
 <h2>3. 방어 1 — 출력 이스케이프: 맥락이 전부다</h2>
 <p>
+세 형태 모두 마지막 순간은 같다 — 문자열이 마크업 자리에 놓이는 순간이다. 그래서 1차 방어도 그 순간을 겨냥한다.
 이스케이프는 특수문자를 "문법 기호"가 아니라 "그냥 글자"로 바꾸는 변환이다: <code>&lt;</code> → <code>&amp;lt;</code>, <code>"</code> → <code>&amp;quot;</code>.
 중요한 것은 <strong>출력되는 맥락마다 위험한 문자가 다르다</strong>는 사실이다.
 </p>
@@ -118,7 +123,20 @@
 <pre><code>Content-Security-Policy: script-src 'self' https://cdn.example.com</code></pre>
 <p>
 이 선언 하나로 인라인 <code>&lt;script&gt;</code>와 이벤트 속성(<code>onclick="…"</code>) 실행이 기본 차단된다 — 주입에 성공한 공격 코드 대부분이 바로 이 형태라, 이스케이프가 뚫려도 실행 단계에서 막힌다.
-핵심 태도는 <strong>심층 방어</strong>(defense in depth)다: 한 겹이 완벽하다고 가정하지 않고 겹을 쌓는다. 도입 시에는 보고 전용 모드(<code>Content-Security-Policy-Report-Only</code>)로 무엇이 막힐지 관찰한 뒤 강제로 전환하는 것이 정석이다.
+핵심 태도는 <strong>심층 방어</strong>(defense in depth)다: 한 겹이 완벽하다고 가정하지 않고 겹을 쌓는다.
+</p>
+<p>
+위 형태는 개념을 보여 주기엔 충분하지만, 허용한 출처 안에 스크립트를 되돌려 주는 엔드포인트(JSONP 등)나 구식 라이브러리가 하나라도 있으면 우회된다 — 호스트 허용 목록은 "그 출처에서 오는 것은 전부 신뢰한다"는 선언이라, 출처가 늘수록 목록을 안전하게 유지하기 어려워진다.
+</p>
+<p>
+최근에는(2020년대 중반 기준) 출처 대신 <strong>요청마다 서버가 만든 무작위 값(nonce)을 <code>&lt;script nonce="…"&gt;</code>에 붙이고 정책에 같은 값을 선언</strong>하는 방식이 권장된다 — 주입된 스크립트는 그 값을 알 수 없으므로 실행되지 않는다. 함께 쓰는 <code>'strict-dynamic'</code>은 "nonce를 받은 스크립트가 동적으로 로드한 스크립트도 신뢰"라는 뜻으로, 허용 목록을 유지하는 부담을 없앤다.
+</p>
+<pre><code>Content-Security-Policy: script-src 'nonce-r4nd0m' 'strict-dynamic'; object-src 'none'; base-uri 'none'</code></pre>
+<blockquote class="warn">
+<p><code>'unsafe-inline'</code>을 <code>script-src</code>에 넣는 순간 CSP가 막으려던 문(인라인 실행)이 도로 열린다. 구식 브라우저 호환용 대체값으로만, 그것도 nonce와 함께 둘 때만 무해하다 — nonce를 이해하는 브라우저는 <code>'unsafe-inline'</code>을 무시하기 때문이다.</p>
+</blockquote>
+<p>
+어느 형태든 도입 시에는 보고 전용 모드(<code>Content-Security-Policy-Report-Only</code>)로 무엇이 막힐지 관찰한 뒤 강제로 전환하는 것이 정석이다.
 </p>
 
 <h2>5. 흔히 헷갈리는 지점</h2>
@@ -132,57 +150,175 @@
 <h2>★ 6. 언어별 대조</h2>
 <p>
 "데이터의 코드 승격"은 브라우저만의 문제가 아니다. 각 언어 생태계에는 저마다의 승격 표면과, 그것을 막는 표준 관용구가 있다 — XSS 방어에서 배운 원리(맥락별 무력화, 코드와 데이터의 분리)가 그대로 반복된다.
+다만 언어마다 <strong>"기본 방어가 어디에 놓여 있고, 그것을 끄는 스위치가 무엇인가"</strong>가 다르다. 본문이 브라우저를 축으로 봤다면, 여기서는 그 축을 네 언어의 런타임 위로 옮겨 본다.
 </p>
 <table>
-  <tr><th>언어/환경</th><th>대표 승격 표면</th><th>표준 방어</th></tr>
-  <tr><td>Java(서버 템플릿)</td><td>JSP에 값 직접 출력</td><td>JSTL <code>&lt;c:out&gt;</code>·템플릿 엔진의 자동 이스케이프</td></tr>
-  <tr><td>JS·TS(브라우저)</td><td><code>innerHTML</code>·<code>v-html</code>·<code>eval</code></td><td><code>textContent</code>·기본 바인딩·CSP</td></tr>
-  <tr><td>Python</td><td>템플릿 수동 조립·<code>eval</code>류</td><td>Jinja2 자동 이스케이프·리터럴 파서(아래 심화)</td></tr>
-  <tr><td>C++</td><td>포맷 문자열·셸 명령 조립</td><td>포맷 인자 분리·<code>exec</code>류 인자 배열(아래 심화)</td></tr>
+  <tr><th>언어/환경</th><th>대표 승격 표면(싱크)</th><th>기본 방어가 놓인 곳</th><th>방어를 끄는 스위치</th></tr>
+  <tr><td>Java(서버 템플릿)</td><td>JSP <code>${…}</code> 직접 출력, 템플릿의 비이스케이프 출력</td><td>템플릿 엔진(Thymeleaf <code>th:text</code>, JSTL <code>&lt;c:out&gt;</code>)·CSP 헤더 설정</td><td><code>th:utext</code>·JSP 표현식 원문 출력</td></tr>
+  <tr><td>JS·TS(브라우저)</td><td><code>innerHTML</code>·<code>insertAdjacentHTML</code>·<code>href="javascript:"</code>·<code>eval</code></td><td>DOM 트리 API(<code>textContent</code>)·프레임워크 바인딩·Trusted Types</td><td><code>v-html</code>·<code>dangerouslySetInnerHTML</code></td></tr>
+  <tr><td>Python</td><td>템플릿 수동 조립·<code>eval</code>류</td><td>Jinja2 자동 이스케이프·리터럴 파서(아래 심화)</td><td><code>|safe</code>·<code>Markup()</code>·autoescape 꺼진 환경</td></tr>
+  <tr><td>C++</td><td>포맷 문자열·셸 명령 조립</td><td>포맷/인자 분리·<code>exec</code>류 인자 배열·컴파일 타임 검사(아래 심화)</td><td>런타임 포맷 문자열(<code>vformat</code>)·<code>system()</code></td></tr>
 </table>
 
-<h3>6.1 Python — eval의 유혹과 "코드가 아닌 파서"</h3>
+<h3>6.1 Java — 서버가 HTML을 만드는 순간의 출력 인코딩</h3>
+<p>
+Java 서버 렌더링에서 승격 표면은 "템플릿이 값을 문자열로 이어 붙이는 지점"이다. JVM 자체는 <code>String</code>을 단 한 종류만 안다 — 이스케이프된 문자열과 사용자 원문은 런타임에서 구분되지 않으므로, 방어의 규율은 전적으로 <strong>템플릿 엔진이 출력 시점에 무엇을 기본으로 하느냐</strong>에 달려 있다.
+이 기본값이 엔진마다 다르다는 것이 Java 특유의 함정이다.
+</p>
+<pre><code>&lt;%-- JSP: 표현 언어(EL — ${…}로 값을 꺼내 쓰는 템플릿 문법)는 기본적으로 이스케이프하지 않는다 --%&gt;
+&lt;p&gt;안녕하세요, ${param.name}님&lt;/p&gt;                 &lt;%-- 승격: 원문 그대로 출력 --%&gt;
+&lt;p&gt;안녕하세요, &lt;c:out value="${param.name}"/&gt;님&lt;/p&gt;   &lt;%-- 안전: escapeXml 기본 true --%&gt;
+
+&lt;!-- Thymeleaf: 기본이 이스케이프, 끄는 쪽이 명시적 --&gt;
+&lt;p th:text="${user.name}"&gt;…&lt;/p&gt;     &lt;!-- 안전: HTML 맥락 이스케이프 --&gt;
+&lt;p th:utext="${post.body}"&gt;…&lt;/p&gt;    &lt;!-- 스위치: u = unescaped, v-html과 같은 선언 --&gt;
+&lt;a th:href="@{/u/{id}(id=${uid})}"&gt;  &lt;!-- 링크 식은 파라미터를 URL 인코딩하지만 스킴은 검사하지 않는다 --&gt;</code></pre>
+<p>
+JSP는 역사적 이유로 <code>${…}</code>가 원문을 내보내고 <code>&lt;c:out&gt;</code>이 이스케이프를 <em>추가</em>하는 구조라 "안전이 옵션"이다. 반면 Thymeleaf처럼 현대 엔진은 <code>th:text</code>가 기본 이스케이프이고 <code>th:utext</code>가 끄는 스위치라 "위험이 옵션"이다.
+같은 언어 안에서도 <strong>기본값의 방향이 반대</strong>이므로, 팀이 어느 엔진을 쓰든 "이 엔진의 기본은 어느 쪽인가"를 먼저 확인하는 것이 Java 서버 XSS 방어의 첫 단계다.
+또 하나, 속성 맥락은 별개다 — <code>th:href</code>의 링크 식은 파라미터를 URL 인코딩해 주지만, 사용자가 통째로 넘긴 URL의 <code>javascript:</code> 스킴까지 걸러 주지는 않으므로 스킴 허용 목록은 애플리케이션 코드의 몫이다.
+</p>
+<p>
+2차 방어인 CSP는 Java에서 "헤더를 누가 붙이느냐"의 문제가 된다. Spring Security는 기본으로 여러 보안 헤더를 붙이지만 <strong>CSP는 기본 포함이 아니다</strong> — 명시적으로 선언해야 하며, 헤더 DSL이 보고 전용 모드까지 같이 제공한다.
+</p>
+<pre><code>// Spring Security 헤더 DSL — CSP는 직접 켜야 한다
+http.headers(headers -&gt; headers
+    .contentSecurityPolicy(csp -&gt; csp
+        .policyDirectives("script-src 'self'; object-src 'none'; base-uri 'self'")
+        // 'self' 대신 nonce 기반이 권장 — nonce는 요청마다 생성해 템플릿과 헤더에 같이 넣어야 하므로 필터/인터셉터가 필요(4절)
+        .reportOnly()      // 도입기: 관찰만, 강제 전환 시 이 줄 제거
+    )
+);</code></pre>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> JVM에는 "안전한 문자열"이라는 타입이 없지만 명목적 타입 시스템(이름이 다르면 다른 타입)이 있어, <code>SafeHtml</code> 같은 래퍼 클래스를 만들면 "이스케이프를 거친 값만 이 타입이 된다"는 규율을 컴파일러가 강제할 수 있다. 출력 인코더 라이브러리들이 반환 타입을 이렇게 구분하는 이유이며, 아래 JS·TS 절의 브랜드 타입과 같은 발상이다.</p>
+</blockquote>
+
+<h3>6.2 JS·TS — 싱크가 곧 파서: DOM API 두 갈래와 그 위의 방어층</h3>
+<p>
+JS·TS는 이 문서의 본진이다. 브라우저 안에서 "데이터가 코드로 승격되는 지점"에는 이름이 있다 — <strong>싱크</strong>(sink — 문자열을 받아 HTML·URL·스크립트로 <em>해석</em>하는 API). 반대편에 사용자 유래 문자열이 들어오는 <strong>소스</strong>(source — <code>location.hash</code>·<code>location.search</code>·<code>document.referrer</code>·<code>postMessage</code> 데이터 등)가 있고, 소스에서 싱크까지 이스케이프 없이 흐르면 본문 2절의 DOM 기반 XSS가 된다.
+</p>
+<div class="flow">소스                        경로                          싱크(해석기 호출)
+location.hash ─────────┐                          ┌─ innerHTML / outerHTML / insertAdjacentHTML  → HTML 파서
+location.search ───────┼─ 문자열 그대로 ─────────┼─ a.href = "javascript:…"                      → URL 스킴 해석
+postMessage 데이터 ────┘                          └─ eval / new Function / setTimeout("…")        → JS 파서
+
+                       ┌───────────────────────────────────────────────────────────────┐
+                       │ textContent / createElement + append / setAttribute("alt", …) │  → 이스케이프 없이 안전한 갈래: 트리에 직접 삽입, 파서 미호출
+                       └───────────────────────────────────────────────────────────────┘</div>
+<p>
+핵심은 DOM API가 <strong>두 갈래</strong>라는 점이다. <code>innerHTML</code> 대입은 그 자리에서 HTML 파서를 동기적으로 호출한다 — 문자열은 마크업으로 해석된다. 반면 <code>textContent</code>·<code>createElement</code>·<code>append</code>는 파서를 거치지 않고 트리 노드를 직접 만든다. 이 갈래에서는 이스케이프가 "안 필요한" 것이 아니라 <em>개념 자체가 없다</em> — 애초에 해석기를 부르지 않기 때문이다.
+</p>
+<pre><code>const q = new URLSearchParams(location.search).get("q") ?? "";
+
+el.innerHTML = `검색어: ${q}`;             // 승격: HTML 파서 호출 — q = '&lt;img src=x onerror="…"&gt;'
+el.textContent = `검색어: ${q}`;           // 안전: 텍스트 노드 — 파서 미호출
+
+link.href = q;                             // 승격: "javascript:" 스킴이면 클릭 시 실행
+link.href = /^https?:\/\//.test(q) ? q : "#";  // 안전: 스킴 허용 목록
+
+el.innerHTML = "&lt;script&gt;alert(1)&lt;/script&gt;";   // 실행 안 됨(HTML 명세) — 그러나
+el.innerHTML = "&lt;img src=x onerror=…&gt;";        // 이벤트 속성은 실행됨: "script 태그는 안 도니 안전"은 오해</code></pre>
+<p>
+런타임의 함정 하나를 짚자. HTML 명세상 <code>innerHTML</code>로 삽입된 <code>&lt;script&gt;</code>는 실행되지 않는다 — 여기서 "그러니 안전하다"는 오해가 나오지만, <code>onerror</code> 같은 이벤트 속성과 <code>&lt;svg onload&gt;</code>류는 그대로 실행된다. 파서를 부르는 순간 어떤 문법이 코드가 될지는 브라우저가 결정하며, 개발자가 그 목록을 외워서 막는 방식은 실패한다.
+</p>
+<p>
+프레임워크는 이 두 갈래를 기본값으로 정리해 준다. Vue의 <code>{{ }}</code>·<code>v-bind</code>, React의 JSX 자식과 속성은 이스케이프된 텍스트/속성으로 삽입되고, <code>v-html</code>·<code>dangerouslySetInnerHTML</code>이 파서 갈래로 넘어가는 명시적 스위치다.
+다만 프레임워크의 경계는 <strong>HTML 맥락까지</strong>다 — <code>:href</code>·<code>href={url}</code>에 바인딩된 값의 <code>javascript:</code> 스킴은 두 프레임워크 모두 자동으로 걸러 주지 않는다(경고를 내는 버전은 있으나 차단에 의존하지 말 것). 본문 3절의 "URL 맥락은 스킴 자체가 승격 문자"가 프레임워크 안에서도 그대로 남는 지점이다.
+</p>
+<p>
+그 위에 브라우저 수준의 방어층이 있다. <strong>Trusted Types</strong>는 CSP 지시어 하나로 "문자열은 싱크에 못 들어간다"를 강제한다 — 등록된 정책이 만든 <code>TrustedHTML</code> 객체만 <code>innerHTML</code>류가 받고, 평범한 문자열 대입은 예외를 던진다. 즉 "어딘가에서 이스케이프를 잊었다"는 사고를 <em>싱크에서 런타임 오류로</em> 바꾸는 장치이며, 새니타이저는 이 정책 안에 자리 잡는다.
+2020년대 중반 기준 Chromium 계열에 이어 Firefox도 지원하고(2026년 초), 미지원 브라우저는 지시어를 무시하므로 점진 도입이 가능하다. 서식 허용이 필요한 경우의 새니타이저는 DOMPurify류 라이브러리가 표준 답이고, 브라우저 내장 <code>Element.setHTML()</code>(Sanitizer API)이 2026년 초부터 일부 브라우저에 실리기 시작했으나 아직 전 브라우저 기본이 아니므로 기능 감지 후 라이브러리로 대체하는 구성이 관례다. 주의할 점은 짝이 되는 <code>setHTMLUnsafe()</code>다 — 이름대로 새니타이즈를 <strong>하지 않는</strong> 갈래이며 더 일찍 널리 실렸으므로, 자동 완성에서 고른 메서드가 어느 쪽인지 확인해야 한다(라이브러리의 "검증 없는 decode" 함정과 같은 구조).
+</p>
+<pre><code>// CSP: Content-Security-Policy: require-trusted-types-for 'script'; trusted-types app
+const policy = trustedTypes.createPolicy("app", {
+  createHTML: (dirty) =&gt; DOMPurify.sanitize(dirty)   // 새니타이저는 정책 안에서만
+});
+el.innerHTML = policy.createHTML(userHtml);   // OK: TrustedHTML
+el.innerHTML = userHtml;                      // TypeError — 문자열은 싱크에 못 들어감</code></pre>
+<p>
+TS는 여기서 아무것도 보태지 못한다는 사실이 중요하다. 타입은 컴파일 시 지워지고(타입 소거 — 타입 정보가 실행 코드에 남지 않는 것), 무엇보다 소스에서 온 문자열과 이스케이프된 문자열이 <strong>둘 다 <code>string</code></strong>이라 구조적 타이핑상 구분이 없다.
+브랜드 타입(branded type — 실제 값은 같지만 이름표 필드를 덧붙여 컴파일러가 다른 타입으로 보게 하는 기법)으로 "안전한 문자열"을 흉내 낼 수는 있다.
+</p>
+<pre><code>type SafeHtml = string &amp; { readonly __brand: "SafeHtml" };
+const sanitize = (dirty: string): SafeHtml =&gt; DOMPurify.sanitize(dirty) as SafeHtml;
+function setHtml(el: Element, html: SafeHtml) { el.innerHTML = html; }
+
+setHtml(el, sanitize(userInput));   // OK
+setHtml(el, userInput);             // 컴파일 에러 — string은 SafeHtml이 아니다
+// 단, as 캐스트 한 줄이면 뚫리고 런타임엔 아무 검사도 남지 않는다</code></pre>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> 브랜드 타입은 컴파일 타임의 Trusted Types이고, Trusted Types는 런타임의 브랜드 타입이다. 전자는 <code>as</code> 한 줄로 우회되고 후자는 정책이 없으면 앱이 멈춘다 — 그래서 둘을 겹쳐 쓴다. "이스케이프를 어디서 했는가"를 코드 리뷰로 추적하는 대신, <strong>싱크에 들어갈 수 있는 값의 종류를 타입으로 좁히는 것</strong>이 JS·TS에서 XSS 방어를 구조화하는 방법이다.</p>
+</blockquote>
+
+<h3>6.3 Python — eval의 유혹, 그리고 "안전"을 값에 실어 나르는 객체 모델</h3>
 <p>
 Python에서 흔한 승격 사고는 "문자열을 파이썬답게 해석하고 싶을 때" 일어난다. 사용자가 보낸 <code>"[1, 2, 3]"</code>을 리스트로 만들려고 <code>eval</code>을 쓰는 순간, 그 입력칸은 파이썬 인터프리터의 입력창이 된다.
 </p>
 <pre><code>import ast
 
 user_input = "[1, 2, 3]"
-data = eval(user_input)              # 승격: "__import__('os').system('…')"도 실행됨
+data = eval(user_input)              # 승격: 임의 식이 인터프리터에서 실행됨
 data = ast.literal_eval(user_input)  # 안전: 리터럴(숫자·문자열·리스트…)만 파싱, 코드는 거부
 </code></pre>
 <p>
-<code>Python 관점의 통찰: literal_eval은 "표현력을 깎아서 안전을 사는" 설계다 — 리터럴 문법만 받는 파서라 애초에 실행할 코드 개념이 없다. 웹 템플릿의 Jinja2가 자동 이스케이프를 기본값으로 켜 두는 것과 같은 철학이다: 안전이 기본, 위험(|safe 필터)이 명시적 선언. Vue의 {{ }} 기본 / v-html 명시 구도와 정확히 평행하다.</code>
+웹 템플릿 쪽의 함정은 더 조용하다. Jinja2는 흔히 "자동 이스케이프가 기본"으로 알려져 있지만, 정확히는 <strong><code>Environment()</code>를 직접 만들면 기본이 꺼져 있다</strong>. 켜는 표준 방법인 <code>select_autoescape()</code>는 템플릿 <em>파일 확장자</em>(<code>.html</code>·<code>.htm</code>·<code>.xml</code>)를 보고 결정하므로, <code>.txt</code>나 <code>.j2</code> 같은 이름의 템플릿이나 문자열에서 바로 만든 <code>Template("…")</code>은 이스케이프 없이 렌더링된다. Flask가 <code>render_template</code>에서 HTML 계열 확장자만 자동으로 켜 주는 것도 같은 규칙의 결과다 — "프레임워크가 해 준다"는 믿음이 확장자 하나에 걸려 있다.
+</p>
+<pre><code>from jinja2 import Environment, FileSystemLoader, select_autoescape
+from markupsafe import Markup, escape
+
+env = Environment(loader=FileSystemLoader("templates"))            # autoescape 기본 False
+env = Environment(loader=FileSystemLoader("templates"),
+                  autoescape=select_autoescape())                  # .html/.htm/.xml만 켜짐
+env = Environment(loader=FileSystemLoader("templates"), autoescape=True)  # 확장자 무관 항상
+
+# Markup: "이미 안전한 HTML"임을 값 자체에 표식
+Markup("&lt;b&gt;{}&lt;/b&gt;").format(user_name)   # 안전: 인자는 이스케이프되어 들어감
+Markup(f"&lt;b&gt;{user_name}&lt;/b&gt;")           # 스위치: 완성된 문자열에 표식만 붙임 — |safe와 동일한 위험
+</code></pre>
+<p>
+여기서 Python 객체 모델이 드러난다. <code>Markup</code>은 <code>str</code>의 서브클래스로, "이 값은 이스케이프를 마쳤다"는 사실을 <strong>런타임 값의 타입에 실어</strong> 나른다. 템플릿 엔진은 출력 시점에 <code>__html__()</code> 메서드가 있는 객체를 신뢰된 마크업으로 취급하는데, 이것은 덕 타이핑 — 클래스 이름이 아니라 "그 메서드를 갖고 있는가"로 판단 — 이 보안 규약으로 쓰인 사례다.
+그래서 <code>Markup + 일반 str</code>은 일반 쪽을 자동 이스케이프해 합치고, 템플릿의 <code>|safe</code> 필터와 <code>Markup()</code> 생성자는 같은 스위치의 두 얼굴이 된다.
+</p>
+<p>
+<code>Python 관점의 통찰: literal_eval은 "표현력을 깎아서 안전을 사는" 설계다 — 리터럴 문법만 받는 파서라 애초에 실행할 코드 개념이 없다. 템플릿 쪽도 같은 철학이지만 방향이 하나 더 있다: TS가 컴파일 후 잃어버리는 "안전한 문자열" 구분을 Python은 Markup이라는 런타임 타입으로 끝까지 들고 간다. 대신 그 표식은 Markup()에 무엇을 넣느냐에 전적으로 의존하므로, 안전이 기본·위험이 명시라는 구도(Vue의 {{ }} / v-html)는 유지되되 "명시적 위험"의 자리가 |safe 하나가 아니라 Markup 생성자와 autoescape 설정까지 셋이다.</code>
 </p>
 
-<h3>6.2 C++ — 포맷 문자열과 셸: 가장 오래된 승격들</h3>
+<h3>6.4 C++ — 포맷 문자열과 셸: 가장 오래된 승격, 그리고 컴파일 타임 봉쇄</h3>
 <p>
-C 계열의 고전 승격이 포맷 문자열 취약점이다. <code>printf(user_input)</code>처럼 사용자 문자열을 포맷 자리에 직접 넣으면, 입력 속 <code>%s</code>·<code>%n</code> 같은 지시자가 <strong>코드로 해석</strong>되어 스택 읽기·메모리 쓰기까지 이어진다. 셸 명령 조립(<code>system("cmd " + input)</code>)도 같은 구조 — 입력 속 <code>;</code>가 명령 구분자로 승격된다.
+C 계열의 고전 승격이 포맷 문자열 취약점이다. <code>printf(user_input)</code>처럼 사용자 문자열을 포맷 자리에 직접 넣으면, 입력 속 <code>%s</code>·<code>%n</code> 같은 지시자가 <strong>코드로 해석</strong>되어 스택 읽기·메모리 쓰기까지 이어진다 — <code>%n</code>은 "지금까지 출력한 글자 수를 다음 인자가 가리키는 주소에 써라"는 지시자라, 인자가 없으면 스택에 우연히 놓인 값을 주소로 삼는다. 메모리 안전이 언어에 없기에 문자열 해석 오류가 곧 메모리 훼손이 되는 것이 C++ 특유의 증폭이다.
+셸 명령 조립(<code>system("cmd " + input)</code>)도 같은 구조 — 입력 속 <code>;</code>가 명령 구분자로 승격된다(인자 배열로 나누는 예제는 <a href="S3 인젝션 방어.html">S3</a> 6.4).
 </p>
 <pre><code>// 취약: 입력이 "포맷 언어"로 해석됨
-printf(user_input);                    // 입력에 %n이 있으면 메모리 쓰기
+printf(user_input);                    // 입력에 %n이 있으면 메모리 쓰기 (-Wformat-security가 경고)
 // 안전: 포맷(코드)과 값(데이터)을 분리
 printf("%s", user_input);
 
-// 취약: 입력이 "셸 언어"로 해석됨
-system(("ping " + host).c_str());      // host = "8.8.8.8; rm -rf /"
-// 안전: 인자 배열로 넘겨 셸 해석 자체를 생략 (execvp 계열)
-</code></pre>
+// 셸 명령 조립(system)도 같은 구조 — 인자 배열(execvp)로 나누는 예제는 S3 6.4 참조</code></pre>
 <p>
-<code>C++ 관점의 통찰: 안전한 API의 공통 형태는 "코드 채널과 데이터 채널의 분리"다 — printf의 포맷/인자 분리, execvp의 명령/인자 배열, DB의 파라미터 바인딩, 그리고 프론트의 템플릿/바인딩 분리까지 전부 같은 해법의 변주다. 인젝션 방어를 개별 암기가 아니라 이 한 문장으로 기억하는 편이 오래간다.</code>
+현대 C++는 이 문제를 <strong>컴파일 타임으로 끌어올렸다</strong>. C++20 <code>std::format</code>의 포맷 문자열 매개변수는 컴파일 시점에 평가되어야 하는 타입(<code>format_string</code>)이라, 런타임 문자열을 포맷 자리에 넣으면 아예 컴파일되지 않는다. 포맷 "언어"는 리터럴에만 존재할 수 있고, 정말 런타임 포맷이 필요하면 <code>std::vformat</code>이라는 별도 이름을 써야 한다 — 위험한 경로에 다른 이름을 붙여 명시적 스위치로 만든 셈이다.
 </p>
+<pre><code>#include &lt;format&gt;
 
-<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
+std::string s1 = std::format("{}", user_input);   // 안전: 포맷은 리터럴, 값은 인자
+std::string s2 = std::format(user_input);         // 컴파일 에러 — 런타임 문자열은 포맷이 될 수 없다
+std::string s3 = std::vformat(user_input, std::make_format_args());  // 명시적 스위치 (2020년대 중반 기준 C++20 DR 반영 컴파일러)
+
+// "안전한 문자열" 타입: 암시 변환을 막은 래퍼 — 런타임 비용 0
+struct SafeHtml { std::string v; explicit SafeHtml(std::string s) : v(std::move(s)) {} };
+SafeHtml escape_html(std::string_view raw);      // 유일한 생산 경로
+void write_body(SafeHtml html);                  // std::string을 넘기면 컴파일 에러</code></pre>
 <p>
-Java 서버 렌더링에서는 "표현식으로 값 직접 출력"이 위험 표면이고 <code>&lt;c:out&gt;</code>·현대 템플릿 엔진의 자동 이스케이프가 답이다.
-JS·TS는 이 문서의 본문 그 자체 — 덧붙이면, 프레임워크 없는 바닐라 DOM 조작에서 <code>textContent</code> vs <code>innerHTML</code>의 선택이 곧 이스케이프 여부의 선택이다.
+HTML 출력 자체에 관해서는 C++가 특이한 위치에 있다. 표준 라이브러리에 HTML 이스케이프 함수가 없어 서버·임베디드 코드가 직접 짜거나 라이브러리를 들이는데, 직접 짤 때 흔한 실수가 본문 3절의 "맥락별 승격 문자" 목록을 HTML 본문 기준으로만 만드는 것이다(속성 맥락의 따옴표 누락). 대신 명목적 타입과 <code>explicit</code> 생성자로 위 <code>SafeHtml</code>처럼 "생산 경로가 하나뿐인 타입"을 만들면, TS의 브랜드 타입과 달리 캐스트 없이는 우회할 수 없고 Python의 <code>Markup</code>과 달리 런타임 객체 비용도 없다 — 타입 소거가 아니라 <strong>타입은 컴파일러가, 값은 그냥 문자열이</strong> 맡는 분업이다.
+</p>
+<p>
+<code>C++ 관점의 통찰: 안전한 API의 공통 형태는 "코드 채널과 데이터 채널의 분리"다 — printf의 포맷/인자 분리, execvp의 명령/인자 배열, DB의 파라미터 바인딩, 그리고 프론트의 템플릿/바인딩 분리까지 전부 같은 해법의 변주다. C++20 std::format은 여기서 한 걸음 더 나가 그 분리를 컴파일러가 강제한다: 코드 채널(포맷)은 상수여야 하고 데이터 채널(인자)만 런타임 값을 받는다. 인젝션 방어를 개별 암기가 아니라 이 한 문장으로 기억하는 편이 오래간다 — 그리고 가능하다면 그 문장을 타입으로 적어 컴파일러에게 넘긴다.</code>
 </p>
 
 <h2>7. 함께 알면 좋은 것</h2>
 <ul>
   <li><strong>인젝션의 형제들</strong> — SQL 인젝션·명령 인젝션은 해석기만 다른 같은 병. 파라미터 바인딩이 그쪽의 "이스케이프"다.</li>
-  <li><strong>HttpOnly·Secure 쿠키</strong> — 스크립트에서 쿠키 접근을 차단해, XSS가 성공해도 세션 탈취를 어렵게 하는 완화층.</li>
-  <li><strong>Trusted Types</strong> — <code>innerHTML</code>류 싱크에 검증된 타입만 들어가도록 브라우저가 강제하는 최신 방어(DOM XSS 겨냥).</li>
+  <li><strong>HttpOnly·Secure·SameSite 쿠키와 <code>__Host-</code> 접두</strong> — 스크립트의 쿠키 접근 차단(XSS 완화), 교차 사이트 자동 전송 제한(CSRF 완화), 접두로 Secure·<code>Path=/</code>·Domain 없음을 브라우저가 강제. 보관 위치 판단은 <a href="S2 토큰 기반 인증 — JWT vs 세션.html">S2</a> 6절.</li>
+  <li><strong>하위 리소스 무결성(Subresource Integrity, SRI)</strong> — CDN에서 받는 스크립트 태그에 해시(<code>integrity=</code>)를 붙여, 허용한 출처가 변조돼도 실행을 거부한다. CSP의 출처 허용 목록이 못 막는 "허용된 출처의 내용 변조"를 막는 층.</li>
   <li><strong>새니타이저 라이브러리</strong> — 서식 허용이 필요할 때의 표준 답. 직접 구현 대신 검증된 것을 쓴다.</li>
   <li><strong>CSP 보고 모드 운영</strong> — 차단 전 관찰 기간을 두는 도입 전략과 위반 리포트 수집.</li>
 </ul>
@@ -201,6 +337,7 @@ JS·TS는 이 문서의 본문 그 자체 — 덧붙이면, 프레임워크 없�
 <ul>
   <li><a href="S3 인젝션 방어.html">S3 인젝션 방어.html</a> — 같은 원리의 서버판: SQL 인젝션과 파라미터 바인딩</li>
   <li><a href="S2 토큰 기반 인증 — JWT vs 세션.html">S2 토큰 기반 인증 — JWT vs 세션.html</a> — XSS가 노리는 물건(세션·토큰)의 구조와 보관 전략</li>
+  <li><a href="S10 인젝션 확장 — 해석기별 안전 API.html">S10 인젝션 확장 — 해석기별 안전 API.html</a> — 같은 원리의 확장판: 바인딩이 없는 해석기(문서 DB·셸 옵션·LDAP/XPath)와 안전 API 판단 사다리</li>
 </ul>
 
 </body>
