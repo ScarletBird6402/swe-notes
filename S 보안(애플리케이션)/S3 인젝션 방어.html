@@ -65,9 +65,9 @@
   <li>모든 인젝션 방어의 한 문장: <strong>코드 채널과 데이터 채널을 분리하라</strong>. 분리가 불가능한 자리에서만 검증으로 값을 통제하라.</li>
 </ul>
 
-<h2>1. 문제의 뿌리 — 데이터가 코드로 승격될 때</h2>
+<h2>1. 같은 병, 다른 해석기 — S1의 명제를 서버로 옮기면</h2>
 <p>
-<a href="S1 프론트엔드 보안 기초.html">S1</a>에서 세운 명제를 그대로 이어받는다: 프로그램이 <strong>명령과 데이터를 같은 문자열에 섞어</strong> 해석기에 넘기면, 해석기는 어디까지가 명령이고 어디부터가 데이터인지 알 수 없다. 공격자는 데이터 자리에 명령의 문법을 밀어 넣어 그 경계를 무너뜨린다.
+<a href="S1 프론트엔드 보안 기초.html">S1</a>의 명제 하나로 시작한다 — 명령과 데이터를 같은 문자열에 섞어 해석기에 넘기면, 해석기는 경계를 모르고 공격자는 데이터 자리에 명령 문법을 밀어 넣는다.
 </p>
 <p>
 XSS에서 해석기는 브라우저였다. 백엔드로 내려오면 해석기가 바뀐다 — 가장 흔한 것이 <strong>데이터베이스</strong>이고, 그때 이 문제를 SQL 인젝션이라 부른다. 셸이면 명령 인젝션, LDAP이면 LDAP 인젝션 — 이름만 다를 뿐 <strong>구조는 동일하다</strong>.
@@ -76,7 +76,7 @@ XSS에서 해석기는 브라우저였다. 백엔드로 내려오면 해석기�
 공격자 입력:   ' OR '1'='1
 DB가 본 것:    SELECT * FROM users WHERE name = '' OR '1'='1'  ← 데이터가 "코드"로 승격</div>
 <p>
-따라서 인젝션 방어의 핵심 질문도 XSS와 같은 형태다: <strong>사용자 유래 문자열이 해석기에게 코드로 읽힐 수 있는 경로가 어디인가, 그 경로마다 승격을 어떻게 차단하는가.</strong> 이 문서는 그 해석기가 DB일 때(2~3절)와, 해석기가 아예 없이 값 자체가 결정이 될 때(4절)를 차례로 본다.
+따라서 이 문서의 질문은 S1과 같은 형태다: <strong>사용자 유래 문자열이 해석기에게 코드로 읽힐 수 있는 경로가 어디인가, 그 경로마다 승격을 어떻게 차단하는가.</strong> 이 문서는 그 해석기가 DB일 때(2~3절)와, 해석기가 아예 없이 값 자체가 결정이 될 때(4절)를 차례로 본다.
 </p>
 
 <h2>2. SQL 인젝션 해부 — 이어붙이기가 문을 연다</h2>
@@ -97,6 +97,9 @@ String sql = "SELECT * FROM users WHERE name = '" + input + "'";
 </table>
 <p>
 피해는 조회에 그치지 않는다 — 인증 우회, 데이터 탈취·변조·삭제, 때로는 DB 계정 권한을 통한 서버 장악까지 이어진다. 핵심은 <strong>"우리 입력칸은 짧으니 괜찮다"는 판단이 대개 틀린다</strong>는 것: 취약한 것은 입력의 길이가 아니라 <em>조립 방식</em>이다.
+</p>
+<p>
+최근 동향을 하나만 덧붙이면(2020년대 중반 기준), OWASP Top 10 2025년판에서 인젝션은 A05다 — 2021년판의 A03에서 두 계단 내려왔지만 여전히 상위이고, 가장 많은 취약점 유형(CWE)이 묶이는 범주로 남아 있다.
 </p>
 
 <h2>3. 방어 1 — 파라미터 바인딩: 채널을 나눈다</h2>
@@ -127,7 +130,7 @@ ps.setString(1, input);   // input = "' OR '1'='1" 여도 그냥 '이름 문자�
 바인딩은 "값이 코드로 새지 않게" 하는 방어다. 그런데 값이 <strong>해석기로 들어가지 않고, 그 값 자체가 프로그램의 결정</strong>이 되는 자리가 있다. 이런 곳엔 분리할 코드/데이터 경계가 없어서 바인딩이라는 개념이 성립하지 않는다 — <strong>값이 정책에 맞는지 검증하는 것</strong>이 유일한 방어다.
 </p>
 <p>
-입력 검증은 두 원칙이 핵심이다. 첫째, <strong>허용 목록(allowlist) 우선</strong> — "위험한 것을 막는다"(차단 목록)가 아니라 "허용한 것만 통과시킨다". 위험의 목록은 끝이 없지만 허용의 목록은 유한하다. 둘째, <strong>검증은 이스케이프·바인딩을 대체하지 않는다</strong> — 역할이 다르다(5절).
+입력 검증은 두 원칙이 핵심이다. 첫째, <strong>허용 목록 우선</strong> — "위험한 것을 막는다"(차단 목록)가 아니라 "허용한 것만 통과시킨다". 위험의 목록은 끝이 없지만 허용의 목록은 유한하다. 둘째, <strong>검증은 이스케이프·바인딩을 대체하지 않는다</strong> — 역할이 다르다(5절).
 </p>
 
 <h3>4.1 사례 — 오픈 리다이렉트: URL을 신뢰하면 벌어지는 일</h3>
@@ -156,25 +159,122 @@ ps.setString(1, input);   // input = "' OR '1'='1" 여도 그냥 '이름 문자�
 <ul>
   <li><strong>"입력 검증을 하니까 SQL 인젝션은 안전하다" — 검증과 바인딩은 역할이 다르다.</strong> 검증은 "이 값이 받아도 되는 형식인가"(이메일·길이·허용 목록), 바인딩은 "이 값이 SQL 문법으로 승격되지 않는가"다. 이름에 따옴표가 들어간 <em>정당한</em> 입력(<code>O'Brien</code>)도 있다 — 검증으로 막을 값이 아니라 바인딩으로 안전하게 넘길 값이다. 둘 다 한다. <a href="S1 프론트엔드 보안 기초.html">S1</a>의 "검증 ≠ 이스케이프"와 정확히 같은 구도.</li>
   <li><strong>"ORM을 쓰니까 자동으로 안전하다" — 대체로 맞지만 예외가 있다.</strong> ORM의 일반 조회는 내부적으로 바인딩한다. 그러나 <code>raw</code> 쿼리·문자열 조립 API에 값을 이어붙이면 바인딩이 사라진다. "ORM 사용"이 아니라 "<strong>값이 바인딩 채널로 가는가</strong>"가 판단 기준이다.</li>
-  <li><strong>차단 목록(blocklist) vs 허용 목록(allowlist).</strong> "위험 키워드(<code>DROP</code>, <code>--</code> 등)를 걸러낸다"는 접근은 우회의 무한 게임이다(대소문자·주석·인코딩 변형). 허용 목록이 원칙인 이유: 안전의 정의는 유한하지만 위험의 정의는 그렇지 않다.</li>
-  <li><strong>"프론트에서 검증했으니 됐다" — 보안 판단의 책임은 서버.</strong> 공격자는 브라우저를 거치지 않고 API를 직접 호출한다. 프론트 검증은 UX, 인젝션·리다이렉트 검증은 서버에서 반드시 다시 한다. (역시 <a href="S1 프론트엔드 보안 기초.html">S1</a>과 동일.)</li>
+  <li><strong>차단 목록(blocklist) vs 허용 목록.</strong> "위험 키워드(<code>DROP</code>, <code>--</code> 등)를 걸러낸다"는 접근은 우회의 무한 게임이다(대소문자·주석·인코딩 변형). 허용 목록이 원칙인 이유: 안전의 정의는 유한하지만 위험의 정의는 그렇지 않다.</li>
+  <li><strong>"프론트에서 검증했으니 됐다"</strong> — <a href="S1 프론트엔드 보안 기초.html">S1</a>과 같은 이유로 서버가 다시 한다. 공격자는 브라우저를 거치지 않는다.</li>
 </ul>
 
 <h2>★ 6. 언어별 대조</h2>
 <p>
-"데이터의 코드 승격"은 특정 DB 드라이버만의 문제가 아니다. 각 언어 생태계에는 저마다의 바인딩 관용구가 있고, 놓치기 쉬운 <strong>함정</strong>도 언어마다 다르다 — 그러나 원리(코드/데이터 채널 분리, 못 나누면 허용 목록)는 그대로 반복된다.
+5절의 판단 기준 — "값이 바인딩 채널로 가는가" — 는 네 언어에서 그대로 통하지만, <strong>채널이 조용히 닫히는 자리</strong>는 언어마다 다르다. Java는 바인딩을 누가(서버냐 드라이버냐) 수행하는지와 ORM이 걸러 주지 못하는 식별자 자리가, JS·TS는 드라이버마다 다른 자리표시자와 겉모습이 같은 두 종류의 템플릿 리터럴이, Python은 문자열 포맷과 똑같이 생긴 자리표시자가, C++은 해석기가 DB를 넘어 셸까지 확장되는 지점이 각각의 함정이다. 원리(코드/데이터 채널 분리, 못 나누면 허용 목록)는 반복되고, 그 원리가 <em>어떤 API 형태로 드러나는가</em>가 다르다.
 </p>
 <table>
-  <tr><th>언어/환경</th><th>대표 승격 표면</th><th>표준 방어</th></tr>
-  <tr><td>Java</td><td><code>Statement</code>에 문자열 조립·JPQL 문자열 연결</td><td><code>PreparedStatement</code>의 <code>?</code>·JPA 명명 파라미터(<code>:name</code>)</td></tr>
-  <tr><td>JS·TS</td><td>드라이버 쿼리에 템플릿 리터럴로 값 삽입</td><td><code>$1</code>/<code>?</code> 자리표시자·ORM의 파라미터 API(아래)</td></tr>
-  <tr><td>Python</td><td><code>%</code>·f-string으로 쿼리 조립</td><td>DB-API 자리표시자(<code>%s</code>/<code>?</code>) — 문자열 포맷이 아님(아래 심화)</td></tr>
-  <tr><td>C++</td><td>쿼리 문자열 조립·셸 명령 조립</td><td>prepared statement·<code>exec</code>류 인자 배열(아래 심화)</td></tr>
+  <tr><th>언어</th><th>바인딩 API(자리표시자)</th><th>채널이 조용히 닫히는 자리</th><th>그 언어만의 특이점</th></tr>
+  <tr>
+    <td>Java</td>
+    <td><code>PreparedStatement</code>의 <code>?</code>, JPA의 명명 파라미터 <code>:name</code></td>
+    <td><code>Statement</code> 문자열 조립, JPQL·네이티브 쿼리에 문자열 결합</td>
+    <td>데이터베이스 드라이버에 따라 "서버 측 prepare"가 아니라 "클라이언트 측 이스케이프 에뮬레이션"일 수 있다</td>
+  </tr>
+  <tr>
+    <td>JS·TS</td>
+    <td>드라이버별 <code>$1</code>(위치 지정)·<code>?</code>(순서), 태그드 템플릿 리터럴</td>
+    <td>일반 템플릿 리터럴로 값 삽입, JSON 객체가 그대로 쿼리 구조로 흘러감</td>
+    <td>타입 선언은 컴파일 시 지워져 문자열의 <em>출처</em>를 구분하지 못한다</td>
+  </tr>
+  <tr>
+    <td>Python</td>
+    <td>DB-API 자리표시자 — 드라이버마다 5종 중 하나(<code>%s</code>/<code>?</code>/<code>:name</code> …)</td>
+    <td><code>%</code> 연산자·f-string으로 쿼리를 <em>먼저</em> 완성</td>
+    <td><code>%s</code>가 문자열 포맷과 똑같이 생겼다 — 콤마 하나가 채널의 경계</td>
+  </tr>
+  <tr>
+    <td>C++</td>
+    <td><code>PQexecParams</code>·<code>mysql_stmt_bind_param</code>, <code>execvp</code>의 인자 배열</td>
+    <td><code>+</code>·<code>snprintf</code>로 쿼리·셸 명령 조립, <code>system()</code></td>
+    <td>채널 분리가 함수 시그니처(텍스트 + 값 배열)로 드러나며, 값 버퍼의 <em>수명</em>이 개발자 책임</td>
+  </tr>
 </table>
 
-<h3>6.1 Python — <code>%s</code>는 문자열 포맷이 아니다</h3>
+<h3>6.1 Java — 바인딩은 "누가 prepare하는가"까지 봐야 한다</h3>
 <p>
-Python에서 가장 흔한 승격 사고는 <strong>"placeholder를 문자열 포맷으로 착각"</strong>하는 데서 온다. DB-API의 자리표시자는 우연히 <code>%s</code>로 생겼지만, 이것은 파이썬의 <code>%</code> 포맷과 <strong>전혀 다른 것</strong>이다 — 드라이버에게 "값을 별도 채널로 바인딩하라"는 지시다.
+3절의 <code>PreparedStatement</code>가 안전한 이유를 프로토콜 수준에서 다시 보면, 두 단계가 <strong>서로 다른 패킷</strong>으로 오간다. 먼저 자리표시자만 있는 SQL 텍스트가 DB 서버로 가고, 서버가 그것을 파싱해 문장 핸들(statement handle — 서버가 확정한 쿼리 골격을 가리키는 번호표)을 돌려준다. 실행 시점에는 이 핸들과 함께 값이 <strong>타입·길이 정보를 붙인 바이너리 파라미터</strong>로 전송된다. 값이 SQL 텍스트와 합쳐지는 순간이 프로토콜 어디에도 없으므로, 값이 따옴표를 품고 있든 세미콜론을 품고 있든 문법으로 읽힐 통로가 원천적으로 없다.
+</p>
+<p>
+그런데 이 그림이 항상 성립하지는 않는다. 일부 데이터베이스 드라이버는 <code>PreparedStatement</code>라는 <em>같은 API</em>를 제공하면서도 내부에서는 <strong>클라이언트 측 에뮬레이션</strong>을 한다 — 드라이버가 값을 직접 이스케이프해 한 문장으로 합친 뒤 일반 쿼리로 보내는 방식이다. 대표적으로 MySQL용 드라이버는 2020년대 중반 기준으로도 서버 측 prepare가 기본 꺼짐이고 연결 옵션으로 켜야 한다. 에뮬레이션도 드라이버가 연결 문자셋을 알고 이스케이프하므로 손 이스케이프와는 달리 실용적으로 안전하지만, "바인딩 = 프로토콜 분리"라는 명제가 <em>API 이름만으로 보장되지는 않는다</em>는 점은 알아 둘 가치가 있다.
+</p>
+<div class="flow">서버 측 prepare (프로토콜 분리)
+  [1] "SELECT … WHERE name = ?"  ──텍스트 패킷──▶  서버 파싱·확정 → 문장 핸들
+  [2] 값 "O'Brien"               ──바이너리 파라미터 패킷──▶  핸들 실행
+      → 값이 SQL 텍스트와 합쳐지는 순간이 없다
+
+드라이버 측 에뮬레이션 (클라이언트 이스케이프)
+  [1] 드라이버가 값을 이스케이프해 한 문장으로 합침  "… name = 'O\'Brien'"
+  [2] 완성된 문장을 일반 쿼리로 전송
+      → 안전이 드라이버의 이스케이프 정확성(문자셋 인지)에 의존</div>
+<p>
+생태계 관행에서 더 흔한 함정은 ORM이다. JPA의 JPQL은 SQL이 아니지만 <strong>여전히 문자열</strong>이고, JPQL 파서라는 또 하나의 해석기가 있다. <code>createQuery</code>에 값을 이어붙이면 승격 통로가 그대로 다시 열리고, 네이티브 쿼리(<code>createNativeQuery</code>)로 내려가면 3절의 문제로 정확히 되돌아간다. ORM이 막아 주는 것은 <em>값 바인딩</em>이지 문자열 결합이 아니다 — 5절의 "ORM 사용이 아니라 값이 바인딩 채널로 가는가"가 여기서 코드로 보인다.
+</p>
+<pre><code>// 취약: JPQL도 문자열이다 — 이어붙이면 승격 통로가 다시 열린다
+List&lt;User&gt; r = em.createQuery(
+    "SELECT u FROM User u WHERE u.name = '" + name + "'", User.class).getResultList();
+
+// 안전: 명명 파라미터 — 골격은 상수, 값은 setParameter로 별도 전달
+List&lt;User&gt; r = em.createQuery(
+    "SELECT u FROM User u WHERE u.name = :name", User.class)
+    .setParameter("name", name).getResultList();
+
+// 바인딩이 안 되는 자리: 정렬 컬럼(식별자) → 허용 목록을 통과한 값만 조립
+static final Set&lt;String&gt; SORTABLE = Set.of("name", "created_at");
+if (!SORTABLE.contains(sortBy)) throw new IllegalArgumentException("sort");
+String jpql = "SELECT u FROM User u ORDER BY u." + sortBy;   // 통과한 값은 사실상 상수
+</code></pre>
+<p>
+ORM이 <em>못</em> 막는 것도 분명하다. 정렬 컬럼, 동적 테이블명, 조건에 넣을 컬럼 선택은 모두 식별자라 어떤 ORM에서도 바인딩 대상이 아니다. 화면에서 정렬 기준을 고르게 하는 흔한 요구에서 <code>"ORDER BY " + sortBy</code>가 나오는 이유이고, 이 자리의 유일한 방어는 4절의 허용 목록이다. Criteria API처럼 쿼리를 <strong>객체로 조립</strong>하는 API를 쓰면 식별자조차 메타모델 속성으로 고르게 되어 사용자 문자열이 쿼리 텍스트에 닿는 지점 자체가 사라진다 — 4.1의 "불투명 키로 받고 서버가 번역한다"와 같은 발상이다.
+</p>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰:</strong> JVM의 타입 시스템은 <code>String</code>과 "SQL 골격"을 구분하지 않는다. 그래서 <code>PreparedStatement</code>의 API 형태 자체 — SQL은 생성 시 한 번 넘기고 값은 <code>setString</code> 같은 별도 메서드로만 넣는다 — 가 채널 분리를 강제하는 장치다. 정적 분석 도구가 "상수가 아닌 문자열이 쿼리 API로 들어간다"를 경고하는 것도 같은 이유이며, 쿼리 문자열이 리터럴이 아닌 순간이 곧 점검이 필요한 순간이다.</p>
+</blockquote>
+
+<h3>6.2 JS·TS — 자리표시자는 드라이버마다 다르고, 타입은 출처를 모른다</h3>
+<p>
+JS 생태계에는 표준 DB 인터페이스가 없어서 자리표시자 표기가 <strong>드라이버마다 다르다</strong>. PostgreSQL용 드라이버는 <code>$1</code>·<code>$2</code>처럼 <em>위치를 지정</em>하는 표기(같은 값을 두 번 쓰면 <code>$1</code>을 두 번 적는다)이고, MySQL용 드라이버는 <code>?</code>를 등장 순서대로 값 배열에 대응시킨다. 후자에서는 같은 이름의 두 메서드가 다른 일을 하기도 한다 — 2020년대 중반 기준 대표 드라이버에서 <code>execute()</code>는 서버 측 prepare를, <code>query()</code>는 클라이언트 측 이스케이프 에뮬레이션을 수행한다(6.1의 구분이 메서드 이름에 나타난 셈이다).
+</p>
+<p>
+더 자주 벌어지는 사고는 <strong>템플릿 리터럴 오용</strong>이다. 백틱 문자열 안의 <code>${name}</code>은 JS 엔진이 <em>먼저</em> 평가해 완성된 문자열 하나를 만든다 — 드라이버는 이미 합쳐진 문자열을 받을 뿐이라 바인딩할 것이 남아 있지 않다. 반면 태그드 템플릿 리터럴(tagged template literal — 백틱 문자열 앞에 함수를 붙여, 엔진이 문자열을 합치는 대신 그 함수를 호출하게 하는 문법)은 태그 함수가 <strong>고정 문자열 조각 배열과 값 배열을 따로</strong> 받는다. 안전한 쿼리 라이브러리가 이 문법을 쓰는 이유는 바로 그 "따로"에 있다 — 조각은 골격이 되고 값은 자리표시자로 바뀐다. 겉모습은 한 글자(태그 유무)만 다르다.
+</p>
+<pre><code>// 취약: 일반 템플릿 리터럴 — JS 엔진이 먼저 문자열을 완성해 드라이버에 넘긴다
+await client.query(`SELECT * FROM users WHERE name = '${name}'`);
+
+// 안전: 드라이버 자리표시자 — 골격과 값 배열을 따로 넘긴다
+await client.query('SELECT * FROM users WHERE name = $1', [name]);   // 위치 지정($1)
+await conn.execute('SELECT * FROM users WHERE name = ?', [name]);    // 순서 기반(?), 서버 측 prepare
+
+// 안전: 태그드 템플릿 — 겉모습은 위의 취약 코드와 거의 같지만 동작이 다르다
+await sql`SELECT * FROM users WHERE name = ${name}`;
+// 엔진은 sql(["SELECT * FROM users WHERE name = ", ""], name) 으로 호출한다
+// → 태그 함수가 조각을 골격으로, 값을 $1로 바꿔 바인딩
+</code></pre>
+<p>
+JS·TS만의 또 다른 표면은 문자열이 아니라 <strong>객체</strong>다. 요청 본문은 JSON을 파싱한 객체이고, 문서형 DB의 쿼리 역시 객체다. 값 자리에 문자열이 올 거라 가정하고 <code>req.body.name</code>을 그대로 넣으면, 공격자는 문자열 대신 <code>{"$ne": ""}</code> 같은 <em>조건 객체</em>를 보낼 수 있고 그것이 쿼리 구조로 그대로 앉는다. 따옴표도 이스케이프도 등장하지 않는 구조 주입이며, 바인딩할 문자열 경계가 애초에 없다는 점에서 4절의 검증 영역이다 — 상세는 <a href="S10 인젝션 확장 — 해석기별 안전 API.html">S10</a> 2절에서 다루므로 여기서는 방어의 방향만 적는다: 값 자리에는 문자열만 오도록 <strong>타입을 못 박거나</strong> 경계에서 런타임 스키마 검증으로 구조 전체를 거른다.
+</p>
+<pre><code>// 구조 주입: req.body는 JSON을 파싱한 "객체"다 — 문자열이라 가정하면 뚫린다
+//   보낸 본문 { "name": { "$ne": "" } }  → 조건 객체가 값 자리에 그대로 앉는다
+users.findOne({ name: req.body.name });
+
+// 방어: 값 자리에는 문자열만 — 런타임에서 타입을 못 박는다(TS 타입은 여기서 아무 일도 하지 않는다)
+if (typeof req.body.name !== 'string') throw new Error('invalid input');
+users.findOne({ name: req.body.name });
+</code></pre>
+<p>
+마지막 줄의 괄호가 TS의 핵심 함정이다. TS의 타입은 컴파일 시 지워지는 타입 소거(type erasure — 타입 검사 뒤 타입 정보를 결과 JS에서 모두 제거하는 방식) 대상이라, <code>name: string</code>이라고 선언해도 런타임의 <code>req.body.name</code>이 객체인 것을 막지 못한다. 마찬가지로 <code>string</code> 타입은 그 문자열이 <em>상수 리터럴인지 사용자 입력인지</em>를 구분하지 못한다. 구분하고 싶다면 브랜드 타입(branded type — 구조가 같은 값을 구별하려고 이름표 속성을 덧붙인 타입)으로 "검증을 통과한 문자열"을 별도 타입으로 만들어 쿼리 함수가 그 타입만 받게 하는 식으로, 출처를 타입 체계에 <em>직접 새겨 넣어야</em> 한다.
+</p>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰:</strong> 이 언어에서 인젝션 방어는 "문자열을 어떻게 다루나"보다 "값이 어느 시점에 합쳐지나"의 문제다. 일반 템플릿 리터럴은 엔진 평가 시점에, 태그드 템플릿은 태그 함수 호출 시점에, 드라이버 자리표시자는 전송 시점에 합쳐진다 — 합치는 주체가 엔진이면 취약, 드라이버·라이브러리면 안전이다. 그리고 JSON과 객체의 경계가 없다는 편의성이 곧 구조 주입의 표면이므로, 경계에서의 런타임 검증은 선택이 아니라 타입 소거의 대가다.</p>
+</blockquote>
+
+<h3>6.3 Python — <code>%s</code>는 문자열 포맷이 아니다</h3>
+<p>
+Python에서 가장 흔한 승격 사고는 <strong>"자리표시자를 문자열 포맷으로 착각"</strong>하는 데서 온다. DB-API의 자리표시자는 우연히 <code>%s</code>로 생겼지만, 이것은 파이썬의 <code>%</code> 포맷과 <strong>전혀 다른 것</strong>이다 — 드라이버에게 "값을 별도 채널로 바인딩하라"는 지시다. 착각이 쉬운 데는 구조적 이유가 있다. DB-API는 라이브러리가 아니라 <em>명세</em>라서 자리표시자 표기가 드라이버마다 다르고(<code>paramstyle</code> 5종: <code>qmark</code>의 <code>?</code>, <code>numeric</code>의 <code>:1</code>, <code>named</code>의 <code>:name</code>, <code>format</code>의 <code>%s</code>, <code>pyformat</code>의 <code>%(name)s</code>), 그중 두 종류가 하필 파이썬 포맷 문법과 같은 모양을 골랐다. 각 드라이버 모듈의 <code>paramstyle</code> 속성이 어느 표기를 쓰는지 알려 준다.
 </p>
 <pre><code>name = request.args["name"]
 
@@ -183,37 +283,62 @@ cur.execute("SELECT * FROM users WHERE name = '%s'" % name)
 cur.execute(f"SELECT * FROM users WHERE name = '{name}'")
 
 # 안전: 드라이버에게 골격과 값을 따로 넘김 (따옴표도 드라이버가 처리)
-cur.execute("SELECT * FROM users WHERE name = %s", (name,))
+cur.execute("SELECT * FROM users WHERE name = %s", (name,))              # format  (PostgreSQL·MySQL용 드라이버)
+cur.execute("SELECT * FROM users WHERE name = ?", (name,))               # qmark   (sqlite3)
+cur.execute("SELECT * FROM users WHERE name = :name", {"name": name})    # named
+cur.execute("SELECT * FROM users WHERE name = %(name)s", {"name": name}) # pyformat
+print(db_module.paramstyle)   # 이 드라이버가 쓰는 표기를 알려 주는 DB-API 속성
+
+# 함정: 값을 튜플이 아닌 문자열로 넘기면, 문자열은 "문자들의 시퀀스"로 풀린다
+cur.execute("SELECT * FROM users WHERE name = ?", name)   # 글자 수만큼 바인딩 시도 → 개수 불일치 오류
 </code></pre>
 <p>
-<code>Python 관점의 통찰: 두 줄은 겉보기에 %s로 똑같지만 의미가 정반대다. % 연산자·f-string은 "파이썬이 지금 문자열을 합쳐라"이고, execute의 두 번째 인자로 넘기는 %s는 "드라이버가 나중에 바인딩하라"다. 콤마 하나(값을 두 번째 인자로 분리) 가 코드 채널과 데이터 채널을 가르는 경계다 — 이 경계 감각이 곧 바인딩의 본질이다.</code>
+f-string은 이 착각을 한 단계 더 감춘다. <code>f"… {name}"</code>은 <code>execute</code>가 호출되기도 전에 인터프리터가 평가를 끝낸 <em>보통 문자열</em>이라, <code>execute</code> 입장에서는 값이 있었다는 사실조차 남지 않는다. 마지막 줄의 함정도 파이썬 객체 모델에서 온다 — 문자열은 시퀀스이므로 <code>(name,)</code> 대신 <code>name</code>을 넘기면 드라이버는 글자 하나하나를 파라미터로 세려 든다. 다행히 이 실수는 조용히 뚫리는 대신 개수 불일치 오류로 드러난다. 드라이버가 서버 측 prepare를 하는지 클라이언트 측 이스케이프를 하는지도 드라이버마다 다르다(2020년대 중반 기준 PostgreSQL용 최신 세대 드라이버는 서버 측 바인딩이 기본이고, 이전 세대는 클라이언트 측 치환이었다) — 어느 쪽이든 <code>execute</code>의 <em>두 번째 인자로</em> 넘기는 한 개발자 코드에서는 채널이 분리돼 있다.
+</p>
+<p>
+<code>Python 관점의 통찰: 두 줄은 겉보기에 %s로 똑같지만 의미가 정반대다. % 연산자·f-string은 "인터프리터가 지금 문자열을 합쳐라"이고, execute의 두 번째 인자로 넘기는 %s는 "드라이버가 나중에 바인딩하라"다. 콤마 하나(값을 두 번째 인자로 분리)가 코드 채널과 데이터 채널을 가르는 경계다 — 동적 언어라 타입이 이 경계를 대신 지켜 주지 않으므로, "쿼리 문자열에 사용자 값이 들어간 채 execute에 도달하는가"를 눈으로 보는 이 경계 감각이 곧 바인딩의 본질이다.</code>
 </p>
 
-<h3>6.2 C++ · 그리고 "나눌 수 없는" 자리들</h3>
+<h3>6.4 C++ — 채널 분리가 함수 시그니처로 드러나는 언어, 그리고 "나눌 수 없는" 자리들</h3>
 <p>
-C 계열에서도 답은 prepared statement다(libpq의 <code>PQexecParams</code>, MySQL C API의 <code>mysql_stmt_bind_param</code> 등). 그런데 인젝션 원리가 가장 선명하게 드러나는 곳은 <strong>셸 명령 조립</strong>이다 — 해석기만 DB에서 셸로 바뀔 뿐 구조가 같다.
+C 계열에서도 답은 prepared statement다. 다만 이 언어에서는 채널 분리가 추상적 개념이 아니라 <strong>함수 시그니처에 그대로 보인다</strong>. libpq의 <code>PQexecParams</code>는 골격 텍스트와 값 포인터 배열(길이·형식 배열까지)을 <em>별도 인자</em>로 받고, MySQL C API의 <code>mysql_stmt_bind_param</code>은 값마다 버퍼 주소·타입·길이를 담은 구조체 배열을 받아 바이너리 프로토콜로 보낸다. 이 형태는 반대로 함정도 드러낸다 — 값을 <code>snprintf</code>로 골격에 찍어 넣는 것은 Python의 <code>%s</code>와 달리 진짜 문자열 포맷이므로 바인딩이 아니다. 시그니처가 "텍스트 하나"인 함수(<code>PQexec</code>, <code>mysql_query</code>)에 조립된 문자열을 넘기는 순간 채널은 닫힌다.
 </p>
-<pre><code>// 취약: 입력이 "셸 언어"로 해석됨
-std::string cmd = "ping " + host;
-system(cmd.c_str());               // host = "8.8.8.8; rm -rf /"  → ;가 명령 구분자로 승격
+<pre><code>// 취약: 진짜 포맷이다 — snprintf가 값을 골격에 찍어 넣어 문자열 하나로 만든다
+snprintf(buf, sizeof buf, "SELECT * FROM users WHERE name = '%s'", name.c_str());
+PQexec(conn, buf);
+
+// 안전: 함수 시그니처 자체가 골격(텍스트)과 값(배열)을 분리한다
+const char* params[] = { name.c_str() };
+PGresult* r = PQexecParams(conn,
+    "SELECT * FROM users WHERE name = $1",     // 골격: 상수 텍스트
+    1, nullptr, params, nullptr, nullptr, 0);  // 값: 별도 배열(길이·형식은 뒤의 인자로)
+</code></pre>
+<p>
+메모리·수명 관점의 함정이 여기 덧붙는다. <code>mysql_stmt_bind_param</code>류 API는 값을 <em>복사</em>하지 않고 <strong>버퍼의 주소</strong>를 기억했다가 실행 시점에 읽는다. 바인딩 뒤 원본 <code>std::string</code>이 소멸하거나 재할당되면 실행 시점에 댕글링 포인터를 읽게 되고, 이는 인젝션이 아니라 정의되지 않은 동작으로 나타난다. 위 코드의 <code>name.c_str()</code>도 <code>name</code>이 호출이 끝날 때까지 살아 있어야 유효하다 — 임시 객체의 <code>c_str()</code>을 배열에 담아 두면 같은 문제가 생긴다. 채널을 나누는 것은 API가 해 주지만, 나뉜 데이터 채널의 <em>수명</em>은 개발자 몫이다.
+</p>
+<p>
+그런데 인젝션 원리가 가장 선명하게 드러나는 곳은 <strong>셸 명령 조립</strong>이다 — 해석기만 DB에서 셸로 바뀔 뿐 구조가 같고, C++에서는 프로세스 실행 API가 손에 직접 잡히기 때문이다.
+</p>
+<pre><code>// 취약: 입력이 "셸 언어"로 해석됨 — ;가 명령 구분자로 승격
+std::string cmd = "ping -c 1 " + host;
+system(cmd.c_str());                           // host = "8.8.8.8; &lt;임의 명령&gt;" 이면 두 번째 명령이 실행된다
 
 // 안전: 인자 배열로 넘겨 셸 해석 자체를 생략 (execvp 계열)
-//        명령(코드)과 인자(데이터)를 배열로 분리 → 문법 해석 통로가 없음
+//        명령(코드)과 인자(데이터)가 배열 원소로 분리 → 문법 해석 통로가 없다
+const char* argv[] = { "ping", "-c", "1", host.c_str(), nullptr };
+execvp(argv[0], const_cast&lt;char* const*&gt;(argv));   // 같은 host 값은 그저 '이상한 호스트명' 하나
 </code></pre>
 <p>
-<code>C++ 관점의 통찰: printf의 포맷/인자 분리, execvp의 명령/인자 배열, DB의 파라미터 바인딩 — 셋 다 "코드 채널과 데이터 채널의 분리"라는 한 해법의 변주다(S1의 결론과 동일). 반대로, 나눌 채널이 없는 자리 — 정렬 컬럼 이름, 리다이렉트 목적지 URL — 에서는 분리가 불가능하므로 허용 목록으로 값을 좁힌다. "나눌 수 있으면 바인딩, 없으면 allowlist"가 인젝션 방어 전체를 관통하는 판단 규칙이다.</code>
+컴파일 타임 관점에서 C++이 줄 수 있는 것도 있다. 쿼리 골격을 받는 함수의 매개변수를 문자열 리터럴 참조(<code>const char (&amp;)[N]</code>)나 C++20의 <code>consteval</code> 검사로 제한하면, 런타임에 조립된 <code>std::string</code>은 <strong>컴파일 단계에서</strong> 거부된다 — 6.1에서 정적 분석 도구가 경고하던 "상수가 아닌 쿼리 문자열"을 타입 시스템이 직접 막는 셈이다. 물론 이것은 골격 자리에만 통하며, 정렬 컬럼처럼 사용자가 골라야 하는 식별자는 여전히 허용 목록으로 좁혀야 한다.
 </p>
-
-<h3>6.3 Java / JS·TS — 한 줄 요약</h3>
 <p>
-Java는 <code>Statement</code> 문자열 조립이 위험 표면이고 <code>PreparedStatement</code>·JPA 명명 파라미터가 답이다. 동적 정렬·검색 조건이 많아 문자열을 손대야 할 땐, <em>값</em>은 바인딩하고 <em>식별자</em>는 허용 목록으로 검증한다.
-JS·TS는 드라이버(예: <code>?</code>/<code>$1</code>)와 ORM이 파라미터화를 제공하지만, 템플릿 리터럴로 값을 쿼리 문자열에 끼워 넣는 순간 바인딩이 사라진다 — "raw 쿼리에 값을 이어붙이지 않는다"가 핵심 규율이다.
+<code>C++ 관점의 통찰: S1 6.4가 포맷 문자열에서 보인 "코드 채널/데이터 채널 분리"가 여기서는 DB 바인딩과 execvp 인자 배열로 나타난다. 단, 분리의 결과가 다시 문자열 하나로 합쳐져 해석기에 들어가면(snprintf로 만든 쿼리, 조립된 셸 명령) 그 분리는 무효다 — 합쳐지는 시점이 해석기 앞이냐 뒤냐가 전부다. 반대로, 나눌 채널이 없는 자리 — 정렬 컬럼 이름, 리다이렉트 목적지 URL — 에서는 분리가 불가능하므로 허용 목록으로 값을 좁힌다. "나눌 수 있으면 바인딩, 없으면 allowlist"가 인젝션 방어 전체를 관통하는 판단 규칙이다.</code>
 </p>
 
 <h2>7. 함께 알면 좋은 것</h2>
 <ul>
   <li><strong>인젝션의 형제들</strong> — 명령 인젝션·LDAP·XPath·NoSQL 인젝션은 해석기만 다른 같은 병. 각 해석기의 "바인딩"에 해당하는 안전 API를 찾는 것이 방어의 출발점이다. → <a href="S10 인젝션 확장 — 해석기별 안전 API.html">S10</a>에서 정면으로 다룬다.</li>
-  <li><strong>안전한 역직렬화</strong> — 신뢰할 수 없는 바이트를 객체로 되살리면 "데이터가 객체·코드로 승격"되는 또 다른 인젝션이 된다. <a href="C10 직렬화와 역직렬화.html">C10</a>에서 다루는 스키마·포맷 통제가 이 방어의 토대다.</li>
+  <li><strong>안전한 역직렬화</strong> — 신뢰할 수 없는 바이트를 객체로 되살리면 "데이터가 객체·코드로 승격"되는 또 다른 인젝션이 된다. <a href="../C 백엔드/C10 직렬화와 역직렬화.html">C10</a>에서 다루는 스키마·포맷 통제가 이 방어의 토대다.</li>
   <li><strong>최소 권한 원칙</strong> — DB 계정이 애초에 <code>DROP</code>·다른 스키마 접근 권한이 없다면, 바인딩이 뚫려도 피해 범위가 줄어든다(심층 방어).</li>
   <li><strong>저장 프로시저의 오해</strong> — 프로시저를 쓴다고 자동으로 안전하지 않다. 프로시저 <em>내부</em>에서 동적 SQL을 조립하면 같은 취약점이 그대로 재현된다.</li>
   <li><strong>오류 메시지 노출 관리</strong> — DB 오류를 그대로 화면에 내보내면 공격자에게 스키마 힌트를 준다. 사용자에겐 일반화된 메시지, 상세는 서버 로그로.</li>
@@ -221,8 +346,7 @@ JS·TS는 드라이버(예: <code>?</code>/<code>$1</code>)와 ORM이 파라미�
 
 <h2>8. 한 장 요약</h2>
 <ul>
-  <li>인젝션 = 사용자 유래 문자열이 해석기에게 코드로 승격되는 것. SQL 인젝션은 그 해석기가 DB인 경우 — XSS(<a href="S1 프론트엔드 보안 기초.html">S1</a>)와 같은 병이다.</li>
-  <li>진원지는 문자열 이어붙이기. 취약한 것은 입력 길이가 아니라 조립 방식이다.</li>
+  <li>인젝션 = 사용자 유래 문자열이 해석기에게 코드로 승격되는 것. SQL 인젝션은 그 해석기가 DB인 경우 — XSS(<a href="S1 프론트엔드 보안 기초.html">S1</a>)와 같은 병이다. 진원지는 문자열 이어붙이기 — 취약한 것은 입력 길이가 아니라 조립 방식이다.</li>
   <li>1차 방어는 파라미터 바인딩 — 쿼리 골격(코드)과 값(데이터)을 별도 채널로 분리한다. 수동 이스케이프는 실패 장르.</li>
   <li>2차 방어는 입력 검증 — 바인딩과 역할이 다르다. 값 자체가 결정인 자리(정렬 컬럼, 오픈 리다이렉트 목적지)에선 검증, 특히 허용 목록이 유일한 방어다.</li>
   <li>오픈 리다이렉트 방어: 스킴 허용 목록 + 자기 참조만 허용 + 가급적 불투명 키→서버 번역. 순진한 시작 문자열 비교는 우회된다.</li>
@@ -234,7 +358,7 @@ JS·TS는 드라이버(예: <code>?</code>/<code>$1</code>)와 ORM이 파라미�
 <ul>
   <li><a href="S1 프론트엔드 보안 기초.html">S1 프론트엔드 보안 기초.html</a> — 같은 원리의 브라우저판: XSS와 출력 이스케이프, "코드/데이터 채널 분리"의 출처</li>
   <li><a href="S10 인젝션 확장 — 해석기별 안전 API.html">S10 인젝션 확장 — 해석기별 안전 API.html</a> — 후속 문서: 바인딩이 없거나 불완전한 해석기들(문서 DB의 구조 주입·옵션 주입·LDAP/XPath)과 안전 API 판단 사다리</li>
-  <li><a href="C10 직렬화와 역직렬화.html">C10 직렬화와 역직렬화.html</a> — 안전한 역직렬화: 데이터가 객체로 승격되는 또 다른 인젝션 표면과 스키마·포맷 통제</li>
+  <li><a href="../C 백엔드/C10 직렬화와 역직렬화.html">C10 직렬화와 역직렬화.html</a> — 안전한 역직렬화: 데이터가 객체로 승격되는 또 다른 인젝션 표면과 스키마·포맷 통제</li>
 </ul>
 
 </body>
