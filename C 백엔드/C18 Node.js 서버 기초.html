@@ -253,37 +253,187 @@ app.get('/orders/:id', wrap(async (req, res) =&gt; {
 <h2>★ 7. 언어별 대조</h2>
 <p>
 "요청 전후를 감싸는 파이프라인"과 "핸들러의 에러를 누가 잡아 주는가"는 모든 서버 생태계의 공통 설계 문제다.
-특히 에러 자동 포획의 범위는 프레임워크마다 달라서, <strong>"내 프레임워크는 어디까지 잡아 주는가"를 계약으로 확인하는 습관</strong>이 언어를 불문한 교훈이다.
+그런데 두 번째 질문의 답은 언어마다 <strong>예외가 어떤 길로 돌아오는가</strong>에 따라 갈린다 — 호출 스택을 타고 되돌아오는 언어(Java·C++)와,
+스택이 끊긴 자리를 "값으로 실어 나르는 배관"(Promise·코루틴·future)이 대신하는 언어(JS·Python·C++의 비동기)는 기본 그물의 모양이 다르다.
+아래 표는 그 차이를 한눈에 놓고, 이어지는 절에서 언어마다 "어디까지 잡아 주고 어디서 새는가"를 내부 기제로 따라간다.
+<strong>"내 프레임워크는 어디까지 잡아 주는가"를 계약으로 확인하는 습관</strong>이 언어를 불문한 교훈이다.
 </p>
 <table>
-  <tr><th>언어</th><th>파이프라인 개념</th><th>핸들러 에러의 기본 처리</th><th>비고</th></tr>
+  <tr><th>언어</th><th>파이프라인 개념</th><th>핸들러 에러의 기본 처리</th><th>그물 밖으로 새는 지점</th></tr>
   <tr>
     <td>Java</td>
     <td>서블릿 필터 체인·Spring 인터셉터</td>
-    <td><code>@ControllerAdvice</code>/<code>@ExceptionHandler</code>가 동기·비동기 모두 중앙 포획</td>
-    <td>표 + 7.3 요약</td>
+    <td>요청당 스레드 — 예외가 호출 스택을 타고 <code>@ControllerAdvice</code>까지 되돌아온다</td>
+    <td>필터 안에서 던진 예외, <code>@Async void</code>로 던져 놓은 작업</td>
   </tr>
   <tr>
     <td>JS·TS</td>
     <td>Express/Koa 미들웨어</td>
-    <td>Express 4: async 미포획(본문 주제) / Express 5·Fastify: 자동 전달</td>
-    <td>표 + 7.3 요약</td>
+    <td>Express 4: 반환 Promise 무시(본문 주제) / Express 5·Fastify: 자동 전달</td>
+    <td>프레임워크가 지켜보지 않는 Promise 전부. TS 타입은 체인 순서를 보증하지 못한다</td>
   </tr>
   <tr>
     <td>Python</td>
     <td>WSGI/ASGI 미들웨어 (FastAPI·Django)</td>
-    <td>FastAPI는 async 핸들러의 예외를 자동으로 예외 핸들러에 전달</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>코루틴은 <code>await</code>해야만 실행되므로 프레임워크가 반드시 기다린다 → 예외 핸들러로 전달</td>
+    <td><code>create_task</code>로 던져 놓은 작업 — 경고만 남고 계속 돈다</td>
   </tr>
   <tr>
     <td>C++</td>
     <td>프레임워크 의존(Crow·Drogon 등) — 표준 없음</td>
-    <td>비동기 콜백 밖으로 새는 예외는 대개 <code>std::terminate</code> — 가장 가혹</td>
-    <td><strong>아래 심화 참조</strong></td>
+    <td>콜백 밖으로 새는 예외는 대개 <code>std::terminate</code> — 가장 가혹</td>
+    <td><code>std::future</code>에 실린 예외를 아무도 <code>get()</code>하지 않으면 경고조차 없이 소멸</td>
   </tr>
 </table>
 
-<h3>7.1 C++ — 비동기 경계를 넘는 예외는 프로그램을 죽인다</h3>
+<h3>7.1 Java — 요청당 스레드가 예외의 귀갓길을 지켜 준다</h3>
+<p>
+Java 서버(서블릿 컨테이너 + Spring MVC)의 기본 모델은 <strong>요청 하나에 스레드 하나</strong>다. 그 스레드가 필터 체인 → 디스패처 서블릿 → 인터셉터 → 컨트롤러를 <em>하나의 호출 스택 위에서</em> 차례로 부른다.
+그래서 컨트롤러가 던진 예외는 어디로도 사라지지 않고 스택을 거슬러 디스패처 서블릿까지 돌아오며, 거기서 <code>@ControllerAdvice</code>·<code>@ExceptionHandler</code>가 받아 응답으로 바꾼다.
+5.2절의 래퍼가 필요 없는 이유는 Spring이 특별히 친절해서가 아니라, <strong>스택이 끊기지 않는 실행 모델이라 예외의 기본 귀갓길이 살아 있기 때문</strong>이다.
+</p>
+<pre><code>// ① 필터 — 서블릿 필터 체인: chain.doFilter()가 Express의 next()에 해당
+@Component
+public class LoggingFilter extends OncePerRequestFilter {
+    @Override
+    protected void doFilterInternal(HttpServletRequest req, HttpServletResponse res,
+                                    FilterChain chain) throws ServletException, IOException {
+        log.info("{} {}", req.getMethod(), req.getRequestURI());
+        chain.doFilter(req, res);   // 안 부르면 요청이 여기서 멈춘다 — 2절의 함정과 동일
+    }
+}
+
+// ② 컨트롤러 — 그냥 던진다. 잡는 것은 프레임워크 계약
+@GetMapping("/orders/{id}")
+Order find(@PathVariable long id) {
+    return repo.findById(id).orElseThrow(() -&gt; new NotFoundException(id));
+}
+
+// ③ 중앙 포획 — 컨트롤러·인터셉터에서 난 예외는 전부 여기로 온다
+@RestControllerAdvice
+class ApiExceptionHandler {
+    @ExceptionHandler(NotFoundException.class)
+    ResponseEntity&lt;Map&lt;String, String&gt;&gt; notFound(NotFoundException e) {
+        return ResponseEntity.status(404).body(Map.of("error", "not found"));
+    }
+}
+
+// ④ 그물 밖 — 호출자는 이미 응답을 보냈고, 이 코드는 다른 스레드에서 돈다
+@Async
+public void sendReceipt(long orderId) {
+    mailer.send(orderId);   // 여기서 throw → AsyncUncaughtExceptionHandler에 로그만 남는다
+}</code></pre>
+<p>
+그물의 경계가 두 곳에서 드러난다. 첫째, <strong>필터는 디스패처 서블릿 <em>바깥</em>에 있다.</strong> 필터 체인은 서블릿 컨테이너가 돌리는 층이고 <code>@ControllerAdvice</code>는 디스패처 서블릿 안쪽의 장치라서,
+필터에서 던진 예외(인증 토큰 파싱 실패 등)는 그 그물에 걸리지 않고 컨테이너의 기본 에러 페이지로 떨어진다. 같은 "요청 전후 처리"라도 인터셉터(디스패처 안쪽)에서 던지면 잡히고 필터에서 던지면 안 잡히는 것은,
+Express에서 미들웨어와 라우트 핸들러가 <em>단일 파이프라인</em>인 것과 대비되는 Java 특유의 계층 구조다.
+둘째, <strong>스택을 벗어나는 순간 Java도 똑같이 샌다.</strong> <code>@Async</code>는 메서드를 별도 스레드 풀에 넘기는 프록시라서, 반환형이 <code>void</code>면 호출자는 결과를 받을 길이 없고 예외는 <code>AsyncUncaughtExceptionHandler</code>(기본 동작: 로그)에서 끝난다 — 프로세스는 살아 있으니 Node의 unhandled rejection보다 조용하지만 "누구도 회수하지 않은 실패"라는 본질은 같다.
+반면 <code>CompletableFuture</code>를 <em>반환</em>하면 Spring MVC가 그 future를 지켜보다가 완료 시 요청을 다시 디스패치해 예외를 <code>@ControllerAdvice</code>로 보낸다 — Express 5가 반환 Promise를 지켜보는 것과 같은 계약이다.
+</p>
+<blockquote class="info">
+<p><strong>Java 관점의 통찰(JVM과 실행 모델):</strong> 요청당 스레드 모델의 비용은 OS 스레드 자체다 — 스레드마다 수백 KB의 스택을 쥐고, 블로킹 I/O 동안 그 스레드는 놀면서도 메모리를 점유한다. Node가 "스레드 하나 + <code>await</code>마다 양보"로 이 비용을 피한 것이라면, Java의 답은 반대 방향이었다: 가상 스레드(virtual thread — JVM이 스케줄링하는 매우 가벼운 스레드로, 블로킹 시 OS 스레드를 반납한다)로 <strong>스레드를 싸게 만들어 블로킹 스타일 코드와 스택 기반 예외 전파를 그대로 유지</strong>한다. 2020년대 중반 기준 Java 21 이상과 Spring Boot 3.2 이상에서는 설정 한 줄(<code>spring.threads.virtual.enabled=true</code>)로 요청 처리 스레드가 가상 스레드로 바뀌며, 이때 예외 처리 코드는 한 글자도 바꿀 필요가 없다. 같은 동시성 문제를 "스택을 끊고 배관을 새로 깐다"(JS)와 "스택을 유지하고 스레드를 싸게 만든다"(Java)로 각기 푼 셈이다.</p>
+</blockquote>
+
+<h3>7.2 JS·TS — 배관은 런타임 계약이고, 타입은 그 계약을 보증하지 못한다</h3>
+<p>
+본문이 이미 본진이므로 여기서는 두 가지만 보탠다. 하나는 <strong>Express가 미들웨어를 식별하는 방식이 타입이 아니라 런타임 반영(reflection)</strong>이라는 점이고,
+다른 하나는 <strong>TS의 타입이 미들웨어 체인 어디에서 끊기는가</strong>다.
+</p>
+<p>
+Express는 등록된 함수의 <code>fn.length</code>(선언된 매개변수 개수)를 보고 4개면 에러 미들웨어, 아니면 일반 미들웨어로 분류한다. 이것이 2절의 "인자 4개가 식별자"의 정체다.
+그래서 <code>(err, req, res)</code>처럼 <code>next</code>를 생략하면 TS는 아무 불평이 없지만 런타임은 이를 <em>일반</em> 미들웨어로 보고, 에러 경로에서 절대 부르지 않는다.
+Express 5의 자동 전달도 같은 층의 계약이다 — 핸들러의 반환값이 Promise면 <code>.catch(next)</code>를 붙이는 것(2020년대 중반 기준 npm의 <code>latest</code>가 5 계열), 4는 반환값을 버리는 것. 타입 정의 파일은 두 버전에서 거의 같으므로, <strong>이 차이는 컴파일러가 아니라 문서와 버전 번호로만 알 수 있다</strong>.
+</p>
+<pre><code>// ① 미들웨어가 req에 붙인 값은 타입 시스템이 모른다 — 선언 병합으로 '알려 준다'
+declare global {
+  namespace Express {
+    interface Request { user?: { id: string; role: 'admin' | 'member' } }
+  }
+}
+
+const requireAuth: RequestHandler = (req, res, next) =&gt; {
+  const user = verify(req.headers.authorization);   // 실패 시 undefined
+  if (!user) { res.status(401).end(); return; }
+  req.user = user;
+  next();
+};
+
+app.get('/me', (req, res) =&gt; {
+  res.json(req.user!.id);   // '!'는 타입만 잠재운다 — requireAuth가 앞에 없으면 런타임 TypeError
+});
+
+// ② 에러 미들웨어의 식별은 인자 개수(fn.length) — 타입이 아니라 런타임 반영
+const onError: ErrorRequestHandler = (err, req, res, _next) =&gt; {   // 4번째 인자를 지우면 일반 미들웨어가 된다
+  res.status(err.status ?? 500).json({ error: err.message });
+};</code></pre>
+<p>
+①이 TS 타입이 끊기는 지점이다. <code>req.user</code>는 <em>인증 미들웨어를 통과한 뒤에만</em> 존재하지만, 타입 시스템에는 "이 라우트 앞에 어떤 미들웨어가 있는가"라는 정보가 없다.
+선언 병합(declaration merging — 같은 이름의 <code>interface</code>를 여러 곳에서 선언하면 하나로 합쳐지는 TS 규칙)으로 <code>Request</code>에 필드를 덧붙이는 것이 관행이지만, 이 필드는 <strong>모든 라우트에서 전역으로</strong> 보이므로 <code>?</code>로 선언할 수밖에 없고, 그러면 라우트마다 <code>!</code>나 분기가 따라붙는다.
+제네릭 <code>Request&lt;Params, ResBody, ReqBody&gt;</code>로 경로 변수·본문 타입을 지정하는 방법도 마찬가지로 "파싱 미들웨어가 앞에 있었다"는 <em>약속</em>을 타입으로 적는 것이지 검증하는 것이 아니다.
+TS 타입은 컴파일 후 지워지므로(타입 소거), 이 약속이 깨져도 런타임에는 아무 검사도 남지 않는다 — <strong>체인 순서라는 2절의 핵심 계약은 타입 밖에 있다</strong>.
+</p>
+<blockquote class="info">
+<p><strong>JS·TS 관점의 통찰(이벤트 루프와 unhandled rejection의 판정 시점):</strong> Node가 "처리되지 않은 거부"를 확정하는 시점은 거부 즉시가 아니라 <strong>현재 매크로태스크가 끝나고 마이크로태스크 큐가 비워진 직후</strong>다. 그 시점까지 <code>.catch</code>나 <code>await</code>가 붙지 않은 거부된 Promise가 있으면 <code>unhandledRejection</code>이 발생한다. 이것이 5.2절 래퍼가 동작하는 원리다 — <code>Promise.resolve(fn(...)).catch(next)</code>는 핸들러 호출과 <em>같은 동기 구간</em>에서 catch를 붙이므로 판정 시점 이전에 배관이 완성된다. 반대로 Promise를 변수에 담아 두고 "나중에" catch를 붙이는 설계는 한 틱만 늦어도 거부 판정을 받는다(그 뒤 catch가 붙으면 <code>rejectionHandled</code>가 따로 발생한다). 배관은 <em>즉시</em> 이어야 한다는 것이 이 런타임의 규칙이다.</p>
+</blockquote>
+
+<h3>7.3 Python — 코루틴은 게으르므로 프레임워크가 반드시 기다린다</h3>
+<p>
+Python에도 같은 파이프라인 모델이 있고(ASGI 미들웨어의 <code>call_next</code>가 <code>next()</code>에 해당), 예외 핸들러를 중앙에 등록하는 방식도 같다. 그런데 Express 4의 함정만은 성립하지 않는다 — 그 이유가 언어 차이의 핵심이다.
+JS의 <code>async</code> 함수는 <strong>호출 즉시 첫 <code>await</code>까지 실행</strong>되고 Promise를 돌려주므로, 호출자가 반환값을 버려도 함수는 이미 달리고 있다.
+Python의 <code>async def</code> 함수는 호출해도 <strong>코루틴 객체를 만들 뿐 한 줄도 실행하지 않는다</strong> — 누군가 <code>await</code>하거나 태스크로 감싸야 비로소 돈다.
+따라서 ASGI 프레임워크는 핸들러의 반환 코루틴을 <em>무시할 수가 없다</em>. 무시하면 핸들러가 아예 실행되지 않고 "coroutine was never awaited" 경고만 남으니, 반드시 <code>await</code>하게 되고, 그 <code>await</code>가 곧 예외의 귀갓길이 된다.
+</p>
+<pre><code>from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
+app = FastAPI()
+
+@app.middleware("http")                          # ASGI 미들웨어 — call_next가 next()에 해당
+async def timing(request: Request, call_next):
+    response = await call_next(request)          # 다음 단계를 '기다린다' — 예외도 이 await로 되돌아온다
+    return response
+
+@app.exception_handler(LookupError)              # 중앙 포획: async·sync 핸들러 모두
+async def not_found(request: Request, exc: LookupError):
+    return JSONResponse(status_code=404, content={"error": "not found"})
+
+@app.get("/orders/{id}")
+async def find(id: int):
+    return await db.find_order(id)               # 프레임워크가 이 코루틴을 await하므로 예외가 되돌아온다
+
+@app.get("/report")
+def report():                                    # 동기 핸들러 → 스레드 풀에서 실행, 이벤트 루프를 막지 않음
+    return heavy_sync()</code></pre>
+<p>
+마지막 핸들러가 Python 특유의 지점이다. FastAPI는 <code>def</code>로 선언한 동기 핸들러를 <strong>스레드 풀에서</strong> 돌려 이벤트 루프를 보호한다 — Node에는 없는 선택지인데,
+GIL(global interpreter lock — 한 프로세스에서 Python 바이트코드를 한 번에 한 스레드만 실행하게 하는 잠금) 때문에 CPU 작업은 여전히 병렬이 아니지만 <em>블로킹 I/O 동안에는 GIL이 풀리므로</em> 루프가 계속 돈다.
+반대로 <code>async def</code> 안에서 동기 블로킹 호출을 하면 Node에서 콜백이 루프를 붙드는 것과 정확히 같은 사고가 난다 — "핸들러 선언 방식이 실행 스레드를 정한다"는 계약을 알아야 하는 이유다.
+그리고 프레임워크가 기다려 주지 않는 자리, 즉 <strong>루프에 던져 놓고 아무도 결과를 기다리지 않는 작업</strong>의 예외는 Node와 같은 방식으로 사라진다.
+</p>
+<pre><code>import asyncio
+
+async def failing():
+    raise ValueError("boom")
+
+async def main():
+    # ① 기다리는 경우: 예외가 정상적으로 전파된다
+    try:
+        await failing()
+    except ValueError:
+        print("잡힘")
+
+    # ② 던져 놓고 안 기다리는 경우: 여기서 예외는 어디로도 가지 않는다
+    asyncio.create_task(failing())        # Node의 "await 없이 호출한 async 함수"와 동형
+    await asyncio.sleep(0.1)
+    # 태스크가 수거될 때에야 경고: "Task exception was never retrieved"
+    #  → 즉시 실패하지 않고 '나중에 로그로만' 알려지는 조용한 실패
+
+asyncio.run(main())</code></pre>
+<blockquote class="info">
+<p><strong>Python 관점의 통찰:</strong> <code>Task exception was never retrieved</code>는 Node의 unhandled rejection과 <strong>같은 사건의 다른 이름</strong>이다 — 결과를 아무도 회수하지 않은 비동기 작업의 실패. 다만 기본 처리가 다르다: Node는 프로세스를 종료시키고, Python은 경고만 남기고 계속 돈다(그것도 태스크 객체가 가비지 컬렉션될 때라서 시점조차 늦다). 어느 쪽이 나은가는 <a href="C16 예외 처리 전략.html">C16 예외 처리 전략.html</a>의 오랜 논쟁(빨리 죽기 vs 계속 돌기)이지만, <strong>대응은 동일</strong>하다 — 던져 놓는 작업에는 반드시 예외 처리를 붙이거나(<code>task.add_done_callback</code>으로 결과 회수), 애초에 기다릴 수 있게 설계한다. 여기서 JS의 <code>forEach</code> 안 <code>await</code> 함정(6절 ②)이 왜 생기는지도 함께 풀린다 — 반환된 코루틴/Promise를 <em>버리는</em> 구조가 곧 이 함정의 일반형이기 때문이다. 게으른 코루틴이라는 언어 설계가 프레임워크 층의 함정 하나를 없앴지만, 사용자 층의 함정은 그대로 남았다.</p>
+</blockquote>
+
+<h3>7.4 C++ — 비동기 경계를 넘는 예외는 프로그램을 죽이고, 실어 나른 예외는 소리 없이 버려진다</h3>
 <p>
 5절의 함정("에러가 어떤 catch에도 닿지 못한다")은 Node만의 사정이 아니라 <strong>비동기 일반의 구조적 문제</strong>다.
 C++에서는 그 결과가 가장 가혹한 형태로 나타난다 — 콜백이나 스레드 밖으로 예외가 새어 나가면 프로그램이 즉시 종료된다.
@@ -302,44 +452,33 @@ server.on_request([](Request req, Response res) {
         res.status(500).send("internal error");   // 경계를 넘기 전에 반드시 흡수
     }
 });</code></pre>
-<blockquote class="info">
-<p><strong>C++ 관점의 통찰(수명·예외 안전성):</strong> 예외가 스택을 거슬러 올라가는 과정에서 C++은 지역 객체들의 소멸자를 차례로 호출한다(스택 되감기, stack unwinding). 그런데 <strong>비동기 콜백은 자신을 등록한 함수의 스택 위에 있지 않다</strong> — 등록 함수는 이미 반환했고, 콜백은 나중에 이벤트 루프의 스택에서 불린다. 그래서 "호출한 쪽에서 잡는다"는 예외의 기본 모델 자체가 성립하지 않는다.<br>이것이 Node의 unhandled rejection과 정확히 같은 사건임을 보라: <strong>비동기는 호출 스택을 끊고, 예외는 호출 스택을 타고 전파되므로, 비동기 경계를 넘는 순간 예외의 귀갓길이 사라진다.</strong> Promise가 "거부된 상태"를 값으로 들고 다니는 것은 이 끊긴 길을 대신할 <em>새 배관</em>을 만든 것이고, 5.2절의 래퍼는 그 배관을 프레임워크에 연결하는 작업이었다.</p>
-</blockquote>
-
-<h3>7.2 Python — 같은 함정의 이름만 다른 판본</h3>
 <p>
-Python의 이벤트 루프에도 정확히 대응하는 함정이 있다. 프레임워크가 <code>await</code>해 주는 핸들러의 예외는 안전하게 잡히지만,
-<strong>루프에 던져 놓고 아무도 결과를 기다리지 않는 작업</strong>의 예외는 조용히 사라진다.
+그런데 C++에도 Promise에 해당하는 배관이 있다. <code>std::future</code>는 결과 <em>또는 예외</em>를 값으로 실어 나르는 객체로, 작업 스레드에서 던진 예외는 future 안에 저장됐다가 <code>get()</code>을 부르는 쪽에서 다시 throw된다 — "거부된 상태를 값으로 들고 다닌다"는 Promise의 발상과 같다.
+차이는 회수하지 않았을 때의 처리다.
 </p>
-<pre><code>import asyncio
+<pre><code>// std::future — 예외를 '값으로' 실어 나른다 (Promise의 거부 상태와 같은 배관)
+std::future&lt;Data&gt; f = std::async(std::launch::async, [id] { return db.query(id); });
+try {
+    Data d = f.get();                 // 작업 스레드에서 던진 예외가 여기서 다시 throw
+} catch (const std::exception&amp; e) { /* 처리 */ }
 
-async def failing():
-    raise ValueError("boom")
+// get()을 아무도 부르지 않으면? 저장된 예외는 future의 소멸자에서 경고 한 줄 없이 사라진다
+//  → Node는 프로세스 종료, Python은 경고, C++은 완전한 무음 — 같은 사건의 세 가지 기본값
 
-async def main():
-    # ① 기다리는 경우: 예외가 정상적으로 전파된다
-    try:
-        await failing()
-    except ValueError:
-        print("잡힘")
-
-    # ② 던져 놓고 안 기다리는 경우: 여기서 예외는 어디로도 가지 않는다
-    asyncio.create_task(failing())        # Node의 "await 없이 호출한 async 함수"와 동형
-    await asyncio.sleep(0.1)
-    # 프로그램 종료 시점에야 경고: "Task exception was never retrieved"
-    #  → 즉시 실패하지 않고 '나중에 로그로만' 알려지는 조용한 실패
-
-asyncio.run(main())</code></pre>
-<blockquote class="info">
-<p><strong>Python 관점의 통찰:</strong> <code>Task exception was never retrieved</code>는 Node의 unhandled rejection과 <strong>같은 사건의 다른 이름</strong>이다 — 결과를 아무도 회수하지 않은 비동기 작업의 실패. 다만 기본 처리가 다르다: Node는 프로세스를 종료시키고, Python은 경고만 남기고 계속 돈다. 어느 쪽이 나은가는 <a href="C16 예외 처리 전략.html">C16 예외 처리 전략.html</a>의 오랜 논쟁(빨리 죽기 vs 계속 돌기)이지만, <strong>대응은 동일</strong>하다 — 던져 놓는 작업에는 반드시 예외 처리를 붙이거나(<code>task.add_done_callback</code>으로 결과 회수), 애초에 기다릴 수 있게 설계한다.<br>여기서 JS의 <code>forEach</code> 안 <code>await</code> 함정(6절 ②)이 왜 생기는지도 함께 풀린다 — 반환된 코루틴/Promise를 <em>버리는</em> 구조가 곧 이 함정의 일반형이기 때문이다.</p>
-</blockquote>
-
-<h3>7.3 Java / JS·TS — 한 줄 요약</h3>
+// 수명 함정 — 콜백은 등록한 함수가 반환한 '뒤에' 불린다
+void handle(Request&amp; req, Response&amp; res) {
+    db.query_async(req.id, [&amp;res](Data d) {   // res를 참조로 캡처
+        res.send(d);                          // handle()은 이미 반환 → res는 댕글링 참조
+    });
+}</code></pre>
 <p>
-Java는 <code>@RestControllerAdvice</code>·<code>@ExceptionHandler</code>로 컨트롤러의 예외를 중앙에서 포획하는 배관이 <strong>프레임워크 계약에 내장</strong>되어 있어 5.2절의 래퍼에 해당하는 작업이 필요 없다 — 다만 <code>@Async</code> 메서드나 별도 스레드 풀에 던진 작업의 예외는 그 그물 밖이라, "비동기 경계를 넘는 에러는 기본 그물에 안 걸린다"는 원리는 여기서도 그대로다.
-JS·TS 쪽은 같은 언어 안에서도 계약이 갈리는 사례로, Express 4는 핸들러가 반환한 Promise를 지켜보지 않아 본문의 함정이 생기지만 <strong>Express 5는 거부된 Promise를 에러 미들웨어로 자동 전달</strong>한다(2020년대 중반 기준으로 안정판이 5 계열이므로, 지금 이 함정은 주로 4 계열 레거시를 유지보수할 때 만난다).
+마지막 예제가 C++만의 두 번째 함정이다. Node에서는 콜백이 <code>req</code>·<code>res</code>를 클로저로 붙들면 가비지 컬렉터가 그 객체들을 콜백이 끝날 때까지 살려 둔다.
+C++에는 그런 보호가 없다 — 콜백이 참조나 원시 포인터로 붙든 객체는 등록 함수가 반환하는 순간 사라질 수 있고, 나중에 불린 콜백은 이미 죽은 메모리를 건드린다.
+비동기 콜백은 <strong>필요한 것을 값으로 캡처하거나 <code>std::shared_ptr</code>로 수명을 연장</strong>해야 하며, 이 규율을 잊은 코드는 예외가 아니라 정의되지 않은 동작으로 실패한다.
 </p>
-
+<blockquote class="info">
+<p><strong>C++ 관점의 통찰(수명·예외 안전성):</strong> 예외가 스택을 거슬러 올라가는 과정에서 C++은 지역 객체들의 소멸자를 차례로 호출한다(스택 되감기, stack unwinding). 그런데 <strong>비동기 콜백은 자신을 등록한 함수의 스택 위에 있지 않다</strong> — 등록 함수는 이미 반환했고, 콜백은 나중에 이벤트 루프의 스택에서 불린다. 그래서 "호출한 쪽에서 잡는다"는 예외의 기본 모델 자체가 성립하지 않으며, 되감기가 이벤트 루프의 바닥까지 닿으면 <code>std::terminate</code>다.<br>이것이 Node의 unhandled rejection과 정확히 같은 사건임을 보라: <strong>비동기는 호출 스택을 끊고, 예외는 호출 스택을 타고 전파되므로, 비동기 경계를 넘는 순간 예외의 귀갓길이 사라진다.</strong> Promise가 "거부된 상태"를 값으로 들고 다니는 것은 이 끊긴 길을 대신할 <em>새 배관</em>을 만든 것이고, 5.2절의 래퍼는 그 배관을 프레임워크에 연결하는 작업이었다. C++20 코루틴의 <code>co_await</code>도 같은 원리로 예외를 다시 throw해 주지만, 누구도 기다리지 않는 분리(detached) 코루틴에서 새는 예외는 다시 <code>std::terminate</code>로 돌아간다 — 배관을 어디까지 이었는가를 프로그래머가 전적으로 책임지는 언어다.</p>
+</blockquote>
 <h2>8. 함께 알면 좋은 것</h2>
 <ul>
   <li><strong>graceful shutdown</strong> — 종료 신호를 받으면 새 요청 수락을 멈추고 진행 중인 요청을 마친 뒤 내려가는 절차. 5.3절의 "기록하고 죽는다"와 짝을 이루며, <a href="O4 헬스체크와 프로세스 관리.html">O4 헬스체크와 프로세스 관리.html</a>에서 다룬다.</li>
