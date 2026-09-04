@@ -77,7 +77,7 @@
 <p>
 프론트엔드에서 이 해석기는 브라우저이고, 브라우저의 언어는 HTML·JS다.
 따라서 프론트엔드 보안 기초의 핵심 질문은 이것이다: <strong>사용자 유래 문자열이 브라우저에게 코드로 읽힐 수 있는 경로가 어디인가, 그 경로마다 승격을 어떻게 차단하는가.</strong>
-해석기가 DB·셸로 바뀌었을 때의 같은 병은 <a href="S3 인젝션 방어.html">S3</a>·<a href="S10 인젝션 확장 — 해석기별 안전 API.html">S10</a>이 이어받는다.
+해석기가 DB·셸로 바뀌었을 때의 같은 병은 <a href="../S 보안(애플리케이션)/S3 인젝션 방어.html">S3</a>·<a href="../S 보안(애플리케이션)/S10 인젝션 확장 — 해석기별 안전 API.html">S10</a>이 이어받는다.
 </p>
 
 <h2>2. XSS의 세 형태 — 주입 경로로 구분한다</h2>
@@ -286,7 +286,7 @@ Markup(f"&lt;b&gt;{user_name}&lt;/b&gt;")           # 스위치: 완성된 문�
 <h3>6.4 C++ — 포맷 문자열과 셸: 가장 오래된 승격, 그리고 컴파일 타임 봉쇄</h3>
 <p>
 C 계열의 고전 승격이 포맷 문자열 취약점이다. <code>printf(user_input)</code>처럼 사용자 문자열을 포맷 자리에 직접 넣으면, 입력 속 <code>%s</code>·<code>%n</code> 같은 지시자가 <strong>코드로 해석</strong>되어 스택 읽기·메모리 쓰기까지 이어진다 — <code>%n</code>은 "지금까지 출력한 글자 수를 다음 인자가 가리키는 주소에 써라"는 지시자라, 인자가 없으면 스택에 우연히 놓인 값을 주소로 삼는다. 메모리 안전이 언어에 없기에 문자열 해석 오류가 곧 메모리 훼손이 되는 것이 C++ 특유의 증폭이다.
-셸 명령 조립(<code>system("cmd " + input)</code>)도 같은 구조 — 입력 속 <code>;</code>가 명령 구분자로 승격된다(인자 배열로 나누는 예제는 <a href="S3 인젝션 방어.html">S3</a> 6.4).
+셸 명령 조립(<code>system("cmd " + input)</code>)도 같은 구조 — 입력 속 <code>;</code>가 명령 구분자로 승격된다(인자 배열로 나누는 예제는 <a href="../S 보안(애플리케이션)/S3 인젝션 방어.html">S3</a> 6.4).
 </p>
 <pre><code>// 취약: 입력이 "포맷 언어"로 해석됨
 printf(user_input);                    // 입력에 %n이 있으면 메모리 쓰기 (-Wformat-security가 경고)
@@ -317,7 +317,7 @@ HTML 출력 자체에 관해서는 C++가 특이한 위치에 있다. 표준 라
 <h2>7. 함께 알면 좋은 것</h2>
 <ul>
   <li><strong>인젝션의 형제들</strong> — SQL 인젝션·명령 인젝션은 해석기만 다른 같은 병. 파라미터 바인딩이 그쪽의 "이스케이프"다.</li>
-  <li><strong>HttpOnly·Secure·SameSite 쿠키와 <code>__Host-</code> 접두</strong> — 스크립트의 쿠키 접근 차단(XSS 완화), 교차 사이트 자동 전송 제한(CSRF 완화), 접두로 Secure·<code>Path=/</code>·Domain 없음을 브라우저가 강제. 보관 위치 판단은 <a href="S2 토큰 기반 인증 — JWT vs 세션.html">S2</a> 6절.</li>
+  <li><strong>HttpOnly·Secure·SameSite 쿠키와 <code>__Host-</code> 접두</strong> — 스크립트의 쿠키 접근 차단(XSS 완화), 교차 사이트 자동 전송 제한(CSRF 완화), 접두로 Secure·<code>Path=/</code>·Domain 없음을 브라우저가 강제. 보관 위치 판단은 <a href="../S 보안(애플리케이션)/S2 토큰 기반 인증 — JWT vs 세션.html">S2</a> 6절.</li>
   <li><strong>하위 리소스 무결성(Subresource Integrity, SRI)</strong> — CDN에서 받는 스크립트 태그에 해시(<code>integrity=</code>)를 붙여, 허용한 출처가 변조돼도 실행을 거부한다. CSP의 출처 허용 목록이 못 막는 "허용된 출처의 내용 변조"를 막는 층.</li>
   <li><strong>새니타이저 라이브러리</strong> — 서식 허용이 필요할 때의 표준 답. 직접 구현 대신 검증된 것을 쓴다.</li>
   <li><strong>CSP 보고 모드 운영</strong> — 차단 전 관찰 기간을 두는 도입 전략과 위반 리포트 수집.</li>
@@ -335,9 +335,9 @@ HTML 출력 자체에 관해서는 C++가 특이한 위치에 있다. 표준 라
 
 <h2>관련 문서</h2>
 <ul>
-  <li><a href="S3 인젝션 방어.html">S3 인젝션 방어.html</a> — 같은 원리의 서버판: SQL 인젝션과 파라미터 바인딩</li>
-  <li><a href="S2 토큰 기반 인증 — JWT vs 세션.html">S2 토큰 기반 인증 — JWT vs 세션.html</a> — XSS가 노리는 물건(세션·토큰)의 구조와 보관 전략</li>
-  <li><a href="S10 인젝션 확장 — 해석기별 안전 API.html">S10 인젝션 확장 — 해석기별 안전 API.html</a> — 같은 원리의 확장판: 바인딩이 없는 해석기(문서 DB·셸 옵션·LDAP/XPath)와 안전 API 판단 사다리</li>
+  <li><a href="../S 보안(애플리케이션)/S3 인젝션 방어.html">S3 인젝션 방어.html</a> — 같은 원리의 서버판: SQL 인젝션과 파라미터 바인딩</li>
+  <li><a href="../S 보안(애플리케이션)/S2 토큰 기반 인증 — JWT vs 세션.html">S2 토큰 기반 인증 — JWT vs 세션.html</a> — XSS가 노리는 물건(세션·토큰)의 구조와 보관 전략</li>
+  <li><a href="../S 보안(애플리케이션)/S10 인젝션 확장 — 해석기별 안전 API.html">S10 인젝션 확장 — 해석기별 안전 API.html</a> — 같은 원리의 확장판: 바인딩이 없는 해석기(문서 DB·셸 옵션·LDAP/XPath)와 안전 API 판단 사다리</li>
 </ul>
 
 </body>

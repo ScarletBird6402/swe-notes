@@ -80,7 +80,7 @@
   <li>Vue 3의 추적 장치는 <strong>Proxy</strong>다 — 객체를 프록시로 감싸 속성 <strong>읽기(get)와 쓰기(set)를 가로채는</strong> 것이 track/trigger의 전부다.</li>
   <li><code>reactive</code>는 객체를 깊은 프록시로 감싸고, <code>ref</code>는 <strong>프록시가 가로챌 수 없는 원시값</strong>을 <code>.value</code>라는 속성 접근으로 바꿔 주는 상자다 — 둘의 존재 이유가 곧 추적 기제의 제약이다.</li>
   <li>"반응 안 되는 경우"는 신비가 아니라 전부 한 문장으로 환원된다: <strong>추적기가 못 보는 읽기, 또는 트랩을 지나지 않는 쓰기</strong> — 구조 분해로 값이 프록시 밖으로 나갔거나, 원본 객체를 직접 만졌거나, effect 바깥(비추적 컨텍스트)에서 읽었거나, 프록시 참조 자체를 갈아 끼웠거나.</li>
-  <li>이 기반 위에 파생 상태(computed) 파이프라인이 선다 — 파생 설계는 <a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a>이 잇는다.</li>
+  <li>이 기반 위에 파생 상태(computed) 파이프라인이 선다 — 파생 설계는 <a href="../A 프론트엔드/A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a>이 잇는다.</li>
 </ul>
 
 <h2>1. 반응성이 풀려는 문제 — 상태와 화면의 수동 동기화</h2>
@@ -327,7 +327,7 @@ signals:
 <h2>함께 알면 좋은 것</h2>
 <ul>
   <li><strong>파생 상태 파이프라인</strong> — computed의 연쇄로 원천→파생을 설계하는 방법론. 이 문서의 기제 위에 서는 다음 층으로,
-  <a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a>이 전담한다.</li>
+  <a href="../A 프론트엔드/A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a>이 전담한다.</li>
   <li><strong>배치 갱신과 nextTick</strong> — 변경→렌더링이 동기가 아니라 틱 단위로 모이는 구조. DOM 측정·포커스 이동처럼 "갱신된
   DOM"이 필요한 코드의 표준 관용구이며, 그 틱의 실체(마이크로태스크)는 B2의 영역이다.</li>
   <li><strong>얕은 반응성 도구들</strong> — <code>shallowRef</code>·<code>shallowReactive</code>·<code>markRaw</code>: 깊은 프록시화
@@ -351,7 +351,7 @@ signals:
 
 <h2>관련 문서</h2>
 <ul>
-  <li><a href="A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a> — 이 기반 위에 서는 파생 상태 설계</li>
+  <li><a href="../A 프론트엔드/A12 파생 상태 계산 파이프라인.html">A12 파생 상태 계산 파이프라인.html</a> — 이 기반 위에 서는 파생 상태 설계</li>
   <li><a href="../B 웹 플랫폼·브라우저/B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a> — 배치 갱신·nextTick이 올라타는 실행 모델</li>
 </ul>
 

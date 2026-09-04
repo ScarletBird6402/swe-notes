@@ -95,7 +95,7 @@ const server = http.createServer((req, res) =&gt; {   // 모든 요청이 이 �
 server.listen(3000);</code></pre>
 <p>
 이것이 전부다. <code>req</code>(요청)는 읽는 스트림, <code>res</code>(응답)는 쓰는 스트림이며, URL이 무엇이든 메서드가 무엇이든 <strong>이 콜백 하나</strong>가 받는다.
-런타임 구조(<a href="C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a>)와 연결하면: 이 콜백은 이벤트 루프의 poll 단계에서, 소켓에 요청이 도착했다는 OS 통지를 받아 호출된다.
+런타임 구조(<a href="../C 백엔드/C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a>)와 연결하면: 이 콜백은 이벤트 루프의 poll 단계에서, 소켓에 요청이 도착했다는 OS 통지를 받아 호출된다.
 요청 1만 개가 동시에 와도 스레드는 하나 — 콜백이 빨리 반환하고 I/O는 양보한다는 전제 하에서다.
 </p>
 <p>
@@ -196,7 +196,7 @@ app.get('/orders/:id', async (req, res) =&gt; {
 ⑥ 부수 피해: 응답을 못 받은 해당 클라이언트는 타임아웃까지 대기,
    프로세스가 죽으므로 그 서버가 처리 중이던 다른 모든 요청도 함께 끊김</div>
 <blockquote class="warn">
-<p><strong>이 함정이 악질인 이유:</strong> ① 정상 경로 테스트로는 절대 안 잡힌다 — 에러가 나야 드러난다. ② 에러 미들웨어를 <em>잘 만들어 두었어도</em> 소용없다 — 에러가 거기까지 <em>도달하지 못하는</em> 문제라서다. ③ 아주 오래된 Node(14 이하)는 경고만 찍고 살아 있었기 때문에, "로그에 경고는 있는데 서버는 도는" 상태로 방치되다가 런타임 업그레이드 날 갑자기 서버가 죽기 시작하는 형태로 터진다(현재 유지되는 LTS 계열은 모두 종료가 기본 동작이다). 동작은 하는데 에러가 안 보이는 문제의 일반론은 <a href="K5 조용한 실패와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a> 참조.</p>
+<p><strong>이 함정이 악질인 이유:</strong> ① 정상 경로 테스트로는 절대 안 잡힌다 — 에러가 나야 드러난다. ② 에러 미들웨어를 <em>잘 만들어 두었어도</em> 소용없다 — 에러가 거기까지 <em>도달하지 못하는</em> 문제라서다. ③ 아주 오래된 Node(14 이하)는 경고만 찍고 살아 있었기 때문에, "로그에 경고는 있는데 서버는 도는" 상태로 방치되다가 런타임 업그레이드 날 갑자기 서버가 죽기 시작하는 형태로 터진다(현재 유지되는 LTS 계열은 모두 종료가 기본 동작이다). 동작은 하는데 에러가 안 보이는 문제의 일반론은 <a href="../K 개발 방법론·협업/K5 조용한 실패와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a> 참조.</p>
 </blockquote>
 
 <h3>5.1 방어 1 — 핸들러 안에서 잡아 next(err)로 넘긴다</h3>
@@ -430,7 +430,7 @@ async def main():
 
 asyncio.run(main())</code></pre>
 <blockquote class="info">
-<p><strong>Python 관점의 통찰:</strong> <code>Task exception was never retrieved</code>는 Node의 unhandled rejection과 <strong>같은 사건의 다른 이름</strong>이다 — 결과를 아무도 회수하지 않은 비동기 작업의 실패. 다만 기본 처리가 다르다: Node는 프로세스를 종료시키고, Python은 경고만 남기고 계속 돈다(그것도 태스크 객체가 가비지 컬렉션될 때라서 시점조차 늦다). 어느 쪽이 나은가는 <a href="C16 예외 처리 전략.html">C16 예외 처리 전략.html</a>의 오랜 논쟁(빨리 죽기 vs 계속 돌기)이지만, <strong>대응은 동일</strong>하다 — 던져 놓는 작업에는 반드시 예외 처리를 붙이거나(<code>task.add_done_callback</code>으로 결과 회수), 애초에 기다릴 수 있게 설계한다. 여기서 JS의 <code>forEach</code> 안 <code>await</code> 함정(6절 ②)이 왜 생기는지도 함께 풀린다 — 반환된 코루틴/Promise를 <em>버리는</em> 구조가 곧 이 함정의 일반형이기 때문이다. 게으른 코루틴이라는 언어 설계가 프레임워크 층의 함정 하나를 없앴지만, 사용자 층의 함정은 그대로 남았다.</p>
+<p><strong>Python 관점의 통찰:</strong> <code>Task exception was never retrieved</code>는 Node의 unhandled rejection과 <strong>같은 사건의 다른 이름</strong>이다 — 결과를 아무도 회수하지 않은 비동기 작업의 실패. 다만 기본 처리가 다르다: Node는 프로세스를 종료시키고, Python은 경고만 남기고 계속 돈다(그것도 태스크 객체가 가비지 컬렉션될 때라서 시점조차 늦다). 어느 쪽이 나은가는 <a href="../C 백엔드/C16 예외 처리 전략.html">C16 예외 처리 전략.html</a>의 오랜 논쟁(빨리 죽기 vs 계속 돌기)이지만, <strong>대응은 동일</strong>하다 — 던져 놓는 작업에는 반드시 예외 처리를 붙이거나(<code>task.add_done_callback</code>으로 결과 회수), 애초에 기다릴 수 있게 설계한다. 여기서 JS의 <code>forEach</code> 안 <code>await</code> 함정(6절 ②)이 왜 생기는지도 함께 풀린다 — 반환된 코루틴/Promise를 <em>버리는</em> 구조가 곧 이 함정의 일반형이기 때문이다. 게으른 코루틴이라는 언어 설계가 프레임워크 층의 함정 하나를 없앴지만, 사용자 층의 함정은 그대로 남았다.</p>
 </blockquote>
 
 <h3>7.4 C++ — 비동기 경계를 넘는 예외는 프로그램을 죽이고, 실어 나른 예외는 소리 없이 버려진다</h3>
@@ -481,10 +481,10 @@ C++에는 그런 보호가 없다 — 콜백이 참조나 원시 포인터로 �
 </blockquote>
 <h2>8. 함께 알면 좋은 것</h2>
 <ul>
-  <li><strong>graceful shutdown</strong> — 종료 신호를 받으면 새 요청 수락을 멈추고 진행 중인 요청을 마친 뒤 내려가는 절차. 5.3절의 "기록하고 죽는다"와 짝을 이루며, <a href="O4 헬스체크와 프로세스 관리.html">O4 헬스체크와 프로세스 관리.html</a>에서 다룬다.</li>
+  <li><strong>graceful shutdown</strong> — 종료 신호를 받으면 새 요청 수락을 멈추고 진행 중인 요청을 마친 뒤 내려가는 절차. 5.3절의 "기록하고 죽는다"와 짝을 이루며, <a href="../O 운영·인프라·디버깅/O4 헬스체크와 프로세스 관리.html">O4 헬스체크와 프로세스 관리.html</a>에서 다룬다.</li>
   <li><strong>요청 본문 크기 제한·타임아웃</strong> — <code>express.json({ limit })</code>, 서버/소켓 타임아웃. 기본값 방치는 손쉬운 서비스 거부 표면이 된다.</li>
   <li><strong><code>uncaughtException</code></strong> — unhandled rejection의 동기 세계 짝. 처리 원칙(기록 후 종료)도 같다.</li>
-  <li><strong>구조적 로깅과 요청 상관관계 ID</strong> — 비동기 서버에서는 여러 요청의 로그가 뒤섞이므로 요청별 ID가 필수다. <a href="P1 로깅과 관측성 기초.html">P1 로깅과 관측성 기초.html</a> 참조.</li>
+  <li><strong>구조적 로깅과 요청 상관관계 ID</strong> — 비동기 서버에서는 여러 요청의 로그가 뒤섞이므로 요청별 ID가 필수다. <a href="../P 관측성·모니터링/P1 로깅과 관측성 기초.html">P1 로깅과 관측성 기초.html</a> 참조.</li>
   <li><strong>Fastify·Koa</strong> — 같은 미들웨어 개념의 다른 구현. 특히 에러 자동 포획·성능·스키마 검증에서 Express와의 계약 차이를 비교해 볼 것.</li>
 </ul>
 
@@ -499,10 +499,10 @@ C++에는 그런 보호가 없다 — 콜백이 참조나 원시 포인터로 �
 
 <h2>관련 문서</h2>
 <ul>
-  <li><a href="C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a> — 이 서버가 돌아가는 이벤트 루프·논블로킹 I/O의 구조(선수)</li>
-  <li><a href="C16 예외 처리 전략.html">C16 예외 처리 전략.html</a> — 예외 변환·전역 핸들러·실패 가시화의 언어 중립 원칙</li>
-  <li><a href="D1 HTTP 심화.html">D1 HTTP 심화.html</a> — 서버가 다루는 프로토콜 자체의 심화</li>
-  <li><a href="K5 조용한 실패와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a> — "에러 없이 동작만 안 함" 유형 문제의 일반론</li>
+  <li><a href="../C 백엔드/C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a> — 이 서버가 돌아가는 이벤트 루프·논블로킹 I/O의 구조(선수)</li>
+  <li><a href="../C 백엔드/C16 예외 처리 전략.html">C16 예외 처리 전략.html</a> — 예외 변환·전역 핸들러·실패 가시화의 언어 중립 원칙</li>
+  <li><a href="../D API·통신·메시징(응용)/D1 HTTP 심화.html">D1 HTTP 심화.html</a> — 서버가 다루는 프로토콜 자체의 심화</li>
+  <li><a href="../K 개발 방법론·협업/K5 조용한 실패와 오타.html">K5 조용한 실패(silent failure)와 오타.html</a> — "에러 없이 동작만 안 함" 유형 문제의 일반론</li>
 </ul>
 
 </body>

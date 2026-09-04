@@ -85,7 +85,7 @@
 
 <h2>1. 세션의 수명 — 왜 "요청 하나 = 세션 하나"인가</h2>
 <p>
-<a href="E18 ORM 삭제·벌크 DML과 세션 정합.html">E18</a>에서 세션은 identity map을 품은 "작업 공간"이었다.
+<a href="../E 데이터베이스(응용+이론)/E18 ORM 삭제·벌크 DML과 세션 정합.html">E18</a>에서 세션은 identity map을 품은 "작업 공간"이었다.
 그렇다면 이 작업 공간은 언제 만들어지고 언제 버려져야 하는가? 극단 둘을 보면 답이 좁혀진다.
 </p>
 <ul>
@@ -118,7 +118,7 @@ def create_order(req: OrderReq, session = Depends(get_session)):
 <table>
   <tr><th></th><th>flush</th><th>commit</th></tr>
   <tr><td>하는 일</td><td>장부의 변경을 <strong>SQL로 번역해 전송</strong></td><td>flush 후, DB에 <strong>트랜잭션 확정</strong>을 지시</td></tr>
-  <tr><td>이후 상태</td><td>변경이 DB 커넥션에 반영됐지만 <strong>아직 제안 상태</strong>(같은 트랜잭션에서만 보임 — <a href="E3 트랜잭션 기초와 ACID.html">E3</a> 2절)</td><td>변경이 세상에 공표됨 — 롤백 불가</td></tr>
+  <tr><td>이후 상태</td><td>변경이 DB 커넥션에 반영됐지만 <strong>아직 제안 상태</strong>(같은 트랜잭션에서만 보임 — <a href="../E 데이터베이스(응용+이론)/E3 트랜잭션 기초와 ACID.html">E3</a> 2절)</td><td>변경이 세상에 공표됨 — 롤백 불가</td></tr>
   <tr><td>일어나는 때</td><td>명시 호출, commit 직전, 그리고 쿼리 직전 <strong>자동(autoflush)</strong> — 내 미확정 변경이 내 조회에 보이게 하려고</td><td>명시 호출 또는 3절의 위임 주체가</td></tr>
 </table>
 <div class="flow">session.add(A) ─┐
@@ -145,7 +145,7 @@ session.delete(B)┘        모은다                 내보낸다              
   </tr>
   <tr>
     <td>③ 블록<br>(컨텍스트)</td>
-    <td><code>with session.begin():</code> — 블록 이탈 방식으로 커밋/롤백 자동 분기(<a href="E3 트랜잭션 기초와 ACID.html">E3</a> 6.2절)</td>
+    <td><code>with session.begin():</code> — 블록 이탈 방식으로 커밋/롤백 자동 분기(<a href="../E 데이터베이스(응용+이론)/E3 트랜잭션 기초와 ACID.html">E3</a> 6.2절)</td>
     <td>블록의 끝</td>
     <td>경계가 들여쓰기로 보임 + 예외 안전 / 블록 구조를 강제</td>
   </tr>
@@ -193,7 +193,7 @@ session.add(other)          # ← 그리고 이 작업은 '두 번째' 트랜잭
   <li><strong>종료는 close</strong> — 커넥션을 풀에 반납하고 identity map을 비우는 것은 close(요청 스코프에서는 DI의 <code>with</code> 종료)다. 수명(1절)·확정(3~4절)·만료(이 절)는 각각 다른 사건이며, 셋을 한 단어 "끝"으로 뭉뚱그리는 것이 이 주제의 혼동 전부라 해도 과언이 아니다.</li>
 </ul>
 <blockquote class="info">
-<p><strong>층위 정리(중복 방지):</strong> Java 계열의 <code>@Transactional</code>이 다루는 선언적 트랜잭션 경계와 전파(propagation — 메서드 호출이 겹칠 때 트랜잭션을 이어받을지 새로 열지의 규칙)는 <a href="C15 트랜잭션 관리와 전파.html">C15 트랜잭션 관리와 전파.html</a>의 소관이다. 이 문서는 같은 현상을 <strong>세션(작업 공간)의 수명주기 각도</strong>에서 다뤘다 — C15가 "경계를 어떻게 선언하고 겹침을 어떻게 푸는가"라면, 여기는 "그 경계 아래에서 세션·트랜잭션 객체가 실제로 언제 생기고 확정되고 소멸하는가"다.</p>
+<p><strong>층위 정리(중복 방지):</strong> Java 계열의 <code>@Transactional</code>이 다루는 선언적 트랜잭션 경계와 전파(propagation — 메서드 호출이 겹칠 때 트랜잭션을 이어받을지 새로 열지의 규칙)는 <a href="../C 백엔드/C15 트랜잭션 관리와 전파.html">C15 트랜잭션 관리와 전파.html</a>의 소관이다. 이 문서는 같은 현상을 <strong>세션(작업 공간)의 수명주기 각도</strong>에서 다뤘다 — C15가 "경계를 어떻게 선언하고 겹침을 어떻게 푸는가"라면, 여기는 "그 경계 아래에서 세션·트랜잭션 객체가 실제로 언제 생기고 확정되고 소멸하는가"다.</p>
 </blockquote>
 
 <h2>6. 흔히 헷갈리는 지점</h2>
@@ -298,13 +298,13 @@ def get_session():
 
 <h3>7.3 Java / JS·TS — 한 줄 요약</h3>
 <p>
-Java의 <code>@Transactional</code>은 주인 ①(프록시 위임)을 언어 표준으로 굳힌 형태로, "핸들러에 commit이 없다"가 기본 풍경이며 혼합 함정도 같은 자리(선언 경계 안의 수동 개입, self-invocation)에서 난다 — 경계 선언과 전파 규칙의 본론은 <a href="C15 트랜잭션 관리와 전파.html">C15</a>로.
+Java의 <code>@Transactional</code>은 주인 ①(프록시 위임)을 언어 표준으로 굳힌 형태로, "핸들러에 commit이 없다"가 기본 풍경이며 혼합 함정도 같은 자리(선언 경계 안의 수동 개입, self-invocation)에서 난다 — 경계 선언과 전파 규칙의 본론은 <a href="../C 백엔드/C15 트랜잭션 관리와 전파.html">C15</a>로.
 JS·TS(Prisma 등)는 주인 ③(콜백 블록)을 표준으로 택해 "콜백 반환 = 커밋, throw = 롤백"이 계약이고, 함정은 확정 시점보다 <strong>어느 클라이언트로 쿼리하는가</strong>(콜백에 주입된 <code>tx</code> 대신 바깥 클라이언트를 쓰면 트랜잭션 밖 실행)에 있다 — 확정의 주인 문제가 커넥션 귀속 문제로 번역된 형태다.
 </p>
 
 <h2>8. 함께 알면 좋은 것</h2>
 <ul>
-  <li><strong>ORM 삭제·벌크 DML과 세션 정합</strong> — 세션 "안"에서 identity map이 겪는 일. 이 문서와 짝을 이루는 <a href="E18 ORM 삭제·벌크 DML과 세션 정합.html">E18</a>.</li>
+  <li><strong>ORM 삭제·벌크 DML과 세션 정합</strong> — 세션 "안"에서 identity map이 겪는 일. 이 문서와 짝을 이루는 <a href="../E 데이터베이스(응용+이론)/E18 ORM 삭제·벌크 DML과 세션 정합.html">E18</a>.</li>
   <li><strong><code>expire_on_commit</code> 다이얼</strong> — 5절의 커밋 후 재조회가 부담이면 끌 수 있다. 대가는 "커밋 후 객체가 낡았을 수 있음"을 코드가 감수하는 것 — 신선도와 왕복 수의 트레이드오프.</li>
   <li><strong>배치 작업의 구간 확정</strong> — 수백만 건 처리에서는 요청 스코프 원칙 밖에서 N건마다 커밋하는 설계가 정당하다. 단 "실패 시 어디부터 재개하는가"(체크포인트)와 멱등 재처리가 세트다.</li>
   <li><strong>읽기 전용 트랜잭션</strong> — 조회만 하는 요청에 쓰기 트랜잭션 비용을 물리지 않는 구성(<code>SET TRANSACTION READ ONLY</code> 계열). Oracle에서는 조회 일관성 확보 수단이기도 하다(E4 3절).</li>
@@ -322,10 +322,10 @@ JS·TS(Prisma 등)는 주인 ③(콜백 블록)을 표준으로 택해 "콜백 �
 
 <h2>관련 문서</h2>
 <ul>
-  <li><a href="E3 트랜잭션 기초와 ACID.html">E3 트랜잭션 기초와 ACID.html</a> — 커밋/롤백·제안 상태·경계 설계의 기초(선수)</li>
-  <li><a href="E18 ORM 삭제·벌크 DML과 세션 정합.html">E18 ORM 삭제·벌크 DML과 세션 정합.html</a> — 같은 세션의 공간축(identity map) 이야기 — 이 문서는 시간축</li>
-  <li><a href="C15 트랜잭션 관리와 전파.html">C15 트랜잭션 관리와 전파.html</a> — 선언적 경계와 전파 규칙(Java @Transactional 계열)의 본론</li>
-  <li><a href="E4 격리 수준과 락.html">E4 격리 수준과 락.html</a> — 트랜잭션이 길어질 때 치르는 대가(락·MVCC 청소)의 상세</li>
+  <li><a href="../E 데이터베이스(응용+이론)/E3 트랜잭션 기초와 ACID.html">E3 트랜잭션 기초와 ACID.html</a> — 커밋/롤백·제안 상태·경계 설계의 기초(선수)</li>
+  <li><a href="../E 데이터베이스(응용+이론)/E18 ORM 삭제·벌크 DML과 세션 정합.html">E18 ORM 삭제·벌크 DML과 세션 정합.html</a> — 같은 세션의 공간축(identity map) 이야기 — 이 문서는 시간축</li>
+  <li><a href="../C 백엔드/C15 트랜잭션 관리와 전파.html">C15 트랜잭션 관리와 전파.html</a> — 선언적 경계와 전파 규칙(Java @Transactional 계열)의 본론</li>
+  <li><a href="../E 데이터베이스(응용+이론)/E4 격리 수준과 락.html">E4 격리 수준과 락.html</a> — 트랜잭션이 길어질 때 치르는 대가(락·MVCC 청소)의 상세</li>
 </ul>
 
 </body>

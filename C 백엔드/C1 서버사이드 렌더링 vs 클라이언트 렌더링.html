@@ -193,7 +193,7 @@ CSR은 이 틈이 없다 — DOM을 JS가 만들었으므로 만들어지는 순
   색인 지연·부분 색인·미리보기 스크래퍼는 여전히 실재하는 제약이다.</li>
   <li><strong>"API 서버와 렌더링 서버는 같은 것?"</strong> — CSR의 서버는 정적 파일 서빙 + JSON API만 하면 되지만, SSR을 도입하는 순간
   <strong>HTML을 조립하는 실행 환경</strong>이 서버 어딘가에 필요해진다. SPA 프레임워크로 SSR을 하려면 그 컴포넌트 코드를 실행할
-  JS 런타임이 서버에 있어야 한다는 뜻이고 — 이것이 다음 절 JS·TS 항목과 <a href="C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a>의 접점이다.</li>
+  JS 런타임이 서버에 있어야 한다는 뜻이고 — 이것이 다음 절 JS·TS 항목과 <a href="../C 백엔드/C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a>의 접점이다.</li>
 </ul>
 
 <h2>★ 언어별 대조 — 렌더링 위치 문제는 각 언어에서 어떻게 성립하는가</h2>
@@ -247,7 +247,7 @@ createSSRApp(App).mount('#app');   // SSR HTML이 있으면 하이드레이션 �
 <p>
 런타임 기제의 함정이 하나 있다. Node.js의 이벤트 루프는 단일 스레드이고 <code>renderToString</code>은 <strong>동기적 CPU 작업</strong>이다 —
 무거운 페이지의 SSR이 도는 동안 그 프로세스의 다른 모든 요청이 멈춘다(이벤트 루프 블로킹). Java의 스레드 풀과 정반대 특성이라,
-JS SSR 서버의 용량 산정은 "렌더링 한 건이 루프를 몇 ms 잡는가"로 한다(상세 구조는 <a href="C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a>).
+JS SSR 서버의 용량 산정은 "렌더링 한 건이 루프를 몇 ms 잡는가"로 한다(상세 구조는 <a href="../C 백엔드/C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a>).
 TS 관점 한 가지: 타입은 컴파일 시 소거되므로 SSR/CSR 어느 쪽 동작도 바꾸지 않지만, 서버 전용 코드(파일·DB 접근)가 클라이언트 번들에
 섞여 들어가는 사고를 <strong>모듈 경계 타입·린트로 조기 검출</strong>하는 데는 실질적 가치가 있다 — 유니버설 코드베이스의 고유 위험(비밀 값이
 번들에 실려 나가는 것)에 대한 정적 방어선이다.
@@ -324,8 +324,8 @@ DOM은 여전히 JS 경유 — 를 이해하는 것이 핵심이다.
 
 <h2>관련 문서</h2>
 <ul>
-  <li><a href="C6 SSR·SPA 통합.html">C6 SSR·SPA 통합.html</a> — 서버 렌더 페이지 위에 SPA가 얹힐 때의 통합 문제(인증·권한 흐름 포함)</li>
-  <li><a href="C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a> — JS SSR 서버의 실행 기반인 Node.js의 내부 구조</li>
+  <li><a href="../C 백엔드/C6 SSR·SPA 통합.html">C6 SSR·SPA 통합.html</a> — 서버 렌더 페이지 위에 SPA가 얹힐 때의 통합 문제(인증·권한 흐름 포함)</li>
+  <li><a href="../C 백엔드/C17 Node.js 런타임 구조.html">C17 Node.js 런타임 구조.html</a> — JS SSR 서버의 실행 기반인 Node.js의 내부 구조</li>
   <li><a href="../A 프론트엔드/A2 Vue 반응성 시스템 원리.html">A2 Vue 반응성 시스템 원리.html</a> — 하이드레이션이 연결하는 클라이언트 측 상태 추적의 원리</li>
 </ul>
 

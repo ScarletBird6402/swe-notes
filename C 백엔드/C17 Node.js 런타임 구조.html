@@ -100,7 +100,7 @@
 <p>
 역할 분담이 요점이다. <strong>V8은 계산을, libuv는 기다림을</strong> 담당한다. <code>fs.readFile()</code>을 호출하면 JS에서는 함수 호출 한 번이지만,
 실제로는 "libuv에 작업을 접수하고 즉시 반환 → libuv가 OS와 협업해 완료 → 완료 통지가 이벤트 루프를 통해 콜백으로 돌아옴"이라는 왕복이 일어난다.
-비동기 프로그래밍의 개념 원론(콜백·Promise·async/await·이벤트 루프 일반론)은 <a href="G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a>에서 다루며, 이 문서는 그것의 <strong>Node 구현</strong>을 다룬다.
+비동기 프로그래밍의 개념 원론(콜백·Promise·async/await·이벤트 루프 일반론)은 <a href="../G 동시성·비동기/G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a>에서 다루며, 이 문서는 그것의 <strong>Node 구현</strong>을 다룬다.
 </p>
 
 <h2>2. "싱글 스레드"의 실체</h2>
@@ -115,11 +115,11 @@ Node가 싱글 스레드라는 말은 이 층에 대해서만, 그것도 절반�
 </ul>
 <p>
 이 구조의 실용적 의미: <strong>공유 상태에 락이 필요 없다.</strong> 두 요청의 핸들러가 같은 변수를 건드려도 동시에 실행되지 않으므로 경쟁 조건(race condition)의 상당 부분이 원천 차단된다
-(멀티스레드 언어에서 이것이 왜 큰 문제인지는 <a href="G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a> 참조).
+(멀티스레드 언어에서 이것이 왜 큰 문제인지는 <a href="../G 동시성·비동기/G1 스레드 안전성 기초.html">G1 스레드 안전성 기초.html</a> 참조).
 대신 대가로, <strong>메인 스레드의 1초는 서버 전체의 1초</strong>가 된다 — 아래 6절.
 </p>
 <blockquote class="info">
-<p><strong>Java 개발자를 위한 대응 관계:</strong> 전통적 Java 서블릿 컨테이너는 "요청 1개 = 스레드 1개"로, 스레드가 DB 응답을 <em>블로킹 대기</em>한다. 동시 접속 1만이면 스레드 1만 개가 필요해 메모리·컨텍스트 스위치 비용이 폭발한다. Node는 "요청 1만 개 = JS 스레드 1개 + 대기 중인 소켓 1만 개"로, 기다림을 스레드가 아닌 <strong>이벤트 목록</strong>으로 관리한다. (프로세스·스레드·컨텍스트 스위치의 기초는 <a href="V1 프로세스와 스레드.html">V1 프로세스와 스레드.html</a>.)</p>
+<p><strong>Java 개발자를 위한 대응 관계:</strong> 전통적 Java 서블릿 컨테이너는 "요청 1개 = 스레드 1개"로, 스레드가 DB 응답을 <em>블로킹 대기</em>한다. 동시 접속 1만이면 스레드 1만 개가 필요해 메모리·컨텍스트 스위치 비용이 폭발한다. Node는 "요청 1만 개 = JS 스레드 1개 + 대기 중인 소켓 1만 개"로, 기다림을 스레드가 아닌 <strong>이벤트 목록</strong>으로 관리한다. (프로세스·스레드·컨텍스트 스위치의 기초는 <a href="../V 운영체제/V1 프로세스와 스레드.html">V1 프로세스와 스레드.html</a>.)</p>
 </blockquote>
 
 <h2>3. 논블로킹 I/O — "기다리지 않는다"의 두 가지 구현</h2>
@@ -172,7 +172,7 @@ Promise.resolve().then(() =&gt; console.log('C')); // 3: 현재 콜백 직후 �
 console.log('D');                          // 2: 동기
 // 출력: A D C B — "Promise가 setTimeout보다 항상 먼저"의 이유</code></pre>
 <blockquote class="info">
-<p><strong>브라우저와의 관계:</strong> 이벤트 루프라는 개념은 브라우저에도 있지만(<a href="B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a>), 구현이 다르다. 브라우저는 렌더링(화면 갱신)과의 조율이 중심이고 Node(libuv)는 I/O 단계 순환이 중심이다. "마이크로태스크가 태스크 사이에 끼어든다"는 규칙은 양쪽 공통이다.</p>
+<p><strong>브라우저와의 관계:</strong> 이벤트 루프라는 개념은 브라우저에도 있지만(<a href="../B 웹 플랫폼·브라우저/B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a>), 구현이 다르다. 브라우저는 렌더링(화면 갱신)과의 조율이 중심이고 Node(libuv)는 I/O 단계 순환이 중심이다. "마이크로태스크가 태스크 사이에 끼어든다"는 규칙은 양쪽 공통이다.</p>
 </blockquote>
 
 <h2>5. 하나로 모자랄 때 — worker_threads와 cluster</h2>
@@ -399,7 +399,7 @@ Node가 C++ 개발자에게 낯설지 않은 이유이자, 반대로 <strong>C++
 
 <h2>9. 함께 알면 좋은 것</h2>
 <ul>
-  <li><strong>비동기 프로그래밍 모델 일반론</strong> — 콜백→Promise→async/await의 진화와 이벤트 루프 개념 원론. <a href="G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a> (이 문서의 선수).</li>
+  <li><strong>비동기 프로그래밍 모델 일반론</strong> — 콜백→Promise→async/await의 진화와 이벤트 루프 개념 원론. <a href="../G 동시성·비동기/G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a> (이 문서의 선수).</li>
   <li><strong>스트림(stream)과 백프레셔(backpressure)</strong> — 큰 데이터를 메모리에 다 올리지 않고 흘려보내는 Node의 핵심 추상화. 생산 속도 &gt; 소비 속도일 때의 제어가 백프레셔다.</li>
   <li><strong>이벤트 루프 지연 모니터링</strong> — <code>perf_hooks.monitorEventLoopDelay()</code>. 운영에서 CPU 바운드 침입을 조기 발견하는 표준 지표.</li>
   <li><strong>V8 메모리 구조와 GC</strong> — 힙 상한, old/new space. "이벤트 루프는 한가한데 프로세스가 죽는" 유형의 문제는 이쪽이다.</li>
@@ -417,10 +417,10 @@ Node가 C++ 개발자에게 낯설지 않은 이유이자, 반대로 <strong>C++
 
 <h2>관련 문서</h2>
 <ul>
-  <li><a href="V1 프로세스와 스레드.html">V1 프로세스와 스레드.html</a> — 스레드·컨텍스트 스위치·블로킹의 OS 수준 기초</li>
-  <li><a href="C18 Node.js 서버 기초.html">C18 Node.js 서버 기초.html</a> — 이 런타임 위에서 HTTP 서버를 실제로 짜는 방법(다음 단계)</li>
-  <li><a href="G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a> — async/await·이벤트 루프의 언어 중립적 개념 원론(선수)</li>
-  <li><a href="B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a> — 같은 개념의 브라우저 구현과의 대조</li>
+  <li><a href="../V 운영체제/V1 프로세스와 스레드.html">V1 프로세스와 스레드.html</a> — 스레드·컨텍스트 스위치·블로킹의 OS 수준 기초</li>
+  <li><a href="../C 백엔드/C18 Node.js 서버 기초.html">C18 Node.js 서버 기초.html</a> — 이 런타임 위에서 HTTP 서버를 실제로 짜는 방법(다음 단계)</li>
+  <li><a href="../G 동시성·비동기/G3 비동기 프로그래밍 모델.html">G3 비동기 프로그래밍 모델.html</a> — async/await·이벤트 루프의 언어 중립적 개념 원론(선수)</li>
+  <li><a href="../B 웹 플랫폼·브라우저/B2 브라우저 이벤트 루프.html">B2 브라우저 이벤트 루프.html</a> — 같은 개념의 브라우저 구현과의 대조</li>
 </ul>
 
 </body>
