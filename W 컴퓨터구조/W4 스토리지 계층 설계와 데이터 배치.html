@@ -110,36 +110,86 @@ strong{font-weight:600;}
 <p>따라서 설계 시점의 요령은 두 가지다. 굳는 결정(경계·용량 배분)은 처음에 여유 있게 검토하고, 무른 결정(역할)은 <strong>나중에 바꿀 수 있는 구조</strong> — 이사 경로가 존재하고, 경로 이름이 역할에 중립적이며(장치가 아니라 마운트 지점을 참조), 전환 절차가 문서화된 상태 — 로 남겨두는 것이다. 이렇게 하면 §4의 승격·강등이나 §5의 원본·사본 재배치 같은 후속 개선을 "이사"만으로 흡수할 수 있고, 초기 결정이 틀렸더라도 시스템을 갈아엎지 않게 된다.</p>
 <p>그런데 배치가 이렇게 코드 바깥에서 끝나는 문제처럼 보여도, 사실 매체의 물성은 코드 안까지 이어진다. 같은 쓰기 한 줄도 언어의 I/O 계층을 어떻게 지나느냐에 따라 디스크에 닿는 모양이 달라지기 때문이다.</p>
 
-<h2>★ 언어별 대조 — 매체 특성이 코드에서 드러나는 지점</h2>
-<p>어느 언어든 쓰기는 보통 세 겹을 지난다: <strong>언어/라이브러리 버퍼 → OS 페이지 캐시(page cache: OS가 디스크 내용을 메모리에 잠시 들고 있는 층) → 실제 매체</strong>. 각 언어가 이 겹들을 어떻게 노출하는지가 대조 포인트다.</p>
+<h2>7. 흔히 헷갈리는 지점</h2>
+<p>§1~§6의 개념은 단순하지만, 그 단순함 때문에 잘못 일반화되기 쉬운 자리가 몇 군데 있다. 코드로 내려가기 전에 오해를 걷어 두자.</p>
+<blockquote class="warn">
+<p>① <strong>"쓰기 증폭은 SMR만의 문제이고, 플래시는 어디에 어떻게 써도 같다"</strong> — 아니다. 플래시도 제자리 수정이 불가능한 매체다. 셀은 페이지 단위로만 쓰고 그보다 훨씬 큰 블록 단위로만 지울 수 있어, 한 페이지를 고치려면 새 자리에 쓰고 옛 자리를 무효 표시한 뒤 나중에 블록 전체를 정리(내부 가비지 컬렉션)해야 한다. §3의 SMR과 같은 구조의 증폭이며, 다른 것은 절벽의 깊이와 그 대가가 속도가 아니라 <em>쓰기 수명</em>으로 청구된다는 점이다. "무작위 쓰기에 강하다"는 "무작위 쓰기가 공짜다"가 아니다.</p>
+<p>② <strong>"순차 쓰기란 파일 하나에 이어 쓰는 것"</strong> — 패턴은 파일이 아니라 <em>장치가 받는 요청 순서</em>로 결정된다. 프로세스 열 개가 각자 자기 파일에 얌전히 이어 써도, 장치 큐에는 열 파일의 조각이 뒤섞여 도착하므로 매체 입장에서는 무작위 쓰기다. 백업 작업 여러 개를 같은 SMR 디스크에 동시에 돌리면 §4의 "백업 = 순차" 매칭이 깨지는 이유다. 순차성은 작업 하나의 성질이 아니라 그 장치에 동시에 닿는 워크로드 전체의 성질이다.</p>
+<p>③ <strong>"페이지 캐시가 있으니 읽기 성능은 매체와 무관하다"</strong> — 페이지 캐시(page cache: OS가 최근 읽고 쓴 파일 내용을 남는 메모리에 들고 있는 층)는 두 번째 읽기부터만 돕는다. 첫 읽기(콜드 리드)와 작업 집합이 메모리보다 큰 경우에는 매체의 무작위 읽기 지연이 그대로 드러난다. 그래서 §4의 승격은 캐시가 대신해 주는 일이 아니다 — 캐시는 "우연히 남아 있으면" 빠른 것이고, 승격은 "반드시 빠른 매체에 있게" 만드는 배치 결정이다.</p>
+<p>④ <strong>"승격·강등은 캐싱과 같은 것"</strong> — 비슷해 보이지만 소유의 의미가 다르다. 캐시는 원본을 아래 계층에 남긴 채 사본을 위에 두는 것이고, §4의 이동은 유일본의 <em>위치</em>를 바꾸는 것이다. 이동한 순간 그 데이터의 백업 대상 계층(§5)이 달라지므로, 승격을 "복사"로 구현했는지 "이동"으로 구현했는지에 따라 유일본이 두 곳에 있거나 한 곳에만 있게 된다. 어느 쪽이든 괜찮지만, 어느 쪽인지 모르는 상태가 사고의 출발점이다.</p>
+</blockquote>
+<p>이 네 가지의 공통점은 "코드가 보는 파일"과 "매체가 보는 요청"이 다르다는 것이다. 그 간극이 언어의 I/O 계층에서 어떻게 나타나는지가 다음 절의 주제다.</p>
+
+<h2>★ 8. 언어별 대조 — 매체 특성이 코드에서 드러나는 지점</h2>
+<p>어느 언어든 쓰기는 보통 세 겹을 지난다: <strong>언어/라이브러리 버퍼 → OS 페이지 캐시 → 실제 매체</strong>. 읽기도 같은 층을 거꾸로 지나며, 매체의 물성(§3)은 마지막 겹에서만 드러난다. 그래서 대조 포인트는 두 가지다 — 각 언어가 이 겹들을 <strong>얼마나 은폐하는가</strong>(편의), 그리고 필요할 때 <strong>어떤 문으로 뚫고 내려가게 해 주는가</strong>(제어). 여기에 "매체가 느릴 때 그 지연이 프로그램의 어디에 나타나는가"라는 세 번째 축이 언어마다 다르게 걸린다.</p>
 <table>
 <tr><th>관심사</th><th>Java</th><th>JS·TS (Node)</th><th>Python</th><th>C++</th></tr>
-<tr><td>버퍼 제어</td><td><code>BufferedOutputStream</code> 등 명시적 래핑</td><td>스트림 내부 버퍼 + <code>highWaterMark</code></td><td><code>open()</code>의 <code>buffering</code> 인자</td><td><code>fstream</code> 내부 버퍼, <code>setvbuf</code></td></tr>
-<tr><td>매체까지 강제 기록(내구성)</td><td><code>FileChannel.force()</code></td><td><code>fs.fsync(fd)</code></td><td><code>flush()</code> + <code>os.fsync()</code></td><td><code>flush()</code> + <code>fsync(fd)</code></td></tr>
-<tr><td>순차 대량 처리</td><td>NIO 채널 전송(<code>transferTo</code>)</td><td>스트림 파이프(<code>pipeline</code>)</td><td>청크 단위 반복 읽기</td><td>블록 단위 <code>read</code>/<code>write</code></td></tr>
+<tr><td>언어 버퍼(1겹)</td><td>스트림은 <code>Buffered*</code>로 명시 래핑, NIO 채널은 버퍼 없음</td><td>스트림 내부 버퍼 + <code>highWaterMark</code></td><td><code>open()</code>의 <code>buffering</code> 인자(텍스트는 두 겹)</td><td><code>fstream</code> 내부 버퍼, <code>setvbuf</code></td></tr>
+<tr><td>매체까지 강제 기록(내구성)</td><td><code>FileChannel.force()</code>, <code>SYNC</code>/<code>DSYNC</code> 옵션</td><td><code>fs.fsync(fd)</code> / <code>FileHandle.sync()</code></td><td><code>flush()</code> + <code>os.fsync()</code></td><td><code>flush()</code> + <code>fsync</code>/<code>fdatasync(fd)</code></td></tr>
+<tr><td>순차 대량 처리</td><td><code>transferTo</code>(커널 내 복사)</td><td><code>pipeline</code>(역압 자동)</td><td>청크 단위 반복 읽기</td><td>블록 단위 <code>read</code>/<code>write</code>, <code>posix_fadvise</code></td></tr>
+<tr><td>무작위 접근의 얼굴</td><td><code>MappedByteBuffer</code>(mmap)</td><td><code>FileHandle.read(buf, …, position)</code></td><td><code>mmap</code> 모듈, <code>seek</code>+<code>read</code></td><td><code>pread</code>/<code>pwrite</code>, <code>mmap</code>, <code>O_DIRECT</code></td></tr>
+<tr><td>매체 지연이 나타나는 곳</td><td>호출 스레드(가상 스레드면 캐리어 보충)</td><td>libuv 스레드 풀 큐</td><td>호출 스레드(GIL은 해제됨)</td><td>호출 스레드, 그대로</td></tr>
 </table>
-<p>Java와 Node는 요약하면 "버퍼는 기본 제공, 내구성은 별도 호출"로 동작이 유사하다. 심화 대상인 두 언어를 따로 본다.</p>
+<p>표만 보면 네 언어가 "버퍼는 기본 제공, 내구성은 별도 호출"로 비슷하다. 차이는 그 아래에 있다 — 은폐의 두께와, 지연이 흘러가는 경로가 언어마다 다르다.</p>
 
-<h3>C++ — 버퍼 세 겹을 직접 마주하는 언어</h3>
-<p><code>file.close()</code>가 성공해도 데이터는 아직 디스크에 없을 수 있다 — 언어 버퍼를 비웠을 뿐, OS 페이지 캐시에 머무는 상태다. 정전 시 이 구간의 데이터는 사라진다. 내구성이 필요한 지점에서는 캐시를 지나 매체까지 밀어내는 호출이 별도로 필요하다:</p>
-<pre><code>#include &lt;fstream&gt;
-#include &lt;unistd.h&gt;   // fsync
-#include &lt;fcntl.h&gt;    // open
+<h3>8.1 Java — 추상 계층이 매체를 은폐하되, 내려갈 문을 남긴 언어</h3>
+<p>Java의 파일 I/O는 두 세대가 공존한다. 고전 스트림(<code>FileOutputStream</code> 계열)은 바이트 단위 API라 <code>BufferedOutputStream</code>으로 감싸지 않으면 호출마다 시스템 호출이 나가고, 감싸면 1겹 버퍼가 생긴다. 반면 NIO의 <code>FileChannel</code>은 <strong>언어 버퍼를 두지 않는다</strong> — <code>write(ByteBuffer)</code>는 곧장 OS로 내려가고, 얼마나 모아서 보낼지는 호출자가 <code>ByteBuffer</code> 크기로 정한다. 즉 채널은 1겹을 없애 "언제 OS에 닿는가"는 투명하게 만들지만, 2겹(페이지 캐시 → 매체)은 여전히 <code>force()</code>를 호출해야 넘어간다. <code>force(false)</code>는 파일 데이터만, <code>force(true)</code>는 크기·수정 시각 같은 메타데이터까지 밀어낸다 — 대량 이어 쓰기에서는 전자가 훨씬 싸다.</p>
+<p>은폐가 가장 두꺼운 문은 <code>FileChannel.map()</code>이 돌려주는 <code>MappedByteBuffer</code>다. 이는 mmap(memory-mapped file: 파일의 구간을 프로세스 주소 공간에 매핑해 배열처럼 접근하게 하는 OS 기능)을 감싼 것으로, 파일 읽기가 <code>getInt(offset)</code> 같은 <em>메모리 접근</em>으로 보인다. 그 자리가 페이지 캐시에 없으면 페이지 폴트가 일어나 매체에서 읽어 오는데, 코드에는 I/O 호출이 한 줄도 없으므로 <strong>§2의 무작위 읽기가 "느린 메모리 접근"으로 위장</strong>된다. 쓰기도 마찬가지다 — <code>putInt</code> 한 줄이 페이지를 더럽히고, OS가 나중에 알아서 써 내려가며, 매체까지의 확정은 <code>MappedByteBuffer.force()</code>가 담당한다.</p>
+<pre><code>import java.nio.*;
+import java.nio.channels.FileChannel;
+import java.nio.file.*;
+import static java.nio.file.StandardOpenOption.*;
 
-void write_durable(const char* path, const std::string&amp; data) {
-    std::ofstream f(path, std::ios::binary);
-    f.write(data.data(), data.size());
-    f.flush();                      // 1겹: 라이브러리 버퍼 → OS
-    f.close();
-    int fd = ::open(path, O_WRONLY);
-    ::fsync(fd);                    // 2겹: OS 페이지 캐시 → 매체
-    ::close(fd);
+// 내구성 쓰기 — 채널에는 1겹이 없다. write()는 OS로, force()는 매체로
+try (FileChannel ch = FileChannel.open(Path.of("/work/state.bin"), WRITE, CREATE, TRUNCATE_EXISTING)) {
+    ByteBuffer buf = ByteBuffer.wrap(payload);
+    while (buf.hasRemaining()) ch.write(buf);   // 부분 쓰기 가능 — 루프가 관례
+    ch.force(false);                            // 데이터만 매체로 (메타데이터 생략)
+}
+
+// mmap — 파일이 메모리처럼 보인다. 아래 두 줄에는 I/O 호출이 "없다"
+try (FileChannel ch = FileChannel.open(Path.of("/archive/index.bin"), READ, WRITE)) {
+    MappedByteBuffer m = ch.map(FileChannel.MapMode.READ_WRITE, 0, ch.size());
+    int v = m.getInt(4096 * 7);      // 페이지 캐시에 없으면 여기서 매체 지연이 튀어나온다
+    m.putInt(4096 * 7, v + 1);       // 제자리 수정 — SMR 위에서는 구역 재기록이 될 수 있다
+    m.force();                       // 더티 페이지 → 매체
 }</code></pre>
-<p><code>C++에서 이 구간은 성능 튜닝의 지렛대이기도 하다 — 순차 대량 쓰기는 버퍼를 크게 잡아 호출 횟수를 줄이는 쪽이, 무작위 소량 쓰기는 fsync 빈도를 낮추도록 묶는 쪽이 효과적이며, 이는 §3의 매체 물성이 코드 수준으로 번역된 형태다.</code></p>
+<p>순차 대량 처리에는 반대 방향의 문이 있다. <code>transferTo</code>/<code>transferFrom</code>은 파일 내용을 사용자 공간으로 올리지 않고 커널 안에서 다른 채널로 넘기므로(이른바 제로 카피), 보관 계층으로의 강등(§4) 같은 큰 순차 복사에서 CPU와 메모리 대역폭을 아낀다. 이때 병목은 순수하게 매체의 순차 대역폭이 된다.</p>
+<p>지연이 흐르는 경로에도 Java만의 특이점이 있다. 2020년대 중반 기준(Java 21 이후의 가상 스레드) 소켓 I/O는 가상 스레드를 캐리어에서 떼어내 기다리지만, <strong>파일 I/O는 OS에 논블로킹 경로가 없어 가상 스레드가 캐리어 스레드를 붙잡은 채 기다린다</strong>. 스케줄러는 그동안 캐리어를 임시로 늘려 보상하므로, 느린 매체의 지연은 응답 시간뿐 아니라 <em>플랫폼 스레드 수의 증가</em>로도 나타난다. "가상 스레드니까 파일 I/O도 공짜"라는 가정이 성립하지 않는 지점이다.</p>
+<p><code>Java 관점의 통찰: 채널과 mmap은 같은 매체를 다른 얼굴로 보여 준다 — 채널은 I/O를 호출로 드러내고, mmap은 메모리 접근으로 숨긴다. 프로파일에서 특정 배열 접근이 유독 느리다면 그 "배열"이 매핑된 파일이고 그 자리가 §3의 약한 칸(콜드 매체의 무작위 읽기)에 놓여 있지는 않은지 의심하는 것이, 이 언어에서 배치 문제를 코드에서 되짚는 첫걸음이다.</code></p>
 
-<h3>Python — 편의 계층 아래를 확인하는 언어</h3>
-<p>Python의 <code>open()</code>은 기본으로 버퍼링을 켠다. 대량 순차 읽기는 파일 객체 반복(iteration)만으로 청크 처리가 되어 §2의 "순차 읽기" 패턴에 자연히 올라탄다. 반대로 내구성이 필요한 쓰기는 두 단계를 명시해야 한다:</p>
-<pre><code>import os
+<h3>8.2 JS·TS — 스레드 풀이 지연을 대신 삼키는 언어</h3>
+<p>Node의 <code>fs</code>가 "비동기"인 방식은 소켓과 다르다. 소켓은 OS의 논블로킹 알림 위에서 이벤트 루프 한 스레드가 처리하지만, <strong>파일 I/O는 대부분의 OS에서 논블로킹 시스템 호출이 없어</strong> libuv(Node의 I/O 라이브러리)가 별도 스레드 풀 — 기본 4개, <code>UV_THREADPOOL_SIZE</code>로 조정 — 에서 평범한 블로킹 호출을 대신 수행하고 완료를 이벤트 루프로 돌려보낸다. 2020년대 중반 기준 libuv에 리눅스의 io_uring(커널에 I/O 요청을 큐로 넘기는 비동기 인터페이스) 경로가 있지만 보안상의 이유로 기본 비활성이므로, 통상의 파일 I/O는 여전히 이 스레드 풀을 지난다.</p>
+<p>이 구조가 매체 지연을 은폐하는 방식은 독특하다. 이벤트 루프는 막히지 않으므로 지연 지표(이벤트 루프 랙)는 멀쩡한데, 느린 매체에 동시 요청이 5개 이상 몰리면 다섯 번째부터는 <strong>풀의 큐에서 조용히 대기</strong>한다. 게다가 이 풀은 DNS 조회나 일부 암호화 작업과도 공유되므로, SMR 위의 <code>fsync</code> 하나가 오래 걸리면 파일과 무관한 작업까지 늦어진다. 반대로 <code>readFileSync</code> 같은 동기 API는 이벤트 루프 자체를 붙잡아 지연을 전부에게 전파한다 — 은폐가 없는 대신 대가가 크다.</p>
+<p>순차 대량 처리에서는 스트림의 역압(backpressure: 소비 쪽이 못 따라오면 생산 쪽을 잠시 멈추게 하는 흐름 제어)이 핵심이다. 빠른 SSD에서 읽어 느린 HDD로 쓸 때, <code>write()</code>가 <code>false</code>를 돌려주는데도 계속 쓰면 쓰기 버퍼가 힙에 무한히 쌓인다. <code>pipeline</code>은 이 신호와 <code>'drain'</code> 이벤트를 대신 처리해, 읽기 속도를 쓰기 매체의 순차 대역폭에 맞춰 준다. 읽기 스트림의 기본 <code>highWaterMark</code>는 64 KiB로, 이것이 §2의 "청크 단위 순차 읽기"의 단위다.</p>
+<pre><code>import { createReadStream, createWriteStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { open } from "node:fs/promises";
+
+// 강등(순차 복사) — pipeline이 역압을 맡는다. 빠른 읽기가 느린 쓰기를 앞지르지 않는다
+await pipeline(
+  createReadStream("/work/model.bin"),        // 64 KiB 청크로 읽어
+  createWriteStream("/archive/model.bin"),    // 쓰기 버퍼가 차면 읽기를 멈춘다
+);
+
+// 내구성 — writeFile의 resolve는 "페이지 캐시 도착"까지. 매체는 sync()가 별도
+const fh = await open("/work/state.json", "w");
+try {
+  await fh.writeFile(payload);
+  await fh.sync();     // fsync — 스레드 풀의 스레드 하나가 매체 응답까지 점유된다
+} finally {
+  await fh.close();
+}
+
+// 무작위 읽기 — 위치 지정 읽기. 호출마다 풀을 한 번씩 지난다
+const idx = await open("/archive/index.bin", "r");
+const { bytesRead } = await idx.read(Buffer.alloc(4), 0, 4, 4096 * 7);</code></pre>
+<p>TS는 여기에 아무것도 더하지 못한다는 점이 오히려 교훈이다. <code>writeFile</code>의 반환 타입 <code>Promise&lt;void&gt;</code>는 컴파일 시 지워질 뿐 아니라, 남아 있더라도 "언제 매체에 닿는가"라는 시점 정보를 담을 수 없다. 내구성은 타입이 아니라 호출 순서(<code>writeFile</code> → <code>sync</code>)의 문제이며, 타입 검사기는 <code>sync()</code>를 빠뜨린 코드를 오류로 잡아 주지 않는다.</p>
+<p><code>JS·TS 관점의 통찰: Node에서 매체가 느려질 때 첫 증상은 CPU도 이벤트 루프도 아닌 스레드 풀 큐 길이다. 파일 I/O를 많이 하는 프로세스에서 "루프는 한가한데 요청이 느리다"면 풀 크기와 그 위에 얹힌 매체의 무작위 성능(§3)을 함께 봐야 하며, 풀을 키우는 것은 매체가 동시성을 받아 줄 때(SSD)만 답이고 HDD 위에서는 헤드 경합을 늘릴 뿐이다.</code></p>
+
+<h3>8.3 Python — 편의 계층 아래를 확인하는 언어</h3>
+<p>Python의 <code>open()</code>은 기본으로 버퍼링을 켠다. 그것도 텍스트 모드에서는 <strong>두 겹</strong>이다 — 바이트를 모으는 <code>BufferedWriter</code> 위에 인코딩을 맡는 <code>TextIOWrapper</code>가 얹혀, <code>write("…")</code>는 문자열을 먼저 자기 버퍼에 두고 바이트 버퍼가 찰 때 OS로 내려보낸다. 대량 순차 읽기는 파일 객체 반복만으로 청크 처리가 되어 §2의 "순차 읽기" 패턴에 자연히 올라타지만, 내구성이 필요한 쓰기는 이 두 겹과 페이지 캐시를 각각 비우는 단계를 명시해야 한다.</p>
+<pre><code>import os, mmap
 
 # 순차 대량 읽기 — 반복이 곧 청크 스트리밍 (메모리에 전부 올리지 않음)
 with open("big.log", "rb") as f:
@@ -150,10 +200,41 @@ with open("big.log", "rb") as f:
 with open("state.json", "w") as f:
     f.write(payload)
     f.flush()
-    os.fsync(f.fileno())</code></pre>
-<p><code>Python은 편의 계층이 두꺼워 "언제 디스크에 닿았는가"가 코드에 드러나지 않는다. flush와 fsync가 다른 층을 비운다는 사실만 기억해도, 배치 설계(§4~5)에서 세운 내구성 가정을 코드가 배신하는 사고를 막을 수 있다.</code></p>
+    os.fsync(f.fileno())
 
-<h2>함께 알면 좋은 것</h2>
+# 무작위 읽기 — mmap이면 슬라이싱이 곧 I/O. 콜드 매체 위에서는 이 한 줄이 헤드 이동이다
+with open("index.bin", "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+    record = m[4096 * 7 : 4096 * 7 + 64]</code></pre>
+<p>지연이 흐르는 경로는 인터프리터의 특성과 맞물린다. 파일 <code>read</code>/<code>write</code>/<code>fsync</code> 같은 시스템 호출 동안 인터프리터는 GIL(global interpreter lock: 한 번에 한 스레드만 바이트코드를 실행하게 하는 잠금)을 놓으므로, 스레드 여러 개로 I/O를 겹치는 것은 GIL이 있어도 실제로 병렬이다. 다만 §3의 물성이 그대로 적용된다 — HDD 위에서 스레드를 늘려 무작위 읽기를 겹치면 헤드 이동만 늘어나고, 이득은 SSD 위에서만 난다. 한편 <code>asyncio</code>는 파일 I/O에 대해 논블로킹 경로를 갖고 있지 않아서, 이벤트 루프 안에서 <code>open().read()</code>를 그냥 부르면 루프 전체가 매체를 기다린다. 파일용 비동기 래퍼들이 내부적으로 스레드 풀을 쓰는 이유다.</p>
+<p><code>Python 관점의 통찰: Python은 편의 계층이 두꺼워 "언제 디스크에 닿았는가"가 코드에 드러나지 않는다. flush와 fsync가 다른 층을 비운다는 사실, 그리고 with 블록 종료(close)는 flush까지만 해 준다는 사실만 기억해도, 배치 설계(§4~5)에서 세운 내구성 가정을 코드가 배신하는 사고를 막을 수 있다. 상대적으로 느린 인터프리터가 병목이 되지 않는 유일한 영역이 I/O이므로, 여기서는 언어보다 매체를 의심하는 순서가 맞다.</code></p>
+
+<h3>8.4 C++ — 버퍼 세 겹을 직접 마주하는 언어</h3>
+<p><code>file.close()</code>가 성공해도 데이터는 아직 디스크에 없을 수 있다 — 언어 버퍼를 비웠을 뿐, OS 페이지 캐시에 머무는 상태다. 정전 시 이 구간의 데이터는 사라진다. 내구성이 필요한 지점에서는 캐시를 지나 매체까지 밀어내는 호출이 별도로 필요하며, 표준 라이브러리(<code>fstream</code>, <code>std::filesystem</code>)에는 그 호출이 없다. OS API로 내려가야 한다:</p>
+<pre><code>#include &lt;fstream&gt;
+#include &lt;unistd.h&gt;   // fsync, fdatasync
+#include &lt;fcntl.h&gt;    // open, posix_fadvise
+
+void write_durable(const char* path, const std::string&amp; data) {
+    std::ofstream f(path, std::ios::binary);
+    f.write(data.data(), data.size());
+    f.flush();                      // 1겹: 라이브러리 버퍼 → OS
+    f.close();
+    int fd = ::open(path, O_WRONLY);
+    ::fdatasync(fd);                // 2겹: 페이지 캐시 → 매체 (데이터만 — 메타데이터 갱신은 생략)
+    ::close(fd);
+}
+
+// 순차 대량 읽기 — OS에 접근 패턴을 미리 알려 미리 읽기(readahead)를 키운다
+int fd = ::open("/archive/model.bin", O_RDONLY);
+::posix_fadvise(fd, 0, 0, POSIX_FADV_SEQUENTIAL);
+
+// 페이지 캐시 우회 — DB 엔진식. 버퍼·오프셋·길이가 블록 크기로 정렬돼야 한다
+int raw = ::open("/work/db.dat", O_RDWR | O_DIRECT);</code></pre>
+<p>C++에서 두드러지는 함정은 수명과 얽힌다. <code>ofstream</code>의 소멸자는 스코프를 벗어날 때 <code>close()</code>를 대신 불러 주는데, 소멸자는 예외를 던질 수 없으므로 <strong>그 시점의 flush 실패는 조용히 사라진다</strong>. 디스크가 가득 찼거나 매체가 오류를 낸 것을 알고 싶다면 소멸자에 맡기지 말고 <code>flush()</code>·<code>close()</code>를 명시적으로 부른 뒤 스트림 상태를 확인해야 한다. 다른 하나는 <code>O_DIRECT</code>다 — 페이지 캐시를 건너뛰어 §3의 물성을 코드에 그대로 노출하는 대신, 버퍼 주소·오프셋·길이가 모두 블록 크기(보통 4 KiB)로 정렬되지 않으면 실패하므로 정렬된 할당(<code>aligned_alloc</code>)이 따라붙는다. 데이터베이스 엔진이 자체 버퍼 풀을 두고 이 문을 쓰는 것은 "캐시를 두 번 하지 않기 위해서"이지 캐시가 나빠서가 아니다.</p>
+<p>순차 대량 쓰기는 버퍼를 크게 잡아 호출 횟수를 줄이는 쪽이, 무작위 소량 쓰기는 <code>fsync</code> 빈도를 낮추도록 묶는 쪽이 효과적이다. 후자에서 표준 관용구가 "임시 파일에 쓰고 → <code>fdatasync</code> → <code>rename</code>으로 교체 → 디렉터리 <code>fsync</code>"인데, 마지막 단계가 빠지면 파일 내용은 매체에 있어도 <em>이름</em>이 정전 뒤 사라질 수 있다. 파일 시스템의 저널이 메타데이터를 따로 다루기 때문이다.</p>
+<p><code>C++ 관점의 통찰: 이 언어에서 I/O 계층은 은폐가 아니라 노출의 문제다 — 세 겹이 전부 보이므로, 어떤 호출이 어느 겹을 비우는지가 곧 성능 튜닝의 지렛대가 된다. 버퍼 크기·fsync 빈도·fadvise·O_DIRECT는 §3의 매체 물성이 코드 수준으로 번역된 형태이며, 소멸자에 맡긴 close가 오류를 삼킨다는 수명 규칙까지 합치면 "닿았다"를 코드가 증명하게 만드는 책임이 온전히 작성자에게 있다.</code></p>
+
+<h2>9. 함께 알면 좋은 것</h2>
 <ul>
 <li><strong>페이지 캐시와 "메모리 사용량" 착시</strong> — OS가 남는 메모리를 파일 캐시로 쓰는 것은 정상 동작이다. 사용 가능 메모리를 볼 때는 캐시 회수 가능분을 구분해서 읽는다.</li>
 <li><strong><code>fio</code></strong> — I/O 패턴(무작위/순차 × 읽기/쓰기, 큐 깊이)을 지정해 매체를 측정하는 표준 벤치마크 도구. §2의 표를 숫자로 확인할 수 있다.</li>
@@ -162,7 +243,7 @@ with open("state.json", "w") as f:
 <li><strong>DB의 WAL(write-ahead log)</strong> — 무작위 쓰기 워크로드인 DB조차 내구성 경로는 순차 이어 쓰기(로그)로 설계한다. §2~3의 매칭 원리가 저장 엔진 내부에서도 반복되는 대표 사례.</li>
 </ul>
 
-<h2>한 장 요약</h2>
+<h2>10. 한 장 요약</h2>
 <ul>
 <li>배치 판단 순서: 워크로드를 패턴으로 번역(무작위/순차 × 읽기/쓰기) → 매체 물성과 매칭 → 계층(작업·보관·백업)에 배정.</li>
 <li>SMR의 성능 절벽은 겹친 트랙의 재기록 증폭 때문 — 순차 이어 쓰기 자리(백업)에 두면 강점만 남는다.</li>
@@ -175,7 +256,7 @@ with open("state.json", "w") as f:
 <h2>관련 문서</h2>
 <ul>
 <li><a href="W1 메모리 계층 구조.html">W1 메모리 계층 구조</a> — 레지스터→캐시→RAM→디스크로 이어지는 상위 계층 관점</li>
-<li><a href="V4 파일 시스템·I/O.html">V4 파일 시스템·I/O</a> — 버퍼링·블로킹·<code>fsync</code>의 OS 쪽 절반</li>
+<li><a href="V4 파일 시스템·I·O.html">V4 파일 시스템·I/O</a> — 버퍼링·블로킹·<code>fsync</code>의 OS 쪽 절반</li>
 <li><a href="E1 인덱스 원리와 복합 인덱스.html">E1 인덱스 원리와 복합 인덱스</a> — seek vs scan: 무작위/순차 패턴이 DB 조회 비용으로 나타나는 곳</li>
 <li><a href="Q3 캐싱 전략.html">Q3 캐싱 전략</a> — 핫/콜드 구분과 승격·강등의 소프트웨어 계층 버전</li>
 <li><a href="E12 인메모리 데이터 저장소 개요.html">E12 인메모리 데이터 저장소 개요</a> — 계층 최상단(메모리)을 저장소로 쓰는 선택지</li>
